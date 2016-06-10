@@ -286,6 +286,7 @@ static int __init scif_uart_init(struct dt_device_node *dev,
 static const struct dt_device_match scif_uart_dt_match[] __initconst =
 {
     DT_MATCH_COMPATIBLE("renesas,scif"),
+    DT_MATCH_COMPATIBLE("renesas,rcar-gen3-scif"),
     { /* sentinel */ },
 };
 
