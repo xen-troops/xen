@@ -120,6 +120,17 @@ struct arch_domain
         spinlock_t                  lock;
     } vuart;
 
+#ifdef CONFIG_HAS_COPROC
+    struct vcoproc {
+        spinlock_t lock;
+        int num_instances;
+        struct vcoproc_instance {
+            int idx;
+            struct vcoproc_info *info;
+        } *instances;
+    } vcoproc;
+#endif
+
     unsigned int evtchn_irq;
 #ifdef CONFIG_ACPI
     void *efi_acpi_table;
