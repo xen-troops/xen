@@ -1,0 +1,1 @@
+obj-y += coproc_xxx.o common.o
