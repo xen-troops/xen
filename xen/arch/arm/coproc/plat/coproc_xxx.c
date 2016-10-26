@@ -76,6 +76,16 @@ static const struct vcoproc_domain_ops vcoproc_xxx_domain_ops = {
 	.domain_free = vcoproc_xxx_domain_free,
 };
 
+static int vcoproc_xxx_ctx_switch_from(struct vcoproc_info *prev)
+{
+	return 0;
+}
+
+static int vcoproc_xxx_ctx_switch_to(struct vcoproc_info *next)
+{
+	return 0;
+}
+
 static int vcoproc_xxx_vcoproc_init(struct domain *d, struct coproc_device *coproc_xxx)
 {
 	struct vcoproc_info *vcoproc_xxx;
@@ -118,6 +128,8 @@ static void vcoproc_xxx_vcoproc_free(struct domain *d, struct vcoproc_info *vcop
 static const struct vcoproc_ops vcoproc_xxx_vcoproc_ops = {
 	.vcoproc_init = vcoproc_xxx_vcoproc_init,
 	.vcoproc_free = vcoproc_xxx_vcoproc_free,
+	.ctx_switch_from = vcoproc_xxx_ctx_switch_from,
+	.ctx_switch_to = vcoproc_xxx_ctx_switch_to,
 };
 
 static void coproc_xxx_irq_handler(int irq, void *dev, struct cpu_user_regs *regs)
@@ -211,6 +223,7 @@ static int coproc_xxx_dt_probe(struct platform_device *pdev)
 		}
 	}
 
+	INIT_LIST_HEAD(&coproc_xxx->list);
 	INIT_LIST_HEAD(&coproc_xxx->vcoprocs_list);
 	spin_lock_init(&coproc_xxx->vcoprocs_lock);
 	coproc_xxx->ops = &vcoproc_xxx_vcoproc_ops;

@@ -23,6 +23,38 @@ static DEFINE_SPINLOCK(coproc_devices_lock);
 static LIST_HEAD(coproc_devices);
 static int num_coprocs_devices;
 
+int vcoproc_context_switch(struct vcoproc_info *prev, struct vcoproc_info *next)
+{
+    struct coproc_device *coproc;
+    int ret = 0;
+
+    if ( unlikely(prev == next) )
+        return 0;
+
+    coproc = next ? next->coproc : prev->coproc;
+
+    if ( coproc->ops && coproc->ops->ctx_switch_from )
+    {
+        ret = coproc->ops->ctx_switch_from(prev);
+        if ( ret )
+            return ret;
+    }
+
+    if ( coproc->ops && coproc->ops->ctx_switch_to )
+    {
+        ret = coproc->ops->ctx_switch_to(next);
+        if ( ret )
+            panic("Could not switch context to coproc %s\n", coproc->name);
+    }
+
+    return ret;
+}
+
+void vcoproc_continue_running(struct vcoproc_info *same)
+{
+    /* nothing to do */
+}
+
 int vcoproc_attach(struct domain *d, struct vcoproc_info *info)
 {
     struct vcoproc *vcoproc = &d->arch.vcoproc;
