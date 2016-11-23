@@ -71,8 +71,7 @@ static int vcoproc_xxx_read(struct vcpu *v, mmio_info_t *info, register_t *r,
     dev_dbg(coproc_xxx->dev, "read r%d=%"PRIregister" offset %#08x base %#08x\n",
             dabt.reg, *r, offset, (uint32_t)mmio->addr);
 
-    /* for debug purposes */
-    vcoproc_sheduler_vcoproc_sleep(coproc_xxx->sched, vcoproc_xxx);
+    (void)vcoproc_xxx;
 
     return 1;
 }
@@ -90,8 +89,27 @@ static int vcoproc_xxx_write(struct vcpu *v, mmio_info_t *info, register_t r,
     dev_dbg(coproc_xxx->dev, "write r%d=%"PRIregister" offset %#08x base %#08x\n",
             dabt.reg, r, offset, (uint32_t)mmio->addr);
 
+#if 1
     /* for debug purposes */
-    vcoproc_sheduler_vcoproc_wake(coproc_xxx->sched, vcoproc_xxx);
+#define COPROC_XXX_POWER_REG	0x10
+#define CORPOC_XXX_ENABLE		(1 << 0)
+
+    if ( offset == COPROC_XXX_POWER_REG )
+    {
+        int i;
+
+        /* Just inject all irqs what coproc has */
+        for ( i = 0; i < coproc_xxx->num_irqs; i++ )
+            vgic_vcpu_inject_spi(vcoproc_xxx->domain, coproc_xxx->irqs[i]);
+
+        if ( r & CORPOC_XXX_ENABLE )
+            vcoproc_sheduler_vcoproc_wake(coproc_xxx->sched, vcoproc_xxx);
+        else
+            vcoproc_sheduler_vcoproc_sleep(coproc_xxx->sched, vcoproc_xxx);
+    }
+#else
+    (void)vcoproc_xxx;
+#endif
 
     return 1;
 }
