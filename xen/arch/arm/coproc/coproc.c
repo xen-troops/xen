@@ -327,6 +327,47 @@ int coproc_release_vcoprocs(struct domain *d)
     return 0;
 }
 
+int coproc_do_domctl(struct xen_domctl *domctl, struct domain *d,
+                     XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
+{
+    char *path;
+    int ret;
+
+    switch ( domctl->cmd )
+    {
+    case XEN_DOMCTL_attach_coproc:
+        if ( unlikely(d->is_dying) )
+        {
+            ret = -EINVAL;
+            break;
+        }
+
+        path = safe_copy_string_from_guest(domctl->u.attach_coproc.path,
+                                           domctl->u.attach_coproc.size,
+                                           PAGE_SIZE);
+        if ( IS_ERR(path) )
+        {
+            ret = PTR_ERR(path);
+            break;
+        }
+
+        printk("Got coproc \"%s\" for dom%u\n", path, d->domain_id);
+
+        ret = coproc_find_and_attach_to_domain(d, path);
+        if ( ret )
+            printk("Failed to attach coproc \"%s\" to dom%u (%d)\n",
+                   path, d->domain_id, ret);
+        xfree(path);
+        break;
+
+    default:
+        ret = -ENOSYS;
+        break;
+    }
+
+    return ret;
+}
+
 int __init coproc_register(struct coproc_device *coproc)
 {
     if ( !coproc || !coproc->ops )
