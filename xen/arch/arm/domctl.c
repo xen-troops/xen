@@ -14,6 +14,8 @@
 #include <xsm/xsm.h>
 #include <public/domctl.h>
 
+#include "coproc/coproc.h"
+
 void arch_get_domain_info(const struct domain *d,
                           struct xen_domctl_getdomaininfo *info)
 {
@@ -123,6 +125,11 @@ long arch_do_domctl(struct xen_domctl *domctl, struct domain *d,
 
         if ( rc == -ENOSYS )
             rc = iommu_do_domctl(domctl, d, u_domctl);
+
+#ifdef CONFIG_HAS_COPROC
+        if ( rc == -ENOSYS )
+            rc = coproc_do_domctl(domctl, d, u_domctl);
+#endif
 
         return rc;
     }

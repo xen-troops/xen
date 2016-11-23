@@ -1256,6 +1256,10 @@ int xc_domain_getvnuma(xc_interface *xch,
 int xc_domain_soft_reset(xc_interface *xch,
                          uint32_t domid);
 
+int xc_attach_coproc(xc_interface *xch,
+                     uint32_t domid,
+                     char *path);
+
 #if defined(__i386__) || defined(__x86_64__)
 /*
  * PC BIOS standard E820 types and structure.

@@ -2520,6 +2520,32 @@ int xc_domain_soft_reset(xc_interface *xch,
     domctl.domain = (domid_t)domid;
     return do_domctl(xch, &domctl);
 }
+
+int xc_attach_coproc(
+    xc_interface *xch,
+    uint32_t domid,
+    char *path)
+{
+    int rc;
+    size_t size = strlen(path);
+    DECLARE_DOMCTL;
+    DECLARE_HYPERCALL_BOUNCE(path, size, XC_HYPERCALL_BUFFER_BOUNCE_IN);
+
+    if ( xc_hypercall_bounce_pre(xch, path) )
+        return -1;
+
+    domctl.cmd = XEN_DOMCTL_attach_coproc;
+    domctl.domain = (domid_t)domid;
+
+    domctl.u.attach_coproc.size = size;
+    set_xen_guest_handle(domctl.u.attach_coproc.path, path);
+
+    rc = do_domctl(xch, &domctl);
+
+    xc_hypercall_bounce_post(xch, path);
+
+    return rc;
+}
 /*
  * Local variables:
  * mode: C

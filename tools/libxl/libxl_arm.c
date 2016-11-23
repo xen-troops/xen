@@ -100,9 +100,36 @@ int libxl__arch_domain_save_config(libxl__gc *gc,
     return 0;
 }
 
+static int attach_coprocs(libxl__gc *gc,
+                          const libxl_domain_build_info *info,
+                          uint32_t domid)
+{
+    int i, rc;
+
+    for (i = 0; i < info->num_coprocs; i++) {
+        const libxl_device_coproc *coproc = &info->coprocs[i];
+
+        LOG(DEBUG, "Attach coproc \"%s\" to dom%u", coproc->path, domid);
+        rc = xc_attach_coproc(CTX->xch, domid, coproc->path);
+        if (rc < 0) {
+            LOG(ERROR, "xc_attach_coproc failed: %d", rc);
+            return rc;
+        }
+    }
+
+    return 0;
+}
+
 int libxl__arch_domain_create(libxl__gc *gc, libxl_domain_config *d_config,
                               uint32_t domid)
 {
+    libxl_domain_build_info *const info = &d_config->b_info;
+
+
+    /* TODO Not sure that it is the best place for call this. */
+    if (attach_coprocs(gc, info, domid))
+        return ERROR_FAIL;
+
     return 0;
 }
 
@@ -759,6 +786,31 @@ static int copy_partial_fdt(libxl__gc *gc, void *fdt, void *pfdt)
     return 0;
 }
 
+static int copy_coprocs_nodes(libxl__gc *gc, void *fdt, void *pfdt,
+                              const libxl_domain_build_info *info)
+{
+    int i, rc;
+
+    LOG(DEBUG, "Copy coprocs nodes from the partial FDT");
+
+    for (i = 0; i < info->num_coprocs; i++) {
+        const libxl_device_coproc *coproc = &info->coprocs[i];
+
+        if (!coproc->path) {
+            LOG(ERROR, "Bad coproc node for the partial FDT");
+            continue;
+        }
+
+        rc = copy_node_by_path(gc, coproc->path, fdt, pfdt);
+        if (rc < 0) {
+            LOG(ERROR, "Can't copy coproc node \"%s\" from the partial FDT", coproc->path);
+            return rc;
+        }
+    }
+
+    return 0;
+}
+
 #else
 
 static int check_partial_fdt(libxl__gc *gc, void *fdt, size_t size)
@@ -769,6 +821,16 @@ static int check_partial_fdt(libxl__gc *gc, void *fdt, size_t size)
 }
 
 static int copy_partial_fdt(libxl__gc *gc, void *fdt, void *pfdt)
+{
+    /*
+     * We should never be here when the partial device tree is not
+     * supported.
+     * */
+    return -FDT_ERR_INTERNAL;
+}
+
+static int copy_coprocs_nodes(libxl__gc *gc, void *fdt, void *pfdt,
+                              const libxl_domain_build_info *info)
 {
     /*
      * We should never be here when the partial device tree is not
@@ -889,8 +951,10 @@ next_resize:
         FDT( make_timer_node(gc, fdt, ainfo, xc_config->clock_frequency) );
         FDT( make_hypervisor_node(gc, fdt, vers) );
 
-        if (pfdt)
+        if (pfdt) {
             FDT( copy_partial_fdt(gc, fdt, pfdt) );
+            FDT( copy_coprocs_nodes(gc, fdt, pfdt, info) );
+        }
 
         FDT( fdt_end_node(fdt) );
 
