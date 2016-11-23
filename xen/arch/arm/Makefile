@@ -3,6 +3,7 @@ subdir-$(CONFIG_ARM_64) += arm64
 subdir-y += platforms
 subdir-$(CONFIG_ARM_64) += efi
 subdir-$(CONFIG_ACPI) += acpi
+subdir-$(CONFIG_HAS_COPROC) += coproc
 
 obj-$(CONFIG_HAS_ALTERNATIVE) += alternative.o
 obj-y += bootfdt.o
