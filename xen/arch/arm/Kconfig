@@ -50,6 +50,11 @@ config HAS_ITS
         prompt "GICv3 ITS MSI controller support" if EXPERT = "y"
         depends on HAS_GICV3
 
+config HAS_COPROC
+	bool "Remote processors framework (EXPERIMENTAL)"
+	default y
+	depends on ARM
+
 endmenu
 
 menu "ARM errata workaround via the alternative framework"
