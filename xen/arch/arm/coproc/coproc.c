@@ -20,6 +20,7 @@
 #include <xen/init.h>
 #include <xen/err.h>
 #include <xen/guest_access.h>
+#include <xen/keyhandler.h>
 
 #include "coproc.h"
 
@@ -390,11 +391,21 @@ int __init coproc_register(struct coproc_device *coproc)
     return 0;
 }
 
+bool_t coproc_debug = true;
+
+void coproc_debug_toggle(unsigned char key)
+{
+    coproc_debug = !coproc_debug;
+    printk("coproc debug is %s\n", coproc_debug ? "enabled" : "disabled");
+}
+
 void __init coproc_init(void)
 {
     struct dt_device_node *node;
     unsigned int num_coprocs = 0;
     int ret;
+
+    register_keyhandler('c', coproc_debug_toggle, "toggle debug for coproc", 0);
 
     /*
      * For the moment, we'll create coproc for each device that presents
