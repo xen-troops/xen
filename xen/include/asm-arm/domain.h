@@ -60,6 +60,7 @@ struct arch_domain
         RELMEM_xen,
         RELMEM_page,
         RELMEM_mapping,
+        RELMEM_coproc,
         RELMEM_done,
     } relmem;
 
@@ -119,6 +120,16 @@ struct arch_domain
         const struct vuart_info     *info;
         spinlock_t                  lock;
     } vuart;
+
+#ifdef CONFIG_HAS_COPROC
+    struct vcoproc {
+        /* The number of vcoproc instances for this domain */
+        int num_instances;
+        /* The "domain's" instances list is used to keep track of all vcoproc
+         * instances that have been created for this domain */
+        struct list_head instances;
+    } vcoproc;
+#endif
 
     unsigned int evtchn_irq;
 #ifdef CONFIG_ACPI

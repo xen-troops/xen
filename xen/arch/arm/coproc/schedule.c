@@ -1,0 +1,320 @@
+/*
+ * xen/arch/arm/coproc/schedule.c
+ *
+ * Generic Scheduler for the Remote processors
+ * based on xen/common/schedule.c
+ *
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2016 EPAM Systems Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
+#include <xen/init.h>
+#include <xen/err.h>
+
+#include "coproc.h"
+
+/* TODO Each coproc may have its own algorithm */
+static char __initdata opt_vcoproc_sched[10] = "";
+string_param("vcoproc_sched", opt_vcoproc_sched);
+
+static struct vcoproc_scheduler *const vcoproc_schedulers[] = {
+    NULL
+};
+
+#define VCOPROC_SCHED_OP(opsptr, fn, ...) \
+    (( (opsptr)->fn != NULL ) ? (opsptr)->fn(opsptr, ##__VA_ARGS__ ) \
+    : (typeof((opsptr)->fn(opsptr, ##__VA_ARGS__)))0 )
+
+static void vcoproc_scheduler_set_current(const struct vcoproc_scheduler *sched,
+                                          struct vcoproc_instance *vcoproc)
+{
+    struct vcoproc_schedule_data *sched_data = sched->sched_priv;
+
+    sched_data->curr = vcoproc;
+}
+
+static struct vcoproc_instance *vcoproc_scheduler_get_current(const struct vcoproc_scheduler *sched)
+{
+    struct vcoproc_schedule_data *sched_data = sched->sched_priv;
+
+    return sched_data->curr;
+}
+
+static bool_t vcoproc_scheduler_vcoproc_is_destroyed(struct vcoproc_scheduler *sched,
+                                                     struct vcoproc_instance *vcoproc)
+{
+    if ( !vcoproc )
+        return true;
+
+    return vcoproc->state == VCOPROC_UNKNOWN ? true : false;
+}
+
+int vcoproc_scheduler_vcoproc_init(struct vcoproc_scheduler *sched,
+                                   struct vcoproc_instance *vcoproc)
+{
+    struct vcoproc_schedule_data *sched_data = sched->sched_priv;
+    unsigned long flags;
+
+    if ( !vcoproc_scheduler_vcoproc_is_destroyed(sched, vcoproc) )
+        return -EINVAL;
+
+    spin_lock_irqsave(&sched_data->schedule_lock, flags);
+    vcoproc->sched_priv = VCOPROC_SCHED_OP(sched, alloc_vdata, vcoproc);
+    if ( !vcoproc->sched_priv )
+    {
+        printk("Failed to allocate scheduler-specific data for vcoproc \"%s\"\n",
+               dev_path(vcoproc->coproc->dev));
+        spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+        return -ENOMEM;
+    }
+
+    vcoproc->state = VCOPROC_SLEEPING;
+    spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+
+    return 0;
+}
+
+int vcoproc_scheduler_vcoproc_destroy(struct vcoproc_scheduler *sched,
+                                      struct vcoproc_instance *vcoproc)
+{
+    struct vcoproc_schedule_data *sched_data = sched->sched_priv;
+    unsigned long flags;
+
+    if ( vcoproc_scheduler_vcoproc_is_destroyed(sched, vcoproc) )
+        return 0;
+
+    vcoproc_sheduler_vcoproc_sleep(sched, vcoproc);
+
+    spin_lock_irqsave(&sched_data->schedule_lock, flags);
+    if ( vcoproc->state == VCOPROC_ASKED_TO_SLEEP )
+    {
+        spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+        return -EBUSY;
+    }
+
+    if ( vcoproc->sched_priv )
+    {
+        VCOPROC_SCHED_OP(sched, free_vdata, vcoproc->sched_priv);
+        vcoproc->sched_priv = NULL;
+    }
+    vcoproc->state = VCOPROC_UNKNOWN;
+    spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+
+    return 0;
+}
+
+void vcoproc_sheduler_vcoproc_wake(struct vcoproc_scheduler *sched,
+                                   struct vcoproc_instance *vcoproc)
+{
+    struct vcoproc_schedule_data *sched_data = sched->sched_priv;
+    unsigned long flags;
+
+    ASSERT(!vcoproc_scheduler_vcoproc_is_destroyed(sched, vcoproc));
+
+    /* TODO What to do if we came with state ASKED_TO_SLEEP? */
+    spin_lock_irqsave(&sched_data->schedule_lock, flags);
+    if ( vcoproc->state != VCOPROC_SLEEPING )
+    {
+        spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+        return;
+    }
+
+    VCOPROC_SCHED_OP(sched, wake, vcoproc);
+    vcoproc->state = VCOPROC_WAITING;
+    spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+
+    vcoproc_schedule(sched);
+}
+
+void vcoproc_sheduler_vcoproc_sleep(struct vcoproc_scheduler *sched,
+                                    struct vcoproc_instance *vcoproc)
+{
+    struct vcoproc_schedule_data *sched_data = sched->sched_priv;
+    unsigned long flags;
+    bool_t reschedule = false;
+
+    ASSERT(!vcoproc_scheduler_vcoproc_is_destroyed(sched, vcoproc));
+
+    spin_lock_irqsave(&sched_data->schedule_lock, flags);
+    if ( vcoproc->state != VCOPROC_WAITING &&
+         vcoproc->state != VCOPROC_RUNNING )
+    {
+        spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+        return;
+    }
+
+    VCOPROC_SCHED_OP(sched, sleep, vcoproc);
+    if ( vcoproc->state == VCOPROC_WAITING )
+        vcoproc->state = VCOPROC_SLEEPING;
+    else
+    {
+        vcoproc->state = VCOPROC_ASKED_TO_SLEEP;
+        reschedule = true;
+    }
+    spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+
+    if ( reschedule )
+        vcoproc_schedule(sched);
+}
+
+void vcoproc_sheduler_vcoproc_yield(struct vcoproc_scheduler *sched,
+                                    struct vcoproc_instance *vcoproc)
+{
+    struct vcoproc_schedule_data *sched_data = sched->sched_priv;
+    unsigned long flags;
+
+    ASSERT(!vcoproc_scheduler_vcoproc_is_destroyed(sched, vcoproc));
+
+    spin_lock_irqsave(&sched_data->schedule_lock, flags);
+    if ( vcoproc->state != VCOPROC_RUNNING )
+    {
+        spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+        return;
+    }
+    VCOPROC_SCHED_OP(sched, yield, vcoproc);
+    spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+
+    vcoproc_schedule(sched);
+}
+
+/* TODO Taking lock for the whole func is might be an overhead */
+void vcoproc_schedule(struct vcoproc_scheduler *sched)
+{
+    struct vcoproc_instance *curr, *next;
+    struct vcoproc_schedule_data *sched_data = sched->sched_priv;
+    struct vcoproc_task_slice next_slice;
+    s_time_t wait_time, now;
+    unsigned long flags;
+
+    spin_lock_irqsave(&sched_data->schedule_lock, flags);
+
+    curr = vcoproc_scheduler_get_current(sched);
+
+    now = NOW();
+    stop_timer(&sched_data->s_timer);
+
+    next_slice = sched->do_schedule(sched, now);
+    next = next_slice.task;
+
+    if ( unlikely(!curr && !next) )
+        goto out;
+
+    wait_time = vcoproc_context_switch(curr, next);
+    ASSERT(wait_time >= 0);
+
+    if ( wait_time > 0 )
+    {
+        set_timer(&sched_data->s_timer, now + wait_time);
+        VCOPROC_SCHED_OP(sched, schedule_completed, next, 0);
+        vcoproc_continue_running(curr);
+        goto out;
+    }
+
+    vcoproc_scheduler_set_current(sched, next);
+    VCOPROC_SCHED_OP(sched, schedule_completed, next, 1);
+
+    if ( next_slice.time >= 0 )
+        set_timer(&sched_data->s_timer, now + next_slice.time);
+
+    if ( curr == next )
+    {
+        vcoproc_continue_running(curr);
+        goto out;
+    }
+
+out:
+    spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
+}
+
+static void s_timer_fn(void *data)
+{
+    struct vcoproc_scheduler *sched = data;
+
+    vcoproc_schedule(sched);
+}
+
+struct vcoproc_scheduler * __init vcoproc_scheduler_init(struct coproc_device *coproc)
+{
+    struct vcoproc_scheduler *sched;
+    struct vcoproc_schedule_data *sched_data;
+    int i, ret;
+
+    if ( !coproc )
+        return ERR_PTR(-EINVAL);
+
+    for ( i = 0; vcoproc_schedulers[i]; i++ )
+    {
+        if ( !strncmp(vcoproc_schedulers[i]->opt_name, opt_vcoproc_sched,
+             strlen(opt_vcoproc_sched)) )
+        break;
+    }
+
+    if ( !vcoproc_schedulers[i] )
+    {
+        printk("Failed to find scheduler \"%s\" for coproc \"%s\"\n",
+               opt_vcoproc_sched, dev_path(coproc->dev));
+        return ERR_PTR(-ENODEV);
+    }
+
+    printk("Using scheduler \"%s\" for coproc \"%s\"\n",
+           vcoproc_schedulers[i]->opt_name, dev_path(coproc->dev));
+
+    sched = xmalloc(struct vcoproc_scheduler);
+    if ( !sched )
+    {
+        printk("Failed to allocate scheduler for coproc \"%s\"\n",
+               dev_path(coproc->dev));
+        return ERR_PTR(-ENOMEM);
+    }
+    memcpy(sched, vcoproc_schedulers[i], sizeof(*sched));
+
+    sched_data = xmalloc(struct vcoproc_schedule_data);
+    if ( !sched_data )
+    {
+        printk("Failed to allocate schedule data for coproc \"%s\"\n",
+               dev_path(coproc->dev));
+        ret = -ENOMEM;
+        goto out_free_sched;
+    }
+    sched->sched_priv = sched_data;
+    init_timer(&sched_data->s_timer, s_timer_fn, sched, 0);
+    vcoproc_scheduler_set_current(sched, NULL);
+    spin_lock_init(&sched_data->schedule_lock);
+
+    ret = VCOPROC_SCHED_OP(sched, init);
+    if ( ret )
+    {
+        printk("Failed to init scheduler for coproc \"%s\"\n",
+               dev_path(coproc->dev));
+        goto out_free_data;
+    }
+
+    return sched;
+
+out_free_data:
+    kill_timer(&sched_data->s_timer);
+    xfree(sched_data);
+out_free_sched:
+    xfree(sched);
+
+    return ERR_PTR(ret);
+}
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * indent-tabs-mode: nil
+ * End:
+ */
