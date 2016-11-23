@@ -190,6 +190,49 @@ void vcoproc_sheduler_vcoproc_yield(struct vcoproc_scheduler *sched,
     vcoproc_schedule(sched);
 }
 
+extern bool_t coproc_debug;
+
+static inline void schedule_trace(struct vcoproc_instance *curr,
+                                  struct vcoproc_instance *next,
+                                  int stage)
+{
+    if ( !coproc_debug )
+        return;
+
+    switch ( stage )
+    {
+    case 0:
+        printk("----------NOTHING TO SCHEDULE-----------------------\n");
+        break;
+
+    case 1:
+        printk("----------dom %d (%s) CONTINUE RUNNING (BUSY)------------\n",
+               curr ? curr->domain->domain_id : -1,
+               curr ? dev_path(curr->coproc->dev) : "NULL");
+        break;
+
+    case 2:
+        printk("----------dom %d (%s) CONTINUE RUNNING (SINGLE)----------\n",
+               curr ? curr->domain->domain_id : -1,
+               curr ? dev_path(curr->coproc->dev) : "NULL");
+        break;
+
+    case 3:
+        if (next)
+            printk("----------dom %d (%s) START RUNNING----------------------\n",
+                   next ? next->domain->domain_id : -1,
+                   next ? dev_path(next->coproc->dev) : "NULL");
+        else
+            printk("----------dom %d (%s )STOP RUNNING-----------------------\n",
+                   curr ? curr->domain->domain_id : -1,
+                   curr ? dev_path(curr->coproc->dev) : "NULL");
+        break;
+
+    default:
+        break;
+    }
+}
+
 /* TODO Taking lock for the whole func is might be an overhead */
 void vcoproc_schedule(struct vcoproc_scheduler *sched)
 {
@@ -210,7 +253,10 @@ void vcoproc_schedule(struct vcoproc_scheduler *sched)
     next = next_slice.task;
 
     if ( unlikely(!curr && !next) )
+    {
+        schedule_trace(curr, next, 0);
         goto out;
+    }
 
     wait_time = vcoproc_context_switch(curr, next);
     ASSERT(wait_time >= 0);
@@ -219,6 +265,7 @@ void vcoproc_schedule(struct vcoproc_scheduler *sched)
     {
         set_timer(&sched_data->s_timer, now + wait_time);
         VCOPROC_SCHED_OP(sched, schedule_completed, next, 0);
+        schedule_trace(curr, next, 1);
         vcoproc_continue_running(curr);
         goto out;
     }
@@ -231,9 +278,11 @@ void vcoproc_schedule(struct vcoproc_scheduler *sched)
 
     if ( curr == next )
     {
+        schedule_trace(curr, next, 2);
         vcoproc_continue_running(curr);
         goto out;
     }
+    schedule_trace(curr, next, 3);
 
 out:
     spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
