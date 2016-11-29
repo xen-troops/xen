@@ -236,6 +236,8 @@ class domain2
     vm_event
 # XEN_DOMCTL_soft_reset
     soft_reset
+# XEN_DOMCTL_attach_coproc
+    attach_coproc
 # XENMEM_access_op
     mem_access
 # XENMEM_paging_op
