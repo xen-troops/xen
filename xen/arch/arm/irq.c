@@ -472,8 +472,6 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
      *  - If it's the same domain -> Xen doesn't need to update the IRQ desc.
      *  For safety check if we are not trying to assign the IRQ to a
      *  different vIRQ.
-     *  - Otherwise -> For now, don't allow the IRQ to be shared between
-     *  Xen and domains.
      */
     if ( desc->action != NULL )
     {
@@ -497,11 +495,6 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
                        irq, ad->domain_id);
                 retval = -EBUSY;
             }
-        }
-        else
-        {
-            printk(XENLOG_G_ERR "IRQ %u is already used by Xen\n", irq);
-            retval = -EBUSY;
         }
         goto out;
     }
