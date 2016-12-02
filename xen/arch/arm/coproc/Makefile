@@ -1,2 +1,2 @@
 subdir-y += plat
-obj-y += coproc.o schedule.o
+obj-y += coproc.o sched_rrobin.o schedule.o
