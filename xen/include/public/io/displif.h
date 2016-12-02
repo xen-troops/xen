@@ -663,9 +663,9 @@ struct xendispl_event_page {
     uint8_t reserved[60];
 };
 
-#define XENDISPL_PAGE_SIZE 4096
+#define XENDISPL_EVENT_PAGE_SIZE 4096
 #define XENDISPL_IN_RING_OFFS (sizeof(struct xendispl_event_page))
-#define XENDISPL_IN_RING_SIZE (XENDISPL_PAGE_SIZE - XENDISPL_IN_RING_OFFS)
+#define XENDISPL_IN_RING_SIZE (XENDISPL_EVENT_PAGE_SIZE - XENDISPL_IN_RING_OFFS)
 #define XENDISPL_IN_RING_LEN (XENDISPL_IN_RING_SIZE / sizeof(struct xendispl_evt))
 #define XENDISPL_IN_RING(page) \
 	((struct xendispl_evt *)((char *)(page) + XENDISPL_IN_RING_OFFS))
