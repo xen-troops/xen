@@ -253,7 +253,7 @@
  *     grant reference 0 is valid, but never exposed to a PV driver,
  *     because of the fact it is already in use/reserved by the PV console.
  *   o all references in this document to page sizes must be treated
- *     as pages of size XEN_PAGE_SIZE unless  otherwise noted.
+ *     as pages of size XEN_PAGE_SIZE (XC_PAGE_SIZE) unless  otherwise noted.
  *
  * Description of the protocol between frontend and backend driver.
  *
@@ -261,7 +261,7 @@
  * each other using a shared page and an event channel.
  * Shared page contains a ring with request/response packets.
  *
- * All reserved and padding fields in the structures below must be 0.
+ * All reserved fields in the structures below must be 0.
  * Display buffers's cookie of value 0 treated as invalid.
  * Framebuffer's cookie of value 0 treated as invalid.
  *
@@ -437,7 +437,7 @@ struct xendispl_dbuf_destroy_req {
  *   to map remote framebuffer to local in requests
  * width - uint32_t, width in pixels
  * height - uint32_t, height in pixels
- * pixel_format - uint32_t, pixel format of the framebuffer
+ * pixel_format - uint32_t, pixel format of the framebuffer, FOURCC code
  */
 
 struct xendispl_fb_attach_req {
@@ -545,8 +545,6 @@ struct xendispl_set_config_req {
  * +-----------------+-----------------+-----------------+-----------------+
  * |                          fb_cookie high 32-bit                        |
  * +-----------------+-----------------+-----------------+-----------------+
- * |                                conn_idx                               |
- * +-----------------+-----------------+-----------------+-----------------+
  * |                               reserved                                |
  * +-----------------+-----------------+-----------------+-----------------+
  * |/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/|
@@ -554,14 +552,12 @@ struct xendispl_set_config_req {
  * |                               reserved                                |
  * +-----------------+-----------------+-----------------+-----------------+
  *
- * conn_idx - uint32_t, private guest value, echoed in response by the back
  * fb_cookie - uint64_t, unique to guest domain value used by the backend
  *   to map remote framebuffer to local in requests
  */
 
 struct xendispl_page_flip_req {
     uint64_t fb_cookie;
-    uint32_t conn_idx;
 };
 
 /*****************************************************************************
@@ -596,8 +592,6 @@ struct xendispl_page_flip_req {
  * +-----------------+-----------------+-----------------+-----------------+
  * |                          fb_cookie high 32-bit                        |
  * +-----------------+-----------------+-----------------+-----------------+
- * |                               conn_idx                                |
- * +-----------------+-----------------+-----------------+-----------------+
  * |                               reserved                                |
  * +-----------------+-----------------+-----------------+-----------------+
  * |/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/|
@@ -605,7 +599,6 @@ struct xendispl_page_flip_req {
  * |                               reserved                                |
  * +-----------------+-----------------+-----------------+-----------------+
  *
- * conn_idx - uint32_t, echoed value received in XENDISPL_OP_PG_FLIP request
  * fb_cookie - uint64_t, unique to guest domain value used by the backend
  *   to map remote framebuffer to local in requests
  *
@@ -613,7 +606,6 @@ struct xendispl_page_flip_req {
 
 struct xendispl_pg_flip_evt {
     uint64_t fb_cookie;
-    uint32_t conn_idx;
 };
 
 struct xendispl_req {
@@ -627,7 +619,7 @@ struct xendispl_req {
         struct xendispl_fb_detach_req fb_detach;
         struct xendispl_set_config_req set_config;
         struct xendispl_page_flip_req pg_flip;
-        uint8_t padding[56];
+        uint8_t reserved[56];
     } op;
 };
 
@@ -635,7 +627,7 @@ struct xendispl_resp {
     uint16_t id;
     uint8_t operation;
     int8_t status;
-    uint8_t padding[60];
+    uint8_t reserved[60];
 };
 
 struct xendispl_evt {
@@ -644,7 +636,7 @@ struct xendispl_evt {
     uint8_t reserved[5];
     union {
         struct xendispl_pg_flip_evt pg_flip;
-        uint8_t padding[56];
+        uint8_t reserved[56];
     } op;
 };
 
@@ -668,11 +660,12 @@ DEFINE_RING_TYPES(xen_displif, struct xendispl_req, struct xendispl_resp);
 struct xendispl_event_page {
     uint32_t in_cons;
     uint32_t in_prod;
-    uint8_t padding[60];
+    uint8_t reserved[60];
 };
 
+#define XENDISPL_PAGE_SIZE 4096
 #define XENDISPL_IN_RING_OFFS (sizeof(struct xendispl_event_page))
-#define XENDISPL_IN_RING_SIZE (XEN_PAGE_SIZE - XENDISPL_IN_RING_OFFS)
+#define XENDISPL_IN_RING_SIZE (XENDISPL_PAGE_SIZE - XENDISPL_IN_RING_OFFS)
 #define XENDISPL_IN_RING_LEN (XENDISPL_IN_RING_SIZE / sizeof(struct xendispl_evt))
 #define XENDISPL_IN_RING(page) \
 	((struct xendispl_evt *)((char *)(page) + XENDISPL_IN_RING_OFFS))
