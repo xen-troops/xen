@@ -257,6 +257,10 @@
 /*
  * STATUS RETURN CODES.
  */
+/* Operation parameters are invalid */
+#define XENDISPL_RSP_INVAL                (-4)
+/* Operation cannot be completed because of memory constraints */
+#define XENDISPL_RSP_NOMEM                (-3)
 /* Operation is not supported */
 #define XENDISPL_RSP_NOTSUPP              (-2)
 /* Operation failed for some unspecified reason (e. g. -EIO) */
