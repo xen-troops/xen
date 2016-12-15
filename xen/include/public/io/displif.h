@@ -253,6 +253,7 @@
 #define XENDISPL_FIELD_RESOLUTION         "resolution"
 
 #define XENDISPL_FEATURE_VBLANKS           "vblanks"
+#define XENDISPL_FEATURE_BE_ALLOC          "be_alloc"
 
 /*
  * STATUS RETURN CODES.
@@ -327,9 +328,9 @@
  * +-----------------+-----------------+-----------------+-----------------+
  * |                               buffer_sz                               |
  * +-----------------+-----------------+-----------------+-----------------+
- * |                         gref_directory_start                          |
- * +-----------------+-----------------+-----------------+-----------------+
  * |                                 flags                                 |
+ * +-----------------+-----------------+-----------------+-----------------+
+ * |                         gref_directory_start                          |
  * +-----------------+-----------------+-----------------+-----------------+
  * |                               reserved                                |
  * +-----------------+-----------------+-----------------+-----------------+
@@ -346,14 +347,24 @@
  * height - uint32_t, height in pixels
  * bpp - uint32_t, bits per pixel
  * buffer_sz - uint32_t, buffer size to be allocated in octets
+ * flags - uint32_t, flags of the operation
+ *   o XENDISPL_DBUF_FLG_REQ_ALLOC - if set, then backend is requested
+ *     to allocate the buffer with the parameters provided in this request.
+ *     Page directory is handled as follows:
+ *       Frontend on request:
+ *         o allocates pages for the directory
+ *         o grants permissions for the pages of the directory
+ *         o sets gref_dir_next_page fields
+ *       Backend on response:
+ *         o grants permissions for the pages of the buffer allocated
+ *         o fills in page directory with grant references
  * gref_directory_start - grant_ref_t, a reference to the first shared page
  *   describing shared buffer references. At least one page exists. If shared
  *   buffer size exceeds what can be addressed by this single page, then
  *   reference to the next page must be supplied (see gref_dir_next_page below)
- * flags - uint32_t, flags for the operation
  */
 
-#define XENDISPL_DBUF_FLG_REQ_ALLOC       0x01
+#define XENDISPL_DBUF_FLG_REQ_ALLOC       0x0001
 
 struct xendispl_dbuf_create_req {
     uint64_t dbuf_cookie;
@@ -361,8 +372,8 @@ struct xendispl_dbuf_create_req {
     uint32_t height;
     uint32_t bpp;
     uint32_t buffer_sz;
-    grant_ref_t gref_directory_start;
     uint32_t flags;
+    grant_ref_t gref_directory_start;
 };
 
 /*
