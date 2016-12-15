@@ -47,7 +47,7 @@
  * Direction of improvements
  ******************************************************************************
  * o allow display/connector cloning
- * o allow allocating objects other than frambeffers(?)
+ * o allow allocating objects other than frambeffers
  * o add planes/overlays support
  * o support scaling
  * o support rotation
@@ -289,8 +289,8 @@
  * Display buffers's cookie of value 0 treated as invalid.
  * Framebuffer's cookie of value 0 treated as invalid.
  *
- * All requests, which are not connector specific, must be sent over control
- * ring of the connector with index 0.
+ * All requests/responses, which are not connector specific, must be sent over
+ * control ring of the connector with index 0.
  *
  *****************************************************************************
  *                            Frontend to backend requests
