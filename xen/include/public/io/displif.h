@@ -104,6 +104,19 @@
  *
  *      Zero based contiguous index of the connector within the card.
  *
+ *------------------------------ Driver settings -------------------------------
+ * features
+ *      Values:         <list of strings>
+ *
+ *      XENDISPL_LIST_SEPARATOR separated list of features that frontend
+ *      driver is requested to support:
+ *
+ *      vblanks
+ *             Mandatory:    no
+ *
+ *             Explicitly request the front driver to emulate vertical blanking
+ *             events to the guest OS' software.
+ *
  *----------------------------- Connector settings -----------------------------
  * resolution
  *      Values:         <[width]x[height]>
@@ -226,13 +239,17 @@
  */
 #define XENDISPL_DRIVER_NAME              "vdispl"
 
+#define XENDISPL_LIST_SEPARATOR           ";"
 #define XENDISPL_RESOLUTION_SEPARATOR     "x"
 /* Field names */
+#define XENDISPL_FIELD_FEATURES           "features"
 #define XENDISPL_FIELD_CTRL_RING_REF      "ctrl-ring-ref"
 #define XENDISPL_FIELD_CTRL_CHANNEL       "ctrl-channel"
 #define XENDISPL_FIELD_EVT_RING_REF       "event-ring-ref"
 #define XENDISPL_FIELD_EVT_CHANNEL        "event-channel"
 #define XENDISPL_FIELD_RESOLUTION         "resolution"
+
+#define XENDISPL_FEATURE_VBLANKS           "vblanks"
 
 /*
  * STATUS RETURN CODES.
