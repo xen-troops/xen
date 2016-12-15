@@ -109,13 +109,16 @@
  *      Values:         <list of strings>
  *
  *      XENDISPL_LIST_SEPARATOR separated list of features that frontend
- *      driver is requested to support:
+ *      driver is requested to support. These are not mandatory and may not
+ *      be implemented by the frontend:
  *
  *      vblanks
- *             Mandatory:    no
- *
  *             Explicitly request the front driver to emulate vertical blanking
  *             events to the guest OS' software.
+ *
+ *      be_alloc
+ *             Backend can be a buffer provider/allocator during
+ *             XENDISPL_OP_DBUF_CREATE operation (see below for negotiation).
  *
  *----------------------------- Connector settings -----------------------------
  * resolution
