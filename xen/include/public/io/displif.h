@@ -329,6 +329,8 @@
  * +-----------------+-----------------+-----------------+-----------------+
  * |                         gref_directory_start                          |
  * +-----------------+-----------------+-----------------+-----------------+
+ * |                                 flags                                 |
+ * +-----------------+-----------------+-----------------+-----------------+
  * |                               reserved                                |
  * +-----------------+-----------------+-----------------+-----------------+
  * |/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/|
@@ -348,7 +350,10 @@
  *   describing shared buffer references. At least one page exists. If shared
  *   buffer size exceeds what can be addressed by this single page, then
  *   reference to the next page must be supplied (see gref_dir_next_page below)
+ * flags - uint32_t, flags for the operation
  */
+
+#define XENDISPL_DBUF_FLG_REQ_ALLOC       0x01
 
 struct xendispl_dbuf_create_req {
     uint64_t dbuf_cookie;
@@ -357,6 +362,7 @@ struct xendispl_dbuf_create_req {
     uint32_t bpp;
     uint32_t buffer_sz;
     grant_ref_t gref_directory_start;
+    uint32_t flags;
 };
 
 /*
