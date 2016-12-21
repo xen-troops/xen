@@ -6,30 +6,213 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; version 2 of the License.
+ *
+ * Based on Linux drivers/iommu/ipmmu-vmsa.c
+ * => commit 59ddda852048e4706a103b689a15d6f99bb1cf6b (not in mainline yet)
+ * (iommu/ipmmu-vmsa: Correct the backup/restore for context)
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2016 EPAM Systems Inc.
  */
 
-#include <linux/bitmap.h>
-#include <linux/delay.h>
-#include <linux/dma-iommu.h>
-#include <linux/dma-mapping.h>
-#include <linux/err.h>
-#include <linux/export.h>
-#include <linux/interrupt.h>
-#include <linux/io.h>
-#include <linux/iommu.h>
-#include <linux/module.h>
-#include <linux/of.h>
-#include <linux/of_iommu.h>
-#include <linux/platform_device.h>
-#include <linux/sizes.h>
-#include <linux/slab.h>
-
-#if defined(CONFIG_ARM) && !defined(CONFIG_IOMMU_DMA)
-#include <asm/dma-iommu.h>
-#include <asm/pgalloc.h>
-#endif
+#include <xen/config.h>
+#include <xen/delay.h>
+#include <xen/errno.h>
+#include <xen/err.h>
+#include <xen/irq.h>
+#include <xen/lib.h>
+#include <xen/list.h>
+#include <xen/mm.h>
+#include <xen/vmap.h>
+#include <xen/rbtree.h>
+#include <xen/sched.h>
+#include <xen/sizes.h>
+#include <asm/atomic.h>
+#include <asm/device.h>
+#include <asm/io.h>
+#include <asm/platform.h>
 
 #include "io-pgtable.h"
+
+/* TODO:
+ * 1. Optimize xen_domain->lock usage.
+ *
+ */
+
+/***** Start of Xen specific code *****/
+
+#define IOMMU_READ	(1 << 0)
+#define IOMMU_WRITE	(1 << 1)
+#define IOMMU_CACHE	(1 << 2) /* DMA cache coherency */
+#define IOMMU_NOEXEC	(1 << 3)
+#define IOMMU_MMIO	(1 << 4) /* e.g. things like MSI doorbells */
+
+#define __fls(x) (fls(x) - 1)
+#define __ffs(x) (ffs(x) - 1)
+
+#define IO_PGTABLE_QUIRK_ARM_NS		BIT(0)
+
+#define ioread32 readl
+#define iowrite32 writel
+
+#define dev_info dev_notice
+
+#define kcalloc(size, n, flags)	_xzalloc_array(size, sizeof(void *), n)
+
+#define of_find_property dt_find_property
+#define of_count_phandle_with_args dt_count_phandle_with_args
+
+#define devm_request_irq(unused, irq, func, flags, name, dev) \
+	request_irq(irq, flags, func, name, dev)
+
+/* Alias to Xen device tree helpers */
+#define device_node dt_device_node
+#define of_phandle_args dt_phandle_args
+#define of_device_id dt_device_match
+#define of_match_node dt_match_node
+#define of_parse_phandle_with_args dt_parse_phandle_with_args
+
+/* Xen: Helpers to get device MMIO and IRQs */
+struct resource
+{
+	u64 addr;
+	u64 size;
+	unsigned int type;
+};
+
+#define resource_size(res) (res)->size;
+
+#define platform_device dt_device_node
+
+#define IORESOURCE_MEM 0
+#define IORESOURCE_IRQ 1
+
+static struct resource *platform_get_resource(struct platform_device *pdev,
+					      unsigned int type,
+					      unsigned int num)
+{
+	/*
+	 * The resource is only used between 2 calls of platform_get_resource.
+	 * It's quite ugly but it's avoid to add too much code in the part
+	 * imported from Linux
+	 */
+	static struct resource res;
+	int ret = 0;
+
+	res.type = type;
+
+	switch (type) {
+	case IORESOURCE_MEM:
+		ret = dt_device_get_address(pdev, num, &res.addr, &res.size);
+
+		return ((ret) ? NULL : &res);
+
+	case IORESOURCE_IRQ:
+		ret = platform_get_irq(pdev, num);
+		if (ret < 0)
+			return NULL;
+
+		res.addr = ret;
+		res.size = 1;
+
+		return &res;
+
+	default:
+		return NULL;
+	}
+}
+
+enum irqreturn {
+	IRQ_NONE	= (0 << 0),
+	IRQ_HANDLED	= (1 << 0),
+};
+
+typedef enum irqreturn irqreturn_t;
+
+/* Device logger functions */
+#define dev_print(dev, lvl, fmt, ...)						\
+	 printk(lvl "ipmmu: %s: " fmt, dt_node_full_name(dev_to_dt(dev)), ## __VA_ARGS__)
+
+#define dev_dbg(dev, fmt, ...) dev_print(dev, XENLOG_DEBUG, fmt, ## __VA_ARGS__)
+#define dev_notice(dev, fmt, ...) dev_print(dev, XENLOG_INFO, fmt, ## __VA_ARGS__)
+#define dev_warn(dev, fmt, ...) dev_print(dev, XENLOG_WARNING, fmt, ## __VA_ARGS__)
+#define dev_err(dev, fmt, ...) dev_print(dev, XENLOG_ERR, fmt, ## __VA_ARGS__)
+
+#define dev_err_ratelimited(dev, fmt, ...)					\
+	 dev_print(dev, XENLOG_ERR, fmt, ## __VA_ARGS__)
+
+#define dev_name(dev) dt_node_full_name(dev_to_dt(dev))
+
+/* Alias to Xen allocation helpers */
+#define kfree xfree
+#define kmalloc(size, flags)		_xmalloc(size, sizeof(void *))
+#define kzalloc(size, flags)		_xzalloc(size, sizeof(void *))
+#define devm_kzalloc(dev, size, flags)	_xzalloc(size, sizeof(void *))
+#define kmalloc_array(size, n, flags)	_xmalloc_array(size, sizeof(void *), n)
+
+static void __iomem *devm_ioremap_resource(struct device *dev,
+					   struct resource *res)
+{
+	void __iomem *ptr;
+
+	if (!res || res->type != IORESOURCE_MEM) {
+		dev_err(dev, "Invalid resource\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	ptr = ioremap_nocache(res->addr, res->size);
+	if (!ptr) {
+		dev_err(dev,
+			"ioremap failed (addr 0x%"PRIx64" size 0x%"PRIx64")\n",
+			res->addr, res->size);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	return ptr;
+}
+
+/* Xen doesn't handle IOMMU fault */
+#define report_iommu_fault(...)	1
+
+#define MODULE_DEVICE_TABLE(type, name)
+#define module_param_named(name, value, type, perm)
+#define MODULE_PARM_DESC(_parm, desc)
+
+/* Xen: Dummy iommu_domain */
+struct iommu_domain
+{
+	atomic_t ref;
+	/* Used to link iommu_domain contexts for a same domain.
+	 * There is at least one per-IPMMU to used by the domain.
+	 * */
+	struct list_head		list;
+};
+
+/* Xen: Describes informations required for a Xen domain */
+struct ipmmu_vmsa_xen_domain {
+	spinlock_t			lock;
+	/* List of context (i.e iommu_domain) associated to this domain */
+	struct list_head		contexts;
+	struct iommu_domain		*base_context;
+};
+
+/*
+ * Xen: Information about each device stored in dev->archdata.iommu
+ *
+ * On Linux the dev->archdata.iommu only stores the arch specific information,
+ * but, on Xen, we also have to store the iommu domain.
+ */
+struct ipmmu_vmsa_xen_device {
+	struct iommu_domain *domain;
+	struct ipmmu_vmsa_archdata *archdata;
+};
+
+#define dev_iommu(dev) ((struct ipmmu_vmsa_xen_device *)dev->archdata.iommu)
+#define dev_iommu_domain(dev) (dev_iommu(dev)->domain)
+#define dev_iommu_archdata(dev) (dev_iommu(dev)->archdata)
+
+/***** Start of Linux IPMMU code *****/
 
 #define IPMMU_CTX_MAX 8
 
@@ -53,7 +236,9 @@ struct ipmmu_vmsa_device {
 	DECLARE_BITMAP(ctx, IPMMU_CTX_MAX);
 	struct ipmmu_vmsa_domain *domains[IPMMU_CTX_MAX];
 
+#if 0 /* Xen: Not needed */
 	struct dma_iommu_mapping *mapping;
+#endif
 };
 
 struct ipmmu_vmsa_domain {
@@ -66,6 +251,9 @@ struct ipmmu_vmsa_domain {
 
 	unsigned int context_id;
 	spinlock_t lock;			/* Protects mappings */
+
+	/* Xen: Domain associated to this configuration */
+	struct domain *d;
 };
 
 struct ipmmu_vmsa_archdata {
@@ -79,14 +267,17 @@ struct ipmmu_vmsa_archdata {
 static DEFINE_SPINLOCK(ipmmu_devices_lock);
 static LIST_HEAD(ipmmu_devices);
 
+#if 0 /* Xen: Not needed */
 static DEFINE_SPINLOCK(ipmmu_slave_devices_lock);
 static LIST_HEAD(ipmmu_slave_devices);
+#endif
 
 static struct ipmmu_vmsa_domain *to_vmsa_domain(struct iommu_domain *dom)
 {
 	return container_of(dom, struct ipmmu_vmsa_domain, io_domain);
 }
 
+#if 0 /* Xen: Not needed */
 #if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 static struct ipmmu_vmsa_archdata *to_archdata(struct device *dev)
 {
@@ -104,6 +295,7 @@ static struct ipmmu_vmsa_archdata *to_archdata(struct device *dev)
 static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 {
 }
+#endif
 #endif
 
 #define TLB_LOOP_TIMEOUT		100	/* 100us */
@@ -238,6 +430,10 @@ static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 
 static bool ipmmu_is_root(struct ipmmu_vmsa_device *mmu)
 {
+	/* Xen: Fix */
+	if (!mmu)
+		return false;
+
 	if (mmu->features->has_cache_leaf_nodes)
 		return mmu->is_leaf ? false : true;
 	else
@@ -288,14 +484,28 @@ static void ipmmu_ctx_write(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 	ipmmu_write(domain->root, domain->context_id * IM_CTX_SIZE + reg, data);
 }
 
-static void ipmmu_ctx_write2(struct ipmmu_vmsa_domain *domain, unsigned int reg,
+/* Xen: Write the context for cache IPMMU only. */
+static void ipmmu_ctx_write1(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 			     u32 data)
 {
 	if (domain->mmu != domain->root)
-		ipmmu_write(domain->mmu,
-			    domain->context_id * IM_CTX_SIZE + reg, data);
+		ipmmu_write(domain->mmu, domain->context_id * IM_CTX_SIZE + reg, data);
+}
 
-	ipmmu_write(domain->root, domain->context_id * IM_CTX_SIZE + reg, data);
+/*
+ * Xen: Write the context for both root IPMMU and all cache IPMMUs
+ * that assigned to this Xen domain.
+ */
+static void ipmmu_ctx_write2(struct ipmmu_vmsa_domain *domain, unsigned int reg,
+			     u32 data)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(domain->d)->arch.priv;
+	struct iommu_domain *io_domain;
+
+	list_for_each_entry(io_domain, &xen_domain->contexts, list)
+		ipmmu_ctx_write1(to_vmsa_domain(io_domain), reg, data);
+
+	ipmmu_ctx_write(domain, reg, data);
 }
 
 /* -----------------------------------------------------------------------------
@@ -371,6 +581,10 @@ static void ipmmu_tlb_flush_all(void *cookie)
 {
 	struct ipmmu_vmsa_domain *domain = cookie;
 
+	/* Xen: Just return if context_id has wrong value */
+	if (domain->context_id >= domain->root->num_ctx)
+		return;
+
 	ipmmu_tlb_invalidate(domain);
 }
 
@@ -443,6 +657,9 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	if (!domain->iop)
 		return -EINVAL;
 
+	/* Xen: Initialize context_id with wrong value */
+	domain->context_id = domain->root->num_ctx;
+
 	/*
 	 * Find an unused context.
 	 */
@@ -456,6 +673,11 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 
 	/* TTBR0 */
 	ttbr = domain->cfg.arm_lpae_s1_cfg.ttbr[0];
+
+	/* Xen: */
+	dev_notice(domain->root->dev, "d%d: Set IPMMU context %u (pgd 0x%"PRIx64")\n",
+			domain->d->domain_id, domain->context_id, ttbr);
+
 	ipmmu_ctx_write(domain, IMTTLBR0, ttbr);
 	ipmmu_ctx_write(domain, IMTTUBR0, ttbr >> 32);
 
@@ -516,6 +738,10 @@ static void ipmmu_domain_free_context(struct ipmmu_vmsa_device *mmu,
 
 static void ipmmu_domain_destroy_context(struct ipmmu_vmsa_domain *domain)
 {
+	/* Xen: Just return if context_id has wrong value */
+	if (domain->context_id >= domain->root->num_ctx)
+		return;
+
 	/*
 	 * Disable the context. Flush the TLB as required when modifying the
 	 * context registers.
@@ -526,15 +752,20 @@ static void ipmmu_domain_destroy_context(struct ipmmu_vmsa_domain *domain)
 	ipmmu_tlb_sync(domain);
 
 	ipmmu_domain_free_context(domain->root, domain->context_id);
+
+	/* Xen: Initialize context_id with wrong value */
+	domain->context_id = domain->root->num_ctx;
 }
 
 /* -----------------------------------------------------------------------------
  * Fault Handling
  */
 
+/* Xen: Show domain_id in every printk */
 static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 {
 	const u32 err_mask = IMSTR_MHIT | IMSTR_ABORT | IMSTR_PF | IMSTR_TF;
+	/* Xen: It would be correct to use domain->root here... */
 	struct ipmmu_vmsa_device *mmu = domain->mmu;
 	u32 status;
 	u32 iova;
@@ -555,11 +786,11 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 
 	/* Log fatal errors. */
 	if (status & IMSTR_MHIT)
-		dev_err_ratelimited(mmu->dev, "Multiple TLB hits @0x%08x\n",
-				    iova);
+		dev_err_ratelimited(mmu->dev, "d%d: Multiple TLB hits @0x%08x\n",
+				domain->d->domain_id, iova);
 	if (status & IMSTR_ABORT)
-		dev_err_ratelimited(mmu->dev, "Page Table Walk Abort @0x%08x\n",
-				    iova);
+		dev_err_ratelimited(mmu->dev, "d%d: Page Table Walk Abort @0x%08x\n",
+				domain->d->domain_id, iova);
 
 	if (!(status & (IMSTR_PF | IMSTR_TF)))
 		return IRQ_NONE;
@@ -574,8 +805,8 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 		return IRQ_HANDLED;
 
 	dev_err_ratelimited(mmu->dev,
-			    "Unhandled fault: status 0x%08x iova 0x%08x\n",
-			    status, iova);
+			"d%d: Unhandled fault: status 0x%08x iova 0x%08x\n",
+			domain->d->domain_id, status, iova);
 
 	return IRQ_HANDLED;
 }
@@ -604,6 +835,16 @@ static irqreturn_t ipmmu_irq(int irq, void *dev)
 	return status;
 }
 
+/* Xen: Interrupt handlers wrapper */
+static void ipmmu_irq_xen(int irq, void *dev,
+				      struct cpu_user_regs *regs)
+{
+	ipmmu_irq(irq, dev);
+}
+
+#define ipmmu_irq ipmmu_irq_xen
+
+#if 0 /* Xen: Not needed */
 /* -----------------------------------------------------------------------------
  * IOMMU Operations
  */
@@ -722,11 +963,12 @@ static void ipmmu_workaround(struct iommu_domain *io_domain,
 			  IOMMU_READ | IOMMU_WRITE);
 	}
 }
+#endif
 
 static int ipmmu_attach_device(struct iommu_domain *io_domain,
 			       struct device *dev)
 {
-	struct ipmmu_vmsa_archdata *archdata = to_archdata(dev);
+	struct ipmmu_vmsa_archdata *archdata = dev_iommu_archdata(dev);
 	struct ipmmu_vmsa_device *root, *mmu = archdata->mmu;
 	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
 	unsigned long flags;
@@ -750,7 +992,18 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 		/* The domain hasn't been used yet, initialize it. */
 		domain->mmu = mmu;
 		domain->root = root;
+
+/*
+ * Xen: We have already initialized and enabled context for root IPMMU
+ * for this Xen domain. Enable context for given cache IPMMU only.
+ * Flush the TLB as required when modifying the context registers.
+ */
+#if 0
 		ret = ipmmu_domain_init_context(domain);
+#endif
+		ipmmu_ctx_write1(domain, IMCTR,
+				ipmmu_ctx_read(domain, IMCTR) | IMCTR_FLUSH);
+
 		if (ret < 0) {
 			dev_err(dev, "Unable to initialize IPMMU context\n");
 			domain->mmu = NULL;
@@ -776,7 +1029,9 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 	if (ret < 0)
 		return ret;
 
+#if 0 /* Xen: Not needed */
 	ipmmu_workaround(io_domain, dev);
+#endif
 
 	for (i = 0; i < archdata->num_utlbs; ++i)
 		ipmmu_utlb_enable(domain, archdata->utlbs[i]);
@@ -787,7 +1042,7 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 static void ipmmu_detach_device(struct iommu_domain *io_domain,
 				struct device *dev)
 {
-	struct ipmmu_vmsa_archdata *archdata = to_archdata(dev);
+	struct ipmmu_vmsa_archdata *archdata = dev_iommu_archdata(dev);
 	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
 	unsigned int i;
 
@@ -799,6 +1054,14 @@ static void ipmmu_detach_device(struct iommu_domain *io_domain,
 	 */
 }
 
+/*
+ * Xen: The current implementation of these callbacks is insufficient for us
+ * since the they are intended to be called from Linux IOMMU core that
+ * has already done all required actions such as doing various checks,
+ * splitting into memory block the hardware supports and so on.
+ * So, overwrite them with more completely functions.
+ */
+#if 0
 static int ipmmu_map(struct iommu_domain *io_domain, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot)
 {
@@ -827,7 +1090,179 @@ static phys_addr_t ipmmu_iova_to_phys(struct iommu_domain *io_domain,
 
 	return domain->iop->iova_to_phys(domain->iop, iova);
 }
+#endif
 
+static size_t ipmmu_pgsize(struct iommu_domain *io_domain,
+		unsigned long addr_merge, size_t size)
+{
+	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
+	unsigned int pgsize_idx;
+	size_t pgsize;
+
+	/* Max page size that still fits into 'size' */
+	pgsize_idx = __fls(size);
+
+	/* need to consider alignment requirements ? */
+	if (likely(addr_merge)) {
+		/* Max page size allowed by address */
+		unsigned int align_pgsize_idx = __ffs(addr_merge);
+		pgsize_idx = min(pgsize_idx, align_pgsize_idx);
+	}
+
+	/* build a mask of acceptable page sizes */
+	pgsize = (1UL << (pgsize_idx + 1)) - 1;
+
+	/* throw away page sizes not supported by the hardware */
+	pgsize &= domain->cfg.pgsize_bitmap;
+
+	/* make sure we're still sane */
+	BUG_ON(!pgsize);
+
+	/* pick the biggest page */
+	pgsize_idx = __fls(pgsize);
+	pgsize = 1UL << pgsize_idx;
+
+	return pgsize;
+}
+
+phys_addr_t ipmmu_iova_to_phys(struct iommu_domain *io_domain, dma_addr_t iova)
+{
+	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
+
+	if (unlikely(domain->iop->iova_to_phys == NULL))
+		return 0;
+
+	return domain->iop->iova_to_phys(domain->iop, iova);
+}
+
+size_t ipmmu_unmap(struct iommu_domain *io_domain, unsigned long iova, size_t size)
+{
+	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
+	size_t unmapped_page, unmapped = 0;
+	dma_addr_t max_iova;
+	unsigned int min_pagesz;
+
+	if (unlikely(domain->iop->unmap == NULL ||
+			domain->cfg.pgsize_bitmap == 0UL))
+		return -ENODEV;
+
+	/* find out the minimum page size supported */
+	min_pagesz = 1 << __ffs(domain->cfg.pgsize_bitmap);
+
+	/*
+	 * The virtual address, as well as the size of the mapping, must be
+	 * aligned (at least) to the size of the smallest page supported
+	 * by the hardware
+	 */
+	if (!IS_ALIGNED(iova | size, min_pagesz)) {
+		printk("unaligned: iova 0x%lx size 0x%zx min_pagesz 0x%x\n",
+		       iova, size, min_pagesz);
+		return -EINVAL;
+	}
+
+	/*
+	 * the sum of virtual address and size must be inside the IOVA space
+	 * that hardware supports
+	 */
+	max_iova = (1UL << domain->cfg.ias) - 1;
+	if ((dma_addr_t)iova + size > max_iova) {
+		printk("out-of-bound: iova 0x%lx + size 0x%zx > max_iova 0x%"PRIx64"\n",
+			   iova, size, max_iova);
+		/* TODO Return -EINVAL instead */
+		return 0;
+		/*return -EINVAL;*/
+	}
+
+	/*
+	 * Keep iterating until we either unmap 'size' bytes (or more)
+	 * or we hit an area that isn't mapped.
+	 */
+	while (unmapped < size) {
+		size_t pgsize = ipmmu_pgsize(io_domain, iova, size - unmapped);
+
+		unmapped_page = domain->iop->unmap(domain->iop, iova, pgsize);
+		if (!unmapped_page)
+			break;
+
+		iova += unmapped_page;
+		unmapped += unmapped_page;
+	}
+
+	return unmapped;
+}
+
+int ipmmu_map(struct iommu_domain *io_domain, unsigned long iova,
+		phys_addr_t paddr, size_t size, int prot)
+{
+	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
+	unsigned long orig_iova = iova;
+	dma_addr_t max_iova;
+	unsigned int min_pagesz;
+	size_t orig_size = size;
+	int ret = 0;
+
+	if (unlikely(domain->iop->map == NULL ||
+			domain->cfg.pgsize_bitmap == 0UL))
+		return -ENODEV;
+
+	/* find out the minimum page size supported */
+	min_pagesz = 1 << __ffs(domain->cfg.pgsize_bitmap);
+
+	/*
+	 * both the virtual address and the physical one, as well as
+	 * the size of the mapping, must be aligned (at least) to the
+	 * size of the smallest page supported by the hardware
+	 */
+	if (!IS_ALIGNED(iova | paddr | size, min_pagesz)) {
+		printk("unaligned: iova 0x%lx pa 0x%"PRIx64" size 0x%zx min_pagesz 0x%x\n",
+		       iova, paddr, size, min_pagesz);
+		return -EINVAL;
+	}
+
+	/*
+	 * the sum of virtual address and size must be inside the IOVA space
+	 * that hardware supports
+	 */
+	max_iova = (1UL << domain->cfg.ias) - 1;
+	if ((dma_addr_t)iova + size > max_iova) {
+		printk("out-of-bound: iova 0x%lx + size 0x%zx > max_iova 0x%"PRIx64"\n",
+		       iova, size, max_iova);
+		/* TODO Return -EINVAL instead */
+		return 0;
+		/*return -EINVAL;*/
+	}
+
+	while (size) {
+		size_t pgsize = ipmmu_pgsize(io_domain, iova | paddr, size);
+
+		ret = domain->iop->map(domain->iop, iova, paddr, pgsize, prot);
+		if (ret == -EEXIST) {
+			phys_addr_t exist_paddr = ipmmu_iova_to_phys(io_domain, iova);
+			if (exist_paddr == paddr)
+				ret = 0;
+			else if (exist_paddr) {
+				printk("remap: iova 0x%lx pa 0x%"PRIx64" pgsize 0x%zx\n",
+						iova, paddr, pgsize);
+				ipmmu_unmap(io_domain, iova, pgsize);
+				ret = domain->iop->map(domain->iop, iova, paddr, pgsize, prot);
+			}
+		}
+		if (ret)
+			break;
+
+		iova += pgsize;
+		paddr += pgsize;
+		size -= pgsize;
+	}
+
+	/* unroll mapping in case something went wrong */
+	if (ret && orig_size != size)
+		ipmmu_unmap(io_domain, orig_iova, orig_size - size);
+
+	return ret;
+}
+
+#if 0 /* Xen: Not needed */
 static struct device *ipmmu_find_sibling_device(struct device *dev)
 {
 	struct ipmmu_vmsa_archdata *archdata = dev->archdata.iommu;
@@ -863,6 +1298,7 @@ static struct iommu_group *ipmmu_find_group(struct device *dev)
 
 	return group;
 }
+#endif
 
 static int ipmmu_find_utlbs(struct ipmmu_vmsa_device *mmu, struct device *dev,
 			    unsigned int *utlbs, unsigned int num_utlbs)
@@ -878,7 +1314,9 @@ static int ipmmu_find_utlbs(struct ipmmu_vmsa_device *mmu, struct device *dev,
 		if (ret < 0)
 			return ret;
 
+#if 0 /* Xen: Not needed */
 		of_node_put(args.np);
+#endif
 
 		if (args.np != mmu->dev->of_node || args.args_count != 1)
 			return -EINVAL;
@@ -887,6 +1325,19 @@ static int ipmmu_find_utlbs(struct ipmmu_vmsa_device *mmu, struct device *dev,
 	}
 
 	return 0;
+}
+
+/* Xen: To roll back actions that took place it init */
+static __maybe_unused void ipmmu_destroy_platform_device(struct device *dev)
+{
+	struct ipmmu_vmsa_archdata *archdata = dev_iommu_archdata(dev);
+
+	if (!archdata)
+		return;
+
+	kfree(archdata->utlbs);
+	kfree(archdata);
+	dev_iommu_archdata(dev) = NULL;
 }
 
 static int ipmmu_init_platform_device(struct device *dev)
@@ -944,7 +1395,12 @@ static int ipmmu_init_platform_device(struct device *dev)
 	archdata->utlbs = utlbs;
 	archdata->num_utlbs = num_utlbs;
 	archdata->dev = dev;
-	set_archdata(dev, archdata);
+	dev_iommu_archdata(dev) = archdata;
+
+	/* Xen: */
+	dev_notice(dev, "initialized slave device (IPMMU %s micro-TLBs %u)\n",
+			dev_name(mmu->dev), num_utlbs);
+
 	return 0;
 
 error:
@@ -952,6 +1408,7 @@ error:
 	return ret;
 }
 
+#if 0 /* Xen: Not needed */
 #if defined(CONFIG_ARM) && !defined(CONFIG_IOMMU_DMA)
 
 static int ipmmu_add_device(struct device *dev)
@@ -1167,6 +1624,7 @@ static const struct iommu_ops ipmmu_ops = {
 };
 
 #endif /* CONFIG_IOMMU_DMA */
+#endif
 
 /* -----------------------------------------------------------------------------
  * Probe/remove and init
@@ -1208,12 +1666,20 @@ static const struct of_device_id ipmmu_of_ids[] = {
 		.compatible = "renesas,ipmmu-r8a7796",
 		.data = &ipmmu_features_rcar_gen3,
 	}, {
+		/* Xen: It is not clear how to deal with it */
+		.compatible = "renesas,ipmmu-pmb-r8a7795",
+		.data = NULL,
+	}, {
 		/* Terminator */
 	},
 };
 
 MODULE_DEVICE_TABLE(of, ipmmu_of_ids);
 
+/*
+ * Xen: We don't have refcount for allocated memory so manually free memory
+ * when an error occured.
+ */
 static int ipmmu_probe(struct platform_device *pdev)
 {
 	struct ipmmu_vmsa_device *mmu;
@@ -1237,13 +1703,17 @@ static int ipmmu_probe(struct platform_device *pdev)
 	spin_lock_init(&mmu->lock);
 	bitmap_zero(mmu->ctx, IPMMU_CTX_MAX);
 	mmu->features = match->data;
+#if 0 /* Xen: Not needed */
 	dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+#endif
 
 	/* Map I/O memory and request IRQ. */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	mmu->base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(mmu->base))
-		return PTR_ERR(mmu->base);
+	if (IS_ERR(mmu->base)) {
+		ret = PTR_ERR(mmu->base);
+		goto out;
+	}
 
 	/*
 	 * The IPMMU has two register banks, for secure and non-secure modes.
@@ -1285,14 +1755,15 @@ static int ipmmu_probe(struct platform_device *pdev)
 	if (ipmmu_is_root(mmu)) {
 		if (irq < 0) {
 			dev_err(&pdev->dev, "no IRQ found\n");
-			return irq;
+			ret = irq;
+			goto out;
 		}
 
 		ret = devm_request_irq(&pdev->dev, irq, ipmmu_irq, 0,
 				       dev_name(&pdev->dev), mmu);
 		if (ret < 0) {
 			dev_err(&pdev->dev, "failed to request IRQ %d\n", irq);
-			return ret;
+			goto out;
 		}
 
 		ipmmu_device_reset(mmu);
@@ -1308,11 +1779,25 @@ static int ipmmu_probe(struct platform_device *pdev)
 	list_add(&mmu->list, &ipmmu_devices);
 	spin_unlock(&ipmmu_devices_lock);
 
+#if 0 /* Xen: Not needed */
 	platform_set_drvdata(pdev, mmu);
+#endif
+
+	/* Xen: */
+	dev_notice(&pdev->dev, "registered %s IPMMU\n",
+		ipmmu_is_root(mmu) ? "root" : "cache");
 
 	return 0;
+
+out:
+	if (!IS_ERR(mmu->base))
+		iounmap(mmu->base);
+	kfree(mmu);
+
+	return ret;
 }
 
+#if 0 /* Xen: Not needed */
 static int ipmmu_remove(struct platform_device *pdev)
 {
 	struct ipmmu_vmsa_device *mmu = platform_get_drvdata(pdev);
@@ -1396,3 +1881,426 @@ IOMMU_OF_DECLARE(ipmmu_r8a7796_iommu_of, "renesas,ipmmu-r8a7796",
 MODULE_DESCRIPTION("IOMMU API for Renesas VMSA-compatible IPMMU");
 MODULE_AUTHOR("Laurent Pinchart <laurent.pinchart@ideasonboard.com>");
 MODULE_LICENSE("GPL v2");
+#endif
+
+/***** Start of Xen specific code *****/
+
+static int __must_check ipmmu_vmsa_iotlb_flush(struct domain *d,
+		unsigned long gfn, unsigned int page_count)
+{
+	return 0;
+}
+
+static struct iommu_domain *ipmmu_vmsa_get_domain(struct domain *d,
+						struct device *dev)
+{
+	struct iommu_domain *io_domain;
+	struct ipmmu_vmsa_xen_domain *xen_domain;
+	struct ipmmu_vmsa_device *mmu;
+
+	xen_domain = dom_iommu(d)->arch.priv;
+
+	mmu = dev_iommu_archdata(dev)->mmu;
+	if (!mmu)
+		return NULL;
+
+	/*
+	 * Loop through the &xen_domain->contexts to locate a context
+	 * assigned to this IPMMU
+	 */
+	list_for_each_entry(io_domain, &xen_domain->contexts, list) {
+		if (to_vmsa_domain(io_domain)->mmu == mmu)
+			return io_domain;
+	}
+
+	return NULL;
+}
+
+static void ipmmu_vmsa_destroy_domain(struct iommu_domain *io_domain)
+{
+	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
+
+	list_del(&io_domain->list);
+
+	if (domain->mmu != domain->root) {
+		/*
+		 * Disable the context for cache IPMMU only. Flush the TLB as required
+		 * when modifying the context registers.
+		 */
+		ipmmu_ctx_write1(domain, IMCTR, IMCTR_FLUSH);
+	} else {
+		/*
+		 * Free main domain resources. We assume that all devices have already
+		 * been detached.
+		 */
+		ipmmu_domain_destroy_context(domain);
+		free_io_pgtable_ops(domain->iop);
+	}
+
+	kfree(domain);
+}
+
+static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
+			       struct device *dev, u32 flag)
+{
+	struct iommu_domain *io_domain;
+	struct ipmmu_vmsa_domain *domain;
+	struct ipmmu_vmsa_xen_domain *xen_domain;
+	int ret = 0;
+
+	xen_domain = dom_iommu(d)->arch.priv;
+
+	if (!dev->archdata.iommu) {
+		dev->archdata.iommu = xzalloc(struct ipmmu_vmsa_xen_device);
+		if (!dev->archdata.iommu)
+			return -ENOMEM;
+	}
+
+	if (!dev_iommu_archdata(dev)) {
+		ret = ipmmu_init_platform_device(dev);
+		if (ret)
+			return ret;
+	}
+
+	spin_lock(&xen_domain->lock);
+
+	if (dev_iommu_domain(dev)) {
+		dev_err(dev, "already attached to IPMMU domain\n");
+		ret = -EEXIST;
+		goto out;
+	}
+
+	/*
+	 * Check to see if a context bank (iommu_domain) already exists for
+	 * this Xen domain under the same IPMMU
+	 */
+	io_domain = ipmmu_vmsa_get_domain(d, dev);
+	if (!io_domain) {
+		domain = xzalloc(struct ipmmu_vmsa_domain);
+		if (!domain) {
+			ret = -ENOMEM;
+			goto out;
+		}
+		spin_lock_init(&domain->lock);
+
+		domain->d = d;
+		domain->context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
+		/* TODO: both ops and cfg might be dropped for non-root domain. */
+		domain->iop = to_vmsa_domain(xen_domain->base_context)->iop;
+		domain->cfg = to_vmsa_domain(xen_domain->base_context)->cfg;
+
+		io_domain = &domain->io_domain;
+
+		/* Chain the new context to the Xen domain */
+		list_add(&io_domain->list, &xen_domain->contexts);
+	}
+
+	ret = ipmmu_attach_device(io_domain, dev);
+	if (ret) {
+		if (io_domain->ref.counter == 0)
+			ipmmu_vmsa_destroy_domain(io_domain);
+	} else {
+		atomic_inc(&io_domain->ref);
+		dev_iommu_domain(dev) = io_domain;
+	}
+
+out:
+	spin_unlock(&xen_domain->lock);
+
+	return ret;
+}
+
+static int ipmmu_vmsa_deassign_dev(struct domain *d, struct device *dev)
+{
+	struct iommu_domain *io_domain = dev_iommu_domain(dev);
+	struct ipmmu_vmsa_xen_domain *xen_domain;
+
+	xen_domain = dom_iommu(d)->arch.priv;
+
+	if (!io_domain || to_vmsa_domain(io_domain)->d != d) {
+		dev_err(dev, " not attached to domain %d\n", d->domain_id);
+		return -ESRCH;
+	}
+
+	spin_lock(&xen_domain->lock);
+
+	ipmmu_detach_device(io_domain, dev);
+	dev_iommu_domain(dev) = NULL;
+	atomic_dec(&io_domain->ref);
+
+	if (io_domain->ref.counter == 0)
+		ipmmu_vmsa_destroy_domain(io_domain);
+
+	spin_unlock(&xen_domain->lock);
+
+	return 0;
+}
+
+static int ipmmu_vmsa_reassign_dev(struct domain *s, struct domain *t,
+				 u8 devfn,  struct device *dev)
+{
+	int ret = 0;
+
+	/* Don't allow remapping on other domain than hwdom */
+	if (t && t != hardware_domain)
+		return -EPERM;
+
+	if (t == s)
+		return 0;
+
+	ret = ipmmu_vmsa_deassign_dev(s, dev);
+	if (ret)
+		return ret;
+
+	if (t) {
+		/* No flags are defined for ARM. */
+		ret = ipmmu_vmsa_assign_dev(t, devfn, dev, 0);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int ipmmu_vmsa_domain_init(struct domain *d)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain;
+
+	xen_domain = xzalloc(struct ipmmu_vmsa_xen_domain);
+	if (!xen_domain)
+		return -ENOMEM;
+
+	spin_lock_init(&xen_domain->lock);
+	INIT_LIST_HEAD(&xen_domain->contexts);
+
+	dom_iommu(d)->arch.priv = xen_domain;
+
+	return 0;
+}
+
+static int ipmmu_vmsa_alloc_page_table(struct domain *d)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
+	struct ipmmu_vmsa_domain *domain;
+	struct ipmmu_vmsa_device *root;
+	int ret;
+
+	if (!xen_domain)
+		return -EINVAL;
+
+	if (!xen_domain->base_context) {
+		domain = xzalloc(struct ipmmu_vmsa_domain);
+		if (!domain)
+			return -ENOMEM;
+
+		spin_lock_init(&domain->lock);
+		INIT_LIST_HEAD(&domain->io_domain.list);
+		domain->d = d;
+
+		root = ipmmu_find_root(NULL);
+		if (!root) {
+			printk("d%d: Unable to locate root IPMMU\n", d->domain_id);
+			ret = -EAGAIN;
+			goto out;
+		}
+
+		domain->root = root;
+		domain->mmu = root;
+
+		spin_lock(&xen_domain->lock);
+		ret = ipmmu_domain_init_context(domain);
+		if (ret < 0) {
+			dev_err(root->dev, "d%d: Unable to initialize IPMMU context\n", d->domain_id);
+			spin_unlock(&xen_domain->lock);
+			goto out;
+		}
+		xen_domain->base_context = &domain->io_domain;
+		spin_unlock(&xen_domain->lock);
+	}
+
+	return 0;
+
+out:
+	xfree(domain);
+
+	return ret;
+}
+
+static void __hwdom_init ipmmu_vmsa_hwdom_init(struct domain *d)
+{
+}
+
+static void ipmmu_vmsa_domain_teardown(struct domain *d)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
+
+	if (!xen_domain)
+		return;
+
+	if (xen_domain->base_context) {
+		spin_lock(&xen_domain->lock);
+		ipmmu_vmsa_destroy_domain(xen_domain->base_context);
+		xen_domain->base_context = NULL;
+		spin_unlock(&xen_domain->lock);
+	}
+
+	ASSERT(list_empty(&xen_domain->contexts));
+	xfree(xen_domain);
+}
+
+static int __must_check ipmmu_vmsa_map_pages(struct domain *d, unsigned long gfn,
+			unsigned long mfn, unsigned long page_count, unsigned int flags)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
+	size_t size = PAGE_SIZE * page_count;
+	int ret, prot = 0;
+
+	if (!xen_domain || !xen_domain->base_context)
+		return -EINVAL;
+
+	if (flags & IOMMUF_writable)
+		prot |= IOMMU_WRITE;
+	if (flags & IOMMUF_readable)
+		prot |= IOMMU_READ;
+
+	spin_lock(&xen_domain->lock);
+	ret = ipmmu_map(xen_domain->base_context, pfn_to_paddr(gfn),
+			pfn_to_paddr(mfn), size, prot);
+
+	spin_unlock(&xen_domain->lock);
+
+	return ret;
+}
+
+static int __must_check ipmmu_vmsa_map_page(struct domain *d, unsigned long gfn,
+		unsigned long mfn, unsigned int flags)
+{
+	return ipmmu_vmsa_map_pages(d, gfn, mfn, 1, flags);
+}
+
+static int __must_check ipmmu_vmsa_unmap_pages(struct domain *d, unsigned long gfn,
+		unsigned long page_count)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
+	size_t ret, size = PAGE_SIZE * page_count;
+
+	if (!xen_domain || !xen_domain->base_context)
+		return -EINVAL;
+
+	spin_lock(&xen_domain->lock);
+	ret = ipmmu_unmap(xen_domain->base_context, pfn_to_paddr(gfn), size);
+	if (ret == size)
+		ret = 0;
+
+	spin_unlock(&xen_domain->lock);
+
+	return ret;
+}
+
+static int __must_check ipmmu_vmsa_unmap_page(struct domain *d, unsigned long gfn)
+{
+	return ipmmu_vmsa_unmap_pages(d, gfn, 1);
+}
+
+static void ipmmu_vmsa_dump_p2m_table(struct domain *d)
+{
+
+}
+
+static const struct iommu_ops ipmmu_vmsa_iommu_ops = {
+	.init = ipmmu_vmsa_domain_init,
+	.hwdom_init = ipmmu_vmsa_hwdom_init,
+	.alloc_page_table = ipmmu_vmsa_alloc_page_table,
+	.teardown = ipmmu_vmsa_domain_teardown,
+	.iotlb_flush = ipmmu_vmsa_iotlb_flush,
+	.assign_device = ipmmu_vmsa_assign_dev,
+	.reassign_device = ipmmu_vmsa_reassign_dev,
+	.map_page = ipmmu_vmsa_map_page,
+	.map_pages = ipmmu_vmsa_map_pages,
+	.unmap_page = ipmmu_vmsa_unmap_page,
+	.unmap_pages = ipmmu_vmsa_unmap_pages,
+	.dump_p2m_table = ipmmu_vmsa_dump_p2m_table,
+};
+
+static __init const struct ipmmu_vmsa_device *find_ipmmu(const struct device *dev)
+{
+	struct ipmmu_vmsa_device *mmu;
+	bool found = false;
+
+	spin_lock(&ipmmu_devices_lock);
+	list_for_each_entry(mmu, &ipmmu_devices, list) {
+		if (mmu->dev == dev) {
+			found = true;
+			break;
+		}
+	}
+	spin_unlock(&ipmmu_devices_lock);
+
+	return (found) ? mmu : NULL;
+}
+
+static __init void populate_ipmmu_slaves(const struct ipmmu_vmsa_device *mmu)
+{
+	struct dt_device_node *np;
+
+	dt_for_each_device_node(dt_host, np) {
+		if (mmu->dev->of_node != dt_parse_phandle(np, "iommus", 0))
+			continue;
+
+		/* Let Xen know that the device is protected by an IPMMU */
+		dt_device_set_protected(np);
+
+		dev_notice(mmu->dev, "found slave device %s\n", dt_node_full_name(np));
+	}
+}
+
+/* TODO: What to do if we failed to init leaf ipmmu/root ipmmu? */
+static __init int ipmmu_vmsa_init(struct dt_device_node *dev,
+				   const void *data)
+{
+	int rc;
+	const struct ipmmu_vmsa_device *mmu;
+	static bool set_ops_done;
+
+	/*
+	 * Even if the device can't be initialized, we don't want to
+	 * give the IPMMU device to dom0.
+	 */
+	dt_device_set_used_by(dev, DOMID_XEN);
+
+	rc = ipmmu_probe(dev);
+	if (rc) {
+		dev_err(&dev->dev, "failed to init IPMMU\n");
+		return rc;
+	}
+
+	/*
+	 * Since IPMMU is composed of two parts (a number of cache IPs and
+	 * main IP) this function will be called more than once.
+	 * Use the flag below to avoid setting IOMMU ops if they already set.
+	 */
+	if (!set_ops_done) {
+		iommu_set_ops(&ipmmu_vmsa_iommu_ops);
+		set_ops_done = true;
+	}
+
+	/* Find the last IPMMU added. */
+	mmu = find_ipmmu(dt_to_dev(dev));
+	BUG_ON(mmu == NULL);
+
+	/* Mark all slaves that connected to the last IPMMU as protected. */
+	populate_ipmmu_slaves(mmu);
+
+	/*
+	 * The IPMMU can't reuse P2M table since it only supports
+	 * stage-1 page tables.
+	 */
+	iommu_hap_pt_share = false;
+
+	return 0;
+}
+
+DT_DEVICE_START(ipmmu, "Renesas IPMMU-VMSA", DEVICE_IOMMU)
+	.dt_match = ipmmu_of_ids,
+	.init = ipmmu_vmsa_init,
+DT_DEVICE_END
