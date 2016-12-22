@@ -118,7 +118,7 @@
  *
  *----------------------------- Connector settings -----------------------------
  * resolution
- *      Values:         <[width]x[height]>
+ *      Values:         <width>x<height>
  *
  *      Width and height for the connector in pixels separated by
  *      XENDISPL_RESOLUTION_SEPARATOR. For example,
