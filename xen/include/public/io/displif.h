@@ -112,10 +112,6 @@
  *      driver is requested to support. These are not mandatory and may not
  *      be implemented by the frontend:
  *
- *      vblanks
- *             Explicitly request the front driver to emulate vertical blanking
- *             events to the guest OS' software.
- *
  *      be_alloc
  *             Backend can be a buffer provider/allocator during
  *             XENDISPL_OP_DBUF_CREATE operation (see below for negotiation).
@@ -252,7 +248,6 @@
 #define XENDISPL_FIELD_EVT_CHANNEL        "event-channel"
 #define XENDISPL_FIELD_RESOLUTION         "resolution"
 
-#define XENDISPL_FEATURE_VBLANKS           "vblanks"
 #define XENDISPL_FEATURE_BE_ALLOC          "be_alloc"
 
 /*
