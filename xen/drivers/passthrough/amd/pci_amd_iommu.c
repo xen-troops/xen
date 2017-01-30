@@ -296,8 +296,8 @@ static void __hwdom_init amd_iommu_hwdom_init(struct domain *d)
              */
             if ( mfn_valid(_mfn(pfn)) )
             {
-                int ret = amd_iommu_map_page(d, pfn, pfn,
-                                             IOMMUF_readable|IOMMUF_writable);
+                int ret = amd_iommu_map_pages(d, pfn, pfn, 0,
+                                              IOMMUF_readable|IOMMUF_writable);
 
                 if ( !rc )
                     rc = ret;
@@ -620,8 +620,8 @@ const struct iommu_ops amd_iommu_ops = {
     .remove_device = amd_iommu_remove_device,
     .assign_device  = amd_iommu_assign_device,
     .teardown = amd_iommu_domain_destroy,
-    .map_page = amd_iommu_map_page,
-    .unmap_page = amd_iommu_unmap_page,
+    .map_pages = amd_iommu_map_pages,
+    .unmap_pages = amd_iommu_unmap_pages,
     .free_page_table = deallocate_page_table,
     .reassign_device = reassign_device,
     .get_device_group_id = amd_iommu_group_id,

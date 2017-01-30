@@ -1816,6 +1816,50 @@ static int __must_check intel_iommu_unmap_page(struct domain *d,
     return dma_pte_clear_one(d, (paddr_t)gfn << PAGE_SHIFT_4K);
 }
 
+/* TODO: Optimize by squashing map_pages/unmap_pages with map_page/unmap_page */
+static int __must_check intel_iommu_map_pages(struct domain *d,
+                                              unsigned long gfn,
+                                              unsigned long mfn,
+                                              unsigned int order,
+                                              unsigned int flags)
+{
+    unsigned long i;
+    int rc = 0;
+
+    for ( i = 0; i < (1UL << order); i++ )
+    {
+        rc = intel_iommu_map_page(d, gfn + i, mfn + i, flags);
+        if ( unlikely(rc) )
+        {
+            while ( i-- )
+                /* If statement to satisfy __must_check. */
+                if ( intel_iommu_unmap_page(d, gfn + i) )
+                    continue;
+
+            break;
+        }
+    }
+
+    return rc;
+}
+
+static int __must_check intel_iommu_unmap_pages(struct domain *d,
+                                                unsigned long gfn,
+                                                unsigned int order)
+{
+    unsigned long i;
+    int rc = 0;
+
+    for ( i = 0; i < (1UL << order); i++ )
+    {
+        int ret = intel_iommu_unmap_page(d, gfn + i);
+        if ( !rc )
+            rc = ret;
+    }
+
+    return rc;
+}
+
 int iommu_pte_flush(struct domain *d, u64 gfn, u64 *pte,
                     int order, int present)
 {
@@ -2639,8 +2683,8 @@ const struct iommu_ops intel_iommu_ops = {
     .remove_device = intel_iommu_remove_device,
     .assign_device  = intel_iommu_assign_device,
     .teardown = iommu_domain_teardown,
-    .map_page = intel_iommu_map_page,
-    .unmap_page = intel_iommu_unmap_page,
+    .map_pages = intel_iommu_map_pages,
+    .unmap_pages = intel_iommu_unmap_pages,
     .free_page_table = iommu_free_page_table,
     .reassign_device = reassign_device_ownership,
     .get_device_group_id = intel_iommu_group_id,

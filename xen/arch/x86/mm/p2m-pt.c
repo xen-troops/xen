@@ -507,7 +507,7 @@ p2m_pt_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
 {
     /* XXX -- this might be able to be faster iff current->domain == d */
     void *table;
-    unsigned long i, gfn_remainder = gfn;
+    unsigned long gfn_remainder = gfn;
     l1_pgentry_t *p2m_entry, entry_content;
     /* Intermediate table to free if we're replacing it with a superpage. */
     l1_pgentry_t intermediate_entry = l1e_empty();
@@ -718,28 +718,10 @@ p2m_pt_set_entry(struct p2m_domain *p2m, unsigned long gfn, mfn_t mfn,
                 amd_iommu_flush_pages(p2m->domain, gfn, page_order);
         }
         else if ( iommu_pte_flags )
-            for ( i = 0; i < (1UL << page_order); i++ )
-            {
-                rc = iommu_map_page(p2m->domain, gfn + i, mfn_x(mfn) + i,
-                                    iommu_pte_flags);
-                if ( unlikely(rc) )
-                {
-                    while ( i-- )
-                        /* If statement to satisfy __must_check. */
-                        if ( iommu_unmap_page(p2m->domain, gfn + i) )
-                            continue;
-
-                    break;
-                }
-            }
+            rc = iommu_map_pages(p2m->domain, gfn, mfn_x(mfn), page_order,
+                                 iommu_pte_flags);
         else
-            for ( i = 0; i < (1UL << page_order); i++ )
-            {
-                int ret = iommu_unmap_page(p2m->domain, gfn + i);
-
-                if ( !rc )
-                    rc = ret;
-            }
+            rc = iommu_unmap_pages(p2m->domain, gfn, page_order);
     }
 
     /*
