@@ -2780,6 +2780,43 @@ static int __must_check arm_smmu_unmap_page(struct domain *d, unsigned long gfn)
 	return 0;
 }
 
+/* TODO: Optimize by squashing map_pages/unmap_pages with map_page/unmap_page */
+static int __must_check arm_smmu_map_pages(struct domain *d, unsigned long gfn,
+		unsigned long mfn, unsigned int order, unsigned int flags)
+{
+	unsigned long i;
+	int rc = 0;
+
+	for (i = 0; i < (1UL << order); i++) {
+		rc = arm_smmu_map_page(d, gfn + i, mfn + i, flags);
+		if (unlikely(rc)) {
+			while (i--)
+				/* If statement to satisfy __must_check. */
+				if (arm_smmu_unmap_page(d, gfn + i))
+					continue;
+
+			break;
+		}
+	}
+
+	return rc;
+}
+
+static int __must_check arm_smmu_unmap_pages(struct domain *d,
+		unsigned long gfn, unsigned int order)
+{
+	unsigned long i;
+	int rc = 0;
+
+	for (i = 0; i < (1UL << order); i++) {
+		int ret = arm_smmu_unmap_page(d, gfn + i);
+		if (!rc)
+			rc = ret;
+	}
+
+	return rc;
+}
+
 static const struct iommu_ops arm_smmu_iommu_ops = {
     .init = arm_smmu_iommu_domain_init,
     .hwdom_init = arm_smmu_iommu_hwdom_init,
@@ -2788,8 +2825,8 @@ static const struct iommu_ops arm_smmu_iommu_ops = {
     .iotlb_flush_all = arm_smmu_iotlb_flush_all,
     .assign_device = arm_smmu_assign_dev,
     .reassign_device = arm_smmu_reassign_dev,
-    .map_page = arm_smmu_map_page,
-    .unmap_page = arm_smmu_unmap_page,
+    .map_pages = arm_smmu_map_pages,
+    .unmap_pages = arm_smmu_unmap_pages,
 };
 
 static __init const struct arm_smmu_device *find_smmu(const struct device *dev)

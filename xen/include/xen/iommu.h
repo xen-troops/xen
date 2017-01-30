@@ -71,14 +71,16 @@ int iommu_construct(struct domain *d);
 /* Function used internally, use iommu_domain_destroy */
 void iommu_teardown(struct domain *d);
 
-/* iommu_map_page() takes flags to direct the mapping operation. */
+/* iommu_map_pages() takes flags to direct the mapping operation. */
 #define _IOMMUF_readable 0
 #define IOMMUF_readable  (1u<<_IOMMUF_readable)
 #define _IOMMUF_writable 1
 #define IOMMUF_writable  (1u<<_IOMMUF_writable)
-int __must_check iommu_map_page(struct domain *d, unsigned long gfn,
-                                unsigned long mfn, unsigned int flags);
-int __must_check iommu_unmap_page(struct domain *d, unsigned long gfn);
+int __must_check iommu_map_pages(struct domain *d, unsigned long gfn,
+                                 unsigned long mfn, unsigned int order,
+                                 unsigned int flags);
+int __must_check iommu_unmap_pages(struct domain *d, unsigned long gfn,
+                                   unsigned int order);
 
 enum iommu_feature
 {
@@ -168,9 +170,11 @@ struct iommu_ops {
 #endif /* HAS_PCI */
 
     void (*teardown)(struct domain *d);
-    int __must_check (*map_page)(struct domain *d, unsigned long gfn,
-                                 unsigned long mfn, unsigned int flags);
-    int __must_check (*unmap_page)(struct domain *d, unsigned long gfn);
+    int __must_check (*map_pages)(struct domain *d, unsigned long gfn,
+                                  unsigned long mfn, unsigned int order,
+                                  unsigned int flags);
+    int __must_check (*unmap_pages)(struct domain *d, unsigned long gfn,
+                                    unsigned int order);
     void (*free_page_table)(struct page_info *);
 #ifdef CONFIG_X86
     void (*update_ire_from_apic)(unsigned int apic, unsigned int reg, unsigned int value);
@@ -213,7 +217,7 @@ void iommu_dev_iotlb_flush_timeout(struct domain *d, struct pci_dev *pdev);
  * The purpose of the iommu_dont_flush_iotlb optional cpu flag is to
  * avoid unecessary iotlb_flush in the low level IOMMU code.
  *
- * iommu_map_page/iommu_unmap_page must flush the iotlb but somethimes
+ * iommu_map_pages/iommu_unmap_pages must flush the iotlb but somethimes
  * this operation can be really expensive. This flag will be set by the
  * caller to notify the low level IOMMU code to avoid the iotlb flushes.
  * iommu_iotlb_flush/iommu_iotlb_flush_all will be explicitly called by
