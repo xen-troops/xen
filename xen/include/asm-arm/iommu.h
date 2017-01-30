@@ -20,8 +20,8 @@ struct arch_iommu
     void *priv;
 };
 
-/* Always share P2M Table between the CPU and the IOMMU */
-#define iommu_use_hap_pt(d) (1)
+/* Not every ARM SoCs IOMMU use the same page-table format as the CPU. */
+#define iommu_use_hap_pt(d) (iommu_hap_pt_share)
 
 const struct iommu_ops *iommu_get_ops(void);
 void __init iommu_set_ops(const struct iommu_ops *ops);
