@@ -76,9 +76,14 @@ void iommu_teardown(struct domain *d);
 #define IOMMUF_readable  (1u<<_IOMMUF_readable)
 #define _IOMMUF_writable 1
 #define IOMMUF_writable  (1u<<_IOMMUF_writable)
-int __must_check iommu_map_page(struct domain *d, unsigned long gfn,
-                                unsigned long mfn, unsigned int flags);
-int __must_check iommu_unmap_page(struct domain *d, unsigned long gfn);
+int __must_check iommu_map_pages(struct domain *d, unsigned long gfn,
+                                 unsigned long mfn, unsigned long page_count,
+                                 unsigned int flags);
+int __must_check iommu_unmap_pages(struct domain *d, unsigned long gfn,
+                                   unsigned long page_count);
+
+#define iommu_map_page(d,gfn,mfn,flags) (iommu_map_pages(d,gfn,mfn,1,flags))
+#define iommu_unmap_page(d,gfn)         (iommu_unmap_pages(d,gfn,1))
 
 enum iommu_feature
 {
@@ -170,7 +175,12 @@ struct iommu_ops {
     void (*teardown)(struct domain *d);
     int __must_check (*map_page)(struct domain *d, unsigned long gfn,
                                  unsigned long mfn, unsigned int flags);
+    int __must_check (*map_pages)(struct domain *d, unsigned long gfn,
+                                  unsigned long mfn, unsigned long page_count,
+                                  unsigned int flags);
     int __must_check (*unmap_page)(struct domain *d, unsigned long gfn);
+    int __must_check (*unmap_pages)(struct domain *d, unsigned long gfn,
+                                    unsigned long page_count);
     void (*free_page_table)(struct page_info *);
 #ifdef CONFIG_X86
     void (*update_ire_from_apic)(unsigned int apic, unsigned int reg, unsigned int value);
