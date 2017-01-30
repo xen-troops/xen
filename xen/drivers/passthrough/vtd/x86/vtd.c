@@ -143,8 +143,8 @@ void __hwdom_init vtd_set_hwdom_mapping(struct domain *d)
         tmp = 1 << (PAGE_SHIFT - PAGE_SHIFT_4K);
         for ( j = 0; j < tmp; j++ )
         {
-            int ret = iommu_map_page(d, pfn * tmp + j, pfn * tmp + j,
-                                     IOMMUF_readable|IOMMUF_writable);
+            int ret = iommu_map_pages(d, pfn * tmp + j, pfn * tmp + j, 0,
+                                      IOMMUF_readable|IOMMUF_writable);
 
             if ( !rc )
                rc = ret;

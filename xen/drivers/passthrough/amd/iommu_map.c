@@ -631,8 +631,9 @@ static int update_paging_mode(struct domain *d, unsigned long gfn)
     return 0;
 }
 
-int amd_iommu_map_page(struct domain *d, unsigned long gfn, unsigned long mfn,
-                       unsigned int flags)
+static int __must_check amd_iommu_map_page(struct domain *d, unsigned long gfn,
+                                           unsigned long mfn,
+                                           unsigned int flags)
 {
     bool_t need_flush = 0;
     struct domain_iommu *hd = dom_iommu(d);
@@ -720,7 +721,8 @@ out:
     return 0;
 }
 
-int amd_iommu_unmap_page(struct domain *d, unsigned long gfn)
+static int __must_check amd_iommu_unmap_page(struct domain *d,
+                                             unsigned long gfn)
 {
     unsigned long pt_mfn[7];
     struct domain_iommu *hd = dom_iommu(d);
@@ -769,6 +771,48 @@ int amd_iommu_unmap_page(struct domain *d, unsigned long gfn)
     amd_iommu_flush_pages(d, gfn, 0);
 
     return 0;
+}
+
+/* TODO: Optimize by squashing map_pages/unmap_pages with map_page/unmap_page */
+int __must_check amd_iommu_map_pages(struct domain *d, unsigned long gfn,
+                                     unsigned long mfn, unsigned int order,
+                                     unsigned int flags)
+{
+    unsigned long i;
+    int rc = 0;
+
+    for ( i = 0; i < (1UL << order); i++ )
+    {
+        rc = amd_iommu_map_page(d, gfn + i, mfn + i, flags);
+        if ( unlikely(rc) )
+        {
+            while ( i-- )
+                /* If statement to satisfy __must_check. */
+                if ( amd_iommu_unmap_page(d, gfn + i) )
+                    continue;
+
+            break;
+        }
+    }
+
+    return rc;
+}
+
+int __must_check amd_iommu_unmap_pages(struct domain *d, unsigned long gfn,
+                                       unsigned int order)
+{
+    unsigned long i;
+    int rc = 0;
+
+    for ( i = 0; i < (1UL << order); i++ )
+    {
+        int ret = amd_iommu_unmap_page(d, gfn + i);
+
+        if ( !rc )
+            rc = ret;
+    }
+
+    return rc;
 }
 
 int amd_iommu_reserve_domain_unity_map(struct domain *domain,
