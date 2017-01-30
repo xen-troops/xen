@@ -2732,11 +2732,11 @@ static int _get_page_type(struct page_info *page, unsigned long type,
             gfn_t gfn = _gfn(mfn_to_gmfn(d, mfn_x(page_to_mfn(page))));
 
             if ( (x & PGT_type_mask) == PGT_writable_page )
-                iommu_ret = iommu_unmap_page(d, gfn_x(gfn));
+                iommu_ret = iommu_unmap_pages(d, gfn_x(gfn), 0);
             else if ( type == PGT_writable_page )
-                iommu_ret = iommu_map_page(d, gfn_x(gfn),
-                                           mfn_x(page_to_mfn(page)),
-                                           IOMMUF_readable|IOMMUF_writable);
+                iommu_ret = iommu_map_pages(d, gfn_x(gfn),
+                                            mfn_x(page_to_mfn(page)), 0,
+                                            IOMMUF_readable|IOMMUF_writable);
         }
     }
 

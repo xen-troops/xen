@@ -65,9 +65,9 @@ int arch_iommu_populate_page_table(struct domain *d)
             {
                 ASSERT(!(gfn >> DEFAULT_DOMAIN_ADDRESS_WIDTH));
                 BUG_ON(SHARED_M2P(gfn));
-                rc = hd->platform_ops->map_page(d, gfn, mfn,
-                                                IOMMUF_readable |
-                                                IOMMUF_writable);
+                rc = hd->platform_ops->map_pages(d, gfn, mfn, 0,
+                                                 IOMMUF_readable |
+                                                 IOMMUF_writable);
             }
             if ( rc )
             {

@@ -710,20 +710,9 @@ p2m_remove_page(struct p2m_domain *p2m, unsigned long gfn_l, unsigned long mfn,
 
     if ( !paging_mode_translate(p2m->domain) )
     {
-        int rc = 0;
-
         if ( need_iommu(p2m->domain) )
-        {
-            for ( i = 0; i < (1 << page_order); i++ )
-            {
-                int ret = iommu_unmap_page(p2m->domain, mfn + i);
-
-                if ( !rc )
-                    rc = ret;
-            }
-        }
-
-        return rc;
+            return iommu_unmap_pages(p2m->domain, mfn, page_order);
+        return 0;
     }
 
     ASSERT(gfn_locked_by_me(p2m, gfn));
@@ -772,23 +761,8 @@ guest_physmap_add_entry(struct domain *d, gfn_t gfn, mfn_t mfn,
     if ( !paging_mode_translate(d) )
     {
         if ( need_iommu(d) && t == p2m_ram_rw )
-        {
-            for ( i = 0; i < (1 << page_order); i++ )
-            {
-                rc = iommu_map_page(d, mfn_x(mfn_add(mfn, i)),
-                                    mfn_x(mfn_add(mfn, i)),
-                                    IOMMUF_readable|IOMMUF_writable);
-                if ( rc != 0 )
-                {
-                    while ( i-- > 0 )
-                        /* If statement to satisfy __must_check. */
-                        if ( iommu_unmap_page(d, mfn_x(mfn_add(mfn, i))) )
-                            continue;
-
-                    return rc;
-                }
-            }
-        }
+            return iommu_map_pages(d, mfn_x(mfn), mfn_x(mfn), page_order,
+                                   IOMMUF_readable|IOMMUF_writable);
         return 0;
     }
 
@@ -1157,7 +1131,8 @@ int set_identity_p2m_entry(struct domain *d, unsigned long gfn_l,
     {
         if ( !need_iommu(d) )
             return 0;
-        return iommu_map_page(d, gfn_l, gfn_l, IOMMUF_readable|IOMMUF_writable);
+        return iommu_map_pages(d, gfn_l, gfn_l, 0,
+                               IOMMUF_readable|IOMMUF_writable);
     }
 
     gfn_lock(p2m, gfn, 0);
@@ -1247,7 +1222,7 @@ int clear_identity_p2m_entry(struct domain *d, unsigned long gfn_l)
     {
         if ( !need_iommu(d) )
             return 0;
-        return iommu_unmap_page(d, gfn_l);
+        return iommu_unmap_pages(d, gfn_l, 0);
     }
 
     gfn_lock(p2m, gfn, 0);
