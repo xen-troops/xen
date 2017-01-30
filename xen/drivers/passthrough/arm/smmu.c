@@ -2819,6 +2819,12 @@ static __init int arm_smmu_dt_init(struct dt_device_node *dev,
 	 */
 	dt_device_set_used_by(dev, DOMID_XEN);
 
+	if (!iommu_hap_pt_share) {
+		dev_err(dt_to_dev(dev),
+			"P2M table must always be shared between the CPU and the SMMU\n");
+		return -EINVAL;
+	}
+
 	rc = arm_smmu_device_dt_probe(dev);
 	if (rc)
 		return rc;
