@@ -1055,16 +1055,29 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
     {
         unsigned int flush_flags = 0;
 
-        if ( lpae_is_valid(orig_pte) )
-            flush_flags |= IOMMU_FLUSHF_modified;
-        if ( lpae_is_valid(*entry) )
-            flush_flags |= IOMMU_FLUSHF_added;
+        if ( need_iommu_pt_sync(p2m->domain) )
+        {
+            if ( !mfn_eq(smfn, INVALID_MFN) )
+                rc = iommu_map(p2m->domain, _dfn(gfn_x(sgfn)), smfn,
+                               page_order, p2m_get_iommu_flags(t),
+                               &flush_flags);
+            else
+                rc = iommu_unmap(p2m->domain, _dfn(gfn_x(sgfn)), page_order,
+                                 &flush_flags);
+        }
 
-        rc = iommu_iotlb_flush(p2m->domain, _dfn(gfn_x(sgfn)),
-                               1UL << page_order, flush_flags);
+        if ( !flush_flags )
+        {
+            if ( lpae_is_valid(orig_pte) )
+                flush_flags |= IOMMU_FLUSHF_modified;
+            if ( lpae_is_valid(*entry) )
+                flush_flags |= IOMMU_FLUSHF_added;
+        }
+
+        if ( !rc )
+            rc = iommu_iotlb_flush(p2m->domain, _dfn(gfn_x(sgfn)),
+                                   1UL << page_order, flush_flags);
     }
-    else
-        rc = 0;
 
     /*
      * Free the entry only if the original pte was valid and the base
