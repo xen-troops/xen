@@ -5,6 +5,7 @@
 #include <xen/radix-tree.h>
 #include <xen/rwlock.h>
 #include <xen/mem_access.h>
+#include <xen/iommu.h>
 
 #include <asm/current.h>
 
@@ -403,6 +404,40 @@ static inline bool vcpu_has_cache_enabled(struct vcpu *v)
     ASSERT(current == v);
 
     return (READ_SYSREG(SCTLR_EL1) & mask) == mask;
+}
+
+/*
+ * p2m type to IOMMU flags
+ */
+static inline unsigned int p2m_get_iommu_flags(p2m_type_t p2mt)
+{
+    unsigned int flags;
+
+    switch( p2mt )
+    {
+    case p2m_ram_rw:
+    case p2m_iommu_map_rw:
+    case p2m_map_foreign_rw:
+    case p2m_grant_map_rw:
+    case p2m_mmio_direct_dev:
+    case p2m_mmio_direct_nc:
+    case p2m_mmio_direct_c:
+        flags = IOMMUF_readable | IOMMUF_writable;
+        break;
+    case p2m_ram_ro:
+    case p2m_map_foreign_ro:
+    case p2m_iommu_map_ro:
+    case p2m_grant_map_ro:
+        flags = IOMMUF_readable;
+        break;
+    default:
+        flags = 0;
+        break;
+    }
+
+    /* TODO Do we need to handle access permissions here? */
+
+    return flags;
 }
 
 #endif /* _XEN_P2M_H */
