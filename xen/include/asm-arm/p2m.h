@@ -5,6 +5,7 @@
 #include <xen/radix-tree.h>
 #include <xen/rwlock.h>
 #include <xen/mem_access.h>
+#include <xen/iommu.h>
 #include <public/vm_event.h> /* for vm_event_response_t */
 #include <public/memory.h>
 #include <xen/p2m-common.h>
@@ -352,6 +353,39 @@ static inline int set_foreign_p2m_entry(struct domain *d, unsigned long gfn,
      *       foreign entries will need to be implemented.
      */
     return -EOPNOTSUPP;
+}
+
+/*
+ * p2m type to IOMMU flags
+ */
+static inline unsigned int p2m_get_iommu_flags(p2m_type_t p2mt)
+{
+    unsigned int flags;
+
+    switch( p2mt )
+    {
+    case p2m_ram_rw:
+    case p2m_iommu_map_rw:
+    case p2m_map_foreign:
+    case p2m_grant_map_rw:
+    case p2m_mmio_direct_dev:
+    case p2m_mmio_direct_nc:
+    case p2m_mmio_direct_c:
+        flags = IOMMUF_readable | IOMMUF_writable;
+        break;
+    case p2m_ram_ro:
+    case p2m_iommu_map_ro:
+    case p2m_grant_map_ro:
+        flags = IOMMUF_readable;
+        break;
+    default:
+        flags = 0;
+        break;
+    }
+
+    /* TODO Do we need to handle access permissions here? */
+
+    return flags;
 }
 
 #endif /* _XEN_P2M_H */
