@@ -27,6 +27,7 @@
 #include <xen/device_tree.h>
 #include <public/domctl.h>
 
+#include "plat/platform_device.h"
 #include "schedule.h"
 
 /* coproc memory range */
@@ -66,7 +67,7 @@ struct coproc_device {
     struct list_head vcoprocs;
 
     /* coproc callback functions */
-    const struct vcoproc_ops *ops;
+    const struct coproc_ops *ops;
 
     /* scheduler instance for this coproc */
     struct vcoproc_scheduler *sched;
@@ -76,21 +77,24 @@ struct coproc_device {
 };
 
 /* coproc callback functions */
-struct vcoproc_ops {
+struct coproc_ops {
     /* callback to perform initialization for the vcoproc instance */
-    struct vcoproc_instance *(*vcoproc_init)(struct domain *,
-                                             struct coproc_device *);
+    int (*vcoproc_init)(struct domain *, struct coproc_device *,
+                        struct vcoproc_instance *);
     /* callback to perform deinitialization for the vcoproc instance */
     void (*vcoproc_deinit)(struct domain *, struct vcoproc_instance *);
-    /*
-     * callback to check if the vcoproc instance
-     * has been already created for this domain
-     */
-    bool_t (*vcoproc_is_created)(struct domain *, struct coproc_device *);
     /* callback to perform context switch from the running vcoproc instance */
     s_time_t (*ctx_switch_from)(struct vcoproc_instance *);
     /* callback to perform context switch to the waiting vcoproc instance */
     int (*ctx_switch_to)(struct vcoproc_instance *);
+};
+
+/* vcoproc read/write operation context */
+struct vcoproc_rw_context {
+    struct coproc_device *coproc;
+    struct hsr_dabt dabt;
+    uint32_t offset;
+    struct vcoproc_instance *vcoproc;
 };
 
 /* describe vcoproc state from the scheduler point of view */
@@ -134,7 +138,12 @@ struct vcoproc_instance {
 };
 
 void coproc_init(void);
+struct coproc_device * coproc_alloc(struct platform_device *,
+                                    const struct coproc_ops *);
 int coproc_register(struct coproc_device *);
+void coproc_release(struct coproc_device *);
+struct vcoproc_instance *coproc_get_vcoproc(struct domain *,
+                                            struct coproc_device *);
 int vcoproc_domain_init(struct domain *);
 void vcoproc_domain_free(struct domain *);
 int coproc_do_domctl(struct xen_domctl *, struct domain *,
@@ -146,6 +155,17 @@ void vcoproc_continue_running(struct vcoproc_instance *);
 int coproc_release_vcoprocs(struct domain *);
 
 #define dev_path(dev) dt_node_full_name(dev_to_dt(dev))
+
+static inline void vcoproc_get_rw_context(struct domain *d, struct mmio *mmio,
+                                          mmio_info_t *info,
+                                          struct vcoproc_rw_context *ctx)
+{
+    ctx->coproc = mmio->coproc;
+    ctx->dabt = info->dabt;
+    ctx->offset = info->gpa - mmio->addr;
+    ctx->vcoproc = coproc_get_vcoproc(d, ctx->coproc);
+    BUG_ON(ctx->vcoproc == NULL);
+}
 
 #endif /* __ARCH_ARM_COPROC_COPROC_H__ */
 

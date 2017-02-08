@@ -1,5 +1,5 @@
 /*
- * xen/arch/arm/coproc/plat/common.c
+ * xen/arch/arm/coproc/plat/platform_device.c
  *
  * Common platform code for all Remote processors
  * based on xen/drivers/passthrough/arm/smmu.c
@@ -22,6 +22,7 @@
 #include <xen/irq.h>
 #include <xen/vmap.h>
 
+#include "../coproc.h"
 #include "common.h"
 
 /* Xen: Helpers to get device MMIO and IRQs */
@@ -81,6 +82,7 @@ void __iomem *devm_ioremap_resource(struct device *dev, struct resource *res)
 
     return ptr;
 }
+
 /*
  * Local variables:
  * mode: C
