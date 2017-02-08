@@ -24,40 +24,7 @@
 #include <xen/device_tree.h>
 #include <asm/mmio.h>
 
-/* Copied from smmu.c */
-
-struct resource
-{
-    u64 addr;
-    u64 size;
-    unsigned int type;
-};
-
-#define resource_size(res) (res)->size;
-#define resource_addr(res) (res)->addr;
-
-#define platform_device dt_device_node
-
-#define IORESOURCE_MEM 0
-#define IORESOURCE_IRQ 1
-
-struct resource *platform_get_resource(struct platform_device *pdev,
-                                       unsigned int type,
-                                       unsigned int num);
-void __iomem *devm_ioremap_resource(struct device *dev,
-                                    struct resource *res);
-
-/* Device logger functions */
-#define dev_print(dev, lvl, fmt, ...) \
-    printk(lvl "coproc: %s: " fmt, dt_node_full_name(dev_to_dt(dev)), ## __VA_ARGS__)
-
-#define dev_dbg(dev, fmt, ...) dev_print(dev, XENLOG_DEBUG, fmt, ## __VA_ARGS__)
-#define dev_notice(dev, fmt, ...) dev_print(dev, XENLOG_INFO, fmt, ## __VA_ARGS__)
-#define dev_warn(dev, fmt, ...) dev_print(dev, XENLOG_WARNING, fmt, ## __VA_ARGS__)
-#define dev_err(dev, fmt, ...) dev_print(dev, XENLOG_ERR, fmt, ## __VA_ARGS__)
-
-#define dev_err_ratelimited(dev, fmt, ...) \
-    dev_print(dev, XENLOG_ERR, fmt, ## __VA_ARGS__)
+struct coproc_device;
 
 /* Copied from vgic.h */
 
