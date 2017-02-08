@@ -32,46 +32,15 @@ static s_time_t coproc_wait_time = MILLISECS(500);
 
 #define DT_MATCH_COPROC_XXX DT_MATCH_COMPATIBLE("vendor_xxx,coproc_xxx")
 
-static struct vcoproc_instance *coproc_xxx_get_vcoproc(struct domain *d,
-                                                       struct coproc_device *coproc_xxx)
-{
-    struct vcoproc_instance *vcoproc_xxx = NULL;
-    bool_t found = false;
-
-    spin_lock(&coproc_xxx->vcoprocs_lock);
-
-    if ( list_empty(&coproc_xxx->vcoprocs) )
-        goto out;
-
-    list_for_each_entry( vcoproc_xxx, &coproc_xxx->vcoprocs, vcoproc_elem )
-    {
-        if ( vcoproc_xxx->domain == d )
-        {
-            found = true;
-            break;
-        }
-    }
-
-out:
-    spin_unlock(&coproc_xxx->vcoprocs_lock);
-
-    return found ? vcoproc_xxx : NULL;
-}
-
 static int vcoproc_xxx_read(struct vcpu *v, mmio_info_t *info, register_t *r,
                             void *priv)
 {
     struct mmio *mmio = priv;
-    struct coproc_device *coproc_xxx = mmio->coproc;
-    struct hsr_dabt dabt = info->dabt;
-    uint32_t offset = info->gpa - mmio->addr;
-    struct vcoproc_instance *vcoproc_xxx =
-        coproc_xxx_get_vcoproc(v->domain, coproc_xxx);
+    struct vcoproc_rw_context ctx;
 
-    dev_dbg(coproc_xxx->dev, "read r%d=%"PRIregister" offset %#08x base %#08x\n",
-            dabt.reg, *r, offset, (uint32_t)mmio->addr);
-
-    (void)vcoproc_xxx;
+    vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
+    dev_dbg(ctx.coproc->dev, "read r%d=%"PRIregister" offset %#08x base %#08x\n",
+            ctx.dabt.reg, *r, ctx.offset, (uint32_t)mmio->addr);
 
     return 1;
 }
@@ -80,35 +49,30 @@ static int vcoproc_xxx_write(struct vcpu *v, mmio_info_t *info, register_t r,
                              void *priv)
 {
     struct mmio *mmio = priv;
-    struct coproc_device *coproc_xxx = mmio->coproc;
-    struct hsr_dabt dabt = info->dabt;
-    uint32_t offset = info->gpa - mmio->addr;
-    struct vcoproc_instance *vcoproc_xxx =
-        coproc_xxx_get_vcoproc(v->domain, coproc_xxx);
+    struct vcoproc_rw_context ctx;
 
-    dev_dbg(coproc_xxx->dev, "write r%d=%"PRIregister" offset %#08x base %#08x\n",
-            dabt.reg, r, offset, (uint32_t)mmio->addr);
+    vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
+    dev_dbg(ctx.coproc->dev, "write r%d=%"PRIregister" offset %#08x base %#08x\n",
+            ctx.dabt.reg, r, ctx.offset, (uint32_t)mmio->addr);
 
 #if 1
     /* for debug purposes */
 #define COPROC_XXX_POWER_REG	0x10
 #define CORPOC_XXX_ENABLE		(1 << 0)
 
-    if ( offset == COPROC_XXX_POWER_REG )
+    if ( ctx.offset == COPROC_XXX_POWER_REG )
     {
         int i;
 
-        /* Just inject all irqs what coproc has */
-        for ( i = 0; i < coproc_xxx->num_irqs; i++ )
-            vgic_vcpu_inject_spi(vcoproc_xxx->domain, coproc_xxx->irqs[i]);
+        /* Just inject all irqs that coproc has */
+        for ( i = 0; i < ctx.coproc->num_irqs; i++ )
+            vgic_vcpu_inject_spi(ctx.vcoproc->domain, ctx.coproc->irqs[i]);
 
         if ( r & CORPOC_XXX_ENABLE )
-            vcoproc_sheduler_vcoproc_wake(coproc_xxx->sched, vcoproc_xxx);
+            vcoproc_sheduler_vcoproc_wake(ctx.coproc->sched, ctx.vcoproc);
         else
-            vcoproc_sheduler_vcoproc_sleep(coproc_xxx->sched, vcoproc_xxx);
+            vcoproc_sheduler_vcoproc_sleep(ctx.coproc->sched, ctx.vcoproc);
     }
-#else
-    (void)vcoproc_xxx;
 #endif
 
     return 1;
@@ -121,96 +85,41 @@ static const struct mmio_handler_ops vcoproc_xxx_mmio_handler = {
 
 s_time_t vcoproc_xxx_ctx_switch_from(struct vcoproc_instance *curr)
 {
-    s_time_t wait_time;
-
-    if ( !curr )
-        return 0;
-
-    ASSERT(curr->state == VCOPROC_RUNNING ||
-           curr->state == VCOPROC_ASKED_TO_SLEEP);
-
-    wait_time = NOW() & 1 ? coproc_wait_time : 0; /* random for now */
-
-    if ( wait_time == 0 )
-    {
-        if (curr->state == VCOPROC_RUNNING)
-            curr->state = VCOPROC_WAITING;
-        else
-            curr->state = VCOPROC_SLEEPING;
-    }
-
-    return wait_time;
+    /* random for now */
+    return NOW() & 1 ? coproc_wait_time : 0;
 }
 
 static int vcoproc_xxx_ctx_switch_to(struct vcoproc_instance *next)
 {
-    if ( !next )
-        return 0;
-
-    ASSERT(next->state == VCOPROC_WAITING);
-
-    next->state = VCOPROC_RUNNING;
-
+    /* nothing to do */
     return 0;
 }
 
-static struct vcoproc_instance *vcoproc_xxx_vcoproc_init(struct domain *d,
-                                                         struct coproc_device *coproc_xxx)
+static int vcoproc_xxx_vcoproc_init(struct domain *d,
+                                    struct coproc_device *coproc,
+                                    struct vcoproc_instance *vcoproc)
 {
-    struct vcoproc_instance *vcoproc_xxx;
     int i;
 
-    vcoproc_xxx = xzalloc(struct vcoproc_instance);
-    if ( !vcoproc_xxx )
+    for ( i = 0; i < coproc->num_mmios; i++ )
     {
-        dev_err(coproc_xxx->dev, "failed to allocate vcoproc_instance\n");
-        return ERR_PTR(-ENOMEM);
-    }
-
-    vcoproc_xxx->coproc = coproc_xxx;
-    vcoproc_xxx->domain = d;
-    vcoproc_xxx->state = VCOPROC_UNKNOWN;
-    spin_lock_init(&vcoproc_xxx->lock);
-
-    for ( i = 0; i < coproc_xxx->num_mmios; i++ )
-    {
-        struct mmio *mmio = &coproc_xxx->mmios[i];
+        struct mmio *mmio = &coproc->mmios[i];
         register_mmio_handler(d, &vcoproc_xxx_mmio_handler,
                               mmio->addr, mmio->size, mmio);
     }
 
-    spin_lock(&coproc_xxx->vcoprocs_lock);
-    list_add(&vcoproc_xxx->vcoproc_elem, &coproc_xxx->vcoprocs);
-    spin_unlock(&coproc_xxx->vcoprocs_lock);
-
-    return vcoproc_xxx;
+    return 0;
 }
 
 static void vcoproc_xxx_vcoproc_deinit(struct domain *d,
                                        struct vcoproc_instance *vcoproc_xxx)
 {
-    struct coproc_device *coproc_xxx;
-
-    if ( !vcoproc_xxx )
-        return;
-
-    coproc_xxx = vcoproc_xxx->coproc;
-    spin_lock(&coproc_xxx->vcoprocs_lock);
-    list_del(&vcoproc_xxx->vcoproc_elem);
-    spin_unlock(&coproc_xxx->vcoprocs_lock);
-    xfree(vcoproc_xxx);
+    /* nothing to do */
 }
 
-static bool_t coproc_xxx_vcoproc_is_created(struct domain *d,
-                                            struct coproc_device *coproc_xxx)
-{
-    return coproc_xxx_get_vcoproc(d, coproc_xxx) ? true : false;
-}
-
-static const struct vcoproc_ops vcoproc_xxx_vcoproc_ops = {
+static const struct coproc_ops vcoproc_xxx_vcoproc_ops = {
     .vcoproc_init        = vcoproc_xxx_vcoproc_init,
     .vcoproc_deinit      = vcoproc_xxx_vcoproc_deinit,
-    .vcoproc_is_created  = coproc_xxx_vcoproc_is_created,
     .ctx_switch_from     = vcoproc_xxx_ctx_switch_from,
     .ctx_switch_to       = vcoproc_xxx_ctx_switch_to,
 };
@@ -227,86 +136,13 @@ static int coproc_xxx_dt_probe(struct platform_device *pdev)
 {
     struct coproc_device *coproc_xxx;
     struct device *dev = &pdev->dev;
-    struct resource *res;
-    int num_irqs, num_mmios, i, ret;
+    int i, ret;
 
-    coproc_xxx = xzalloc(struct coproc_device);
-    if ( !coproc_xxx )
-    {
-        dev_err(dev, "failed to allocate coproc_device\n");
-        return -ENOMEM;
-    }
-    coproc_xxx->dev = dev;
+    coproc_xxx = coproc_alloc(pdev, &vcoproc_xxx_vcoproc_ops);
+    if ( IS_ERR_OR_NULL(coproc_xxx) )
+        return PTR_ERR(coproc_xxx);
 
-    num_mmios = 0;
-    while ( (res = platform_get_resource(pdev, IORESOURCE_MEM, num_mmios)) )
-        num_mmios++;
-
-    if ( !num_mmios )
-    {
-        dev_err(dev, "failed to find at least one mmio\n");
-        ret = -ENODEV;
-        goto out_free_mmios;
-    }
-
-    coproc_xxx->mmios = xzalloc_array(struct mmio, num_mmios);
-    if ( !coproc_xxx->mmios )
-    {
-        dev_err(dev, "failed to allocate %d mmios\n", num_mmios);
-        ret = -ENOMEM;
-        goto out_free_mmios;
-    }
-
-    for ( i = 0; i < num_mmios; ++i )
-    {
-        res = platform_get_resource(pdev, IORESOURCE_MEM, i);
-        coproc_xxx->mmios[i].base = devm_ioremap_resource(dev, res);
-        if ( IS_ERR(coproc_xxx->mmios[i].base) )
-        {
-            ret = PTR_ERR(coproc_xxx->mmios[i].base);
-            goto out_iounmap_mmios;
-        }
-
-        coproc_xxx->mmios[i].size = resource_size(res);
-        coproc_xxx->mmios[i].addr = resource_addr(res);
-        coproc_xxx->mmios[i].coproc = coproc_xxx;
-    }
-    coproc_xxx->num_mmios = num_mmios;
-
-    num_irqs = 0;
-    while ( (res = platform_get_resource(pdev, IORESOURCE_IRQ, num_irqs)) )
-        num_irqs++;
-
-    if ( !num_irqs )
-    {
-        dev_err(dev, "failed to find at least one irq\n");
-        ret = -ENODEV;
-        goto out_free_irqs;
-    }
-
-    coproc_xxx->irqs = xzalloc_array(unsigned int, num_irqs);
-    if ( !coproc_xxx->irqs )
-    {
-        dev_err(dev, "failed to allocate %d irqs\n", num_irqs);
-        ret = -ENOMEM;
-        goto out_free_irqs;
-    }
-
-    for ( i = 0; i < num_irqs; ++i )
-    {
-        int irq = platform_get_irq(pdev, i);
-
-        if ( irq < 0 )
-        {
-            dev_err(dev, "failed to get irq index %d\n", i);
-            ret = -ENODEV;
-            goto out_free_irqs;
-        }
-        coproc_xxx->irqs[i] = irq;
-    }
-    coproc_xxx->num_irqs = num_irqs;
-
-    for ( i = 0; i < num_irqs; ++i )
+    for ( i = 0; i < coproc_xxx->num_irqs; ++i )
     {
         ret = request_irq(coproc_xxx->irqs[i],
                          IRQF_SHARED,
@@ -320,10 +156,6 @@ static int coproc_xxx_dt_probe(struct platform_device *pdev)
         }
     }
 
-    INIT_LIST_HEAD(&coproc_xxx->vcoprocs);
-    spin_lock_init(&coproc_xxx->vcoprocs_lock);
-    coproc_xxx->ops = &vcoproc_xxx_vcoproc_ops;
-
     ret = coproc_register(coproc_xxx);
     if ( ret )
     {
@@ -336,18 +168,7 @@ static int coproc_xxx_dt_probe(struct platform_device *pdev)
 out_release_irqs:
     while ( i-- )
         release_irq(coproc_xxx->irqs[i], coproc_xxx);
-out_free_irqs:
-    xfree(coproc_xxx->irqs);
-out_iounmap_mmios:
-    for ( i = 0; i < num_mmios; ++i )
-    {
-        if ( !IS_ERR(coproc_xxx->mmios[i].base) )
-            iounmap(coproc_xxx->mmios[i].base);
-    }
-out_free_mmios:
-    xfree(coproc_xxx->mmios);
-    xfree(coproc_xxx);
-
+    coproc_release(coproc_xxx);
     return ret;
 }
 
