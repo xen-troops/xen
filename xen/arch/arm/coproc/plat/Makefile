@@ -1,1 +1,1 @@
-obj-y += coproc_xxx.o common.o
+obj-y += coproc_xxx.o platform_device.o
