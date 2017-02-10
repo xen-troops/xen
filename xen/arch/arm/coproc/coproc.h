@@ -129,6 +129,9 @@ struct vcoproc_instance {
 
     /* scheduler-specific data */
     void *sched_priv;
+
+    /* vcoproc implementation specific data */
+    void *priv;
 };
 
 void coproc_init(void);
