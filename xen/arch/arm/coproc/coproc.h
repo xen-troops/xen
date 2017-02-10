@@ -71,6 +71,9 @@ struct coproc_device {
 
     /* scheduler instance for this coproc */
     struct vcoproc_scheduler *sched;
+
+    /* coproc implementation specific data */
+    void *priv;
 };
 
 /* coproc callback functions */
