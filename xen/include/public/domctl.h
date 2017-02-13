@@ -1144,6 +1144,14 @@ struct xen_domctl_psr_cat_op {
 typedef struct xen_domctl_psr_cat_op xen_domctl_psr_cat_op_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_psr_cat_op_t);
 
+/* Attach a coproc to a guest. */
+struct xen_domctl_attach_coproc {
+    uint32_t size; /* length of the path */
+    XEN_GUEST_HANDLE_64(char) path; /* path to the device tree node */
+};
+typedef struct xen_domctl_attach_coproc xen_domctl_attach_coproc_t;
+DEFINE_XEN_GUEST_HANDLE(xen_domctl_attach_coproc_t);
+
 struct xen_domctl {
     uint32_t cmd;
 #define XEN_DOMCTL_createdomain                   1
@@ -1221,6 +1229,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_monitor_op                    77
 #define XEN_DOMCTL_psr_cat_op                    78
 #define XEN_DOMCTL_soft_reset                    79
+#define XEN_DOMCTL_attach_coproc                 80
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
@@ -1283,6 +1292,7 @@ struct xen_domctl {
         struct xen_domctl_psr_cmt_op        psr_cmt_op;
         struct xen_domctl_monitor_op        monitor_op;
         struct xen_domctl_psr_cat_op        psr_cat_op;
+        struct xen_domctl_attach_coproc     attach_coproc;
         uint8_t                             pad[128];
     } u;
 };
