@@ -39,53 +39,6 @@ static DEFINE_SPINLOCK(coprocs_lock);
 /* the number of registered coproc devices */
 static int num_coprocs;
 
-s_time_t vcoproc_context_switch(struct vcoproc_instance *curr,
-                                struct vcoproc_instance *next)
-{
-    struct coproc_device *coproc;
-    int ret;
-
-    if ( unlikely(curr == next) )
-        return 0;
-
-    coproc = next ? next->coproc : curr->coproc;
-
-    if ( likely(curr) )
-    {
-        s_time_t wait_time;
-
-        ASSERT(curr->state == VCOPROC_RUNNING ||
-               curr->state == VCOPROC_ASKED_TO_SLEEP);
-
-        wait_time = coproc->ops->ctx_switch_from(curr);
-
-        if ( wait_time == 0 )
-        {
-            if (curr->state == VCOPROC_RUNNING)
-                curr->state = VCOPROC_WAITING;
-            else
-                curr->state = VCOPROC_SLEEPING;
-        }
-        if ( wait_time )
-            return wait_time;
-    }
-
-    if ( likely(next) )
-    {
-        ASSERT(next->state == VCOPROC_WAITING);
-
-        /* TODO What to do if we failed to switch to "next"? */
-        ret = coproc->ops->ctx_switch_to(next);
-        if ( unlikely(ret) )
-            panic("Failed to switch context to vcoproc \"%s\" (%d)\n",
-                  dev_path(coproc->dev), ret);
-        else
-            next->state = VCOPROC_RUNNING;
-    }
-
-    return 0;
-}
-
 void vcoproc_continue_running(struct vcoproc_instance *same)
 {
     /* nothing to do */
