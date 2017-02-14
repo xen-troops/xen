@@ -198,10 +198,10 @@ static void coproc_deinit_vcoproc(struct domain *d,
         return;
 
     coproc = vcoproc->coproc;
-    coproc->ops->vcoproc_deinit(d, vcoproc);
     spin_lock(&coproc->vcoprocs_lock);
     list_del(&vcoproc->vcoproc_elem);
     spin_unlock(&coproc->vcoprocs_lock);
+    coproc->ops->vcoproc_deinit(d, vcoproc);
     xfree(vcoproc);
 }
 
