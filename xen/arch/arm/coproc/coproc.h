@@ -149,8 +149,6 @@ void vcoproc_domain_free(struct domain *);
 int coproc_do_domctl(struct xen_domctl *, struct domain *,
                      XEN_GUEST_HANDLE_PARAM(xen_domctl_t));
 bool_t coproc_is_attached_to_domain(struct domain *, const char *);
-s_time_t vcoproc_context_switch(struct vcoproc_instance *,
-                                struct vcoproc_instance *);
 void vcoproc_continue_running(struct vcoproc_instance *);
 int coproc_release_vcoprocs(struct domain *);
 
@@ -165,6 +163,32 @@ static inline void vcoproc_get_rw_context(struct domain *d, struct mmio *mmio,
     ctx->offset = info->gpa - mmio->addr;
     ctx->vcoproc = coproc_get_vcoproc(d, ctx->coproc);
     BUG_ON(ctx->vcoproc == NULL);
+}
+
+/* time slice for this vcoproc has finished, save context and pause:
+ * return value:
+ *    0 - on success
+ *   >0 - if more time is needed: time in ms that vcoproc still needs
+ *        before next attempt to switch context should be made
+ *   <0 - unrecoverable failure: no future context switches are possible,
+ *        coproc must be considered as non-functional
+ */
+static inline s_time_t vcoproc_context_switch_from(struct vcoproc_instance *vcoproc)
+{
+    ASSERT(vcoproc);
+    return vcoproc->coproc->ops->ctx_switch_from(vcoproc);
+}
+
+/* new vcoproc has time slice, restore context and unpause:
+ * return value:
+ *    0 - on success
+ *   <0 - unrecoverable failure: no future context switches are possible,
+ *        coproc must be considered as non-functional
+ */
+static inline int vcoproc_context_switch_to(struct vcoproc_instance *vcoproc)
+{
+    ASSERT(vcoproc);
+    return vcoproc->coproc->ops->ctx_switch_to(vcoproc);
 }
 
 #endif /* __ARCH_ARM_COPROC_COPROC_H__ */

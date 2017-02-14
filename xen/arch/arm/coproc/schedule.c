@@ -233,6 +233,53 @@ static inline void schedule_trace(struct vcoproc_instance *curr,
     }
 }
 
+static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
+                                                struct vcoproc_instance *next)
+{
+    struct coproc_device *coproc;
+    int ret;
+
+    if ( unlikely(curr == next) )
+        return 0;
+
+    coproc = next ? next->coproc : curr->coproc;
+
+    if ( likely(curr) )
+    {
+        s_time_t wait_time;
+
+        ASSERT(curr->state == VCOPROC_RUNNING ||
+               curr->state == VCOPROC_ASKED_TO_SLEEP);
+
+        wait_time = vcoproc_context_switch_from(curr);
+
+        if ( wait_time == 0 )
+        {
+            if (curr->state == VCOPROC_RUNNING)
+                curr->state = VCOPROC_WAITING;
+            else
+                curr->state = VCOPROC_SLEEPING;
+        }
+        if ( wait_time )
+            return wait_time;
+    }
+
+    if ( likely(next) )
+    {
+        ASSERT(next->state == VCOPROC_WAITING);
+
+        /* TODO What to do if we failed to switch to "next"? */
+        ret = vcoproc_context_switch_to(next);
+        if ( unlikely(ret < 0) )
+            panic("Failed to switch context to vcoproc \"%s\" (%d)\n",
+                  dev_path(coproc->dev), ret);
+        else
+            next->state = VCOPROC_RUNNING;
+    }
+
+    return 0;
+}
+
 /* TODO Taking lock for the whole func is might be an overhead */
 void vcoproc_schedule(struct vcoproc_scheduler *sched)
 {
@@ -258,7 +305,7 @@ void vcoproc_schedule(struct vcoproc_scheduler *sched)
         goto out;
     }
 
-    wait_time = vcoproc_context_switch(curr, next);
+    wait_time = vcoproc_scheduler_context_switch(curr, next);
     ASSERT(wait_time >= 0);
 
     if ( wait_time > 0 )
