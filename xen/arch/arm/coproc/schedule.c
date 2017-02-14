@@ -260,8 +260,13 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
             else
                 curr->state = VCOPROC_SLEEPING;
         }
-        if ( wait_time )
+        else if ( wait_time > 0 )
             return wait_time;
+        else
+        {
+            panic("Failed to switch context from vcoproc \"%s\"\n",
+                  dev_path(coproc->dev));
+        }
     }
 
     if ( likely(next) )
@@ -270,11 +275,11 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
 
         /* TODO What to do if we failed to switch to "next"? */
         ret = vcoproc_context_switch_to(next);
-        if ( unlikely(ret < 0) )
+        if ( likely(!ret) )
+            next->state = VCOPROC_RUNNING;
+        else
             panic("Failed to switch context to vcoproc \"%s\" (%d)\n",
                   dev_path(coproc->dev), ret);
-        else
-            next->state = VCOPROC_RUNNING;
     }
 
     return 0;
