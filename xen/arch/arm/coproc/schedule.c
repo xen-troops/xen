@@ -96,7 +96,7 @@ int vcoproc_scheduler_vcoproc_destroy(struct vcoproc_scheduler *sched,
     if ( vcoproc_scheduler_vcoproc_is_destroyed(sched, vcoproc) )
         return 0;
 
-    vcoproc_sheduler_vcoproc_sleep(sched, vcoproc);
+    vcoproc_scheduler_vcoproc_sleep(sched, vcoproc);
 
     spin_lock_irqsave(&sched_data->schedule_lock, flags);
     if ( vcoproc->state == VCOPROC_ASKED_TO_SLEEP )
@@ -116,7 +116,7 @@ int vcoproc_scheduler_vcoproc_destroy(struct vcoproc_scheduler *sched,
     return 0;
 }
 
-void vcoproc_sheduler_vcoproc_wake(struct vcoproc_scheduler *sched,
+void vcoproc_scheduler_vcoproc_wake(struct vcoproc_scheduler *sched,
                                    struct vcoproc_instance *vcoproc)
 {
     struct vcoproc_schedule_data *sched_data = sched->sched_priv;
@@ -139,7 +139,7 @@ void vcoproc_sheduler_vcoproc_wake(struct vcoproc_scheduler *sched,
     vcoproc_schedule(sched);
 }
 
-void vcoproc_sheduler_vcoproc_sleep(struct vcoproc_scheduler *sched,
+void vcoproc_scheduler_vcoproc_sleep(struct vcoproc_scheduler *sched,
                                     struct vcoproc_instance *vcoproc)
 {
     struct vcoproc_schedule_data *sched_data = sched->sched_priv;
@@ -170,7 +170,7 @@ void vcoproc_sheduler_vcoproc_sleep(struct vcoproc_scheduler *sched,
         vcoproc_schedule(sched);
 }
 
-void vcoproc_sheduler_vcoproc_yield(struct vcoproc_scheduler *sched,
+void vcoproc_scheduler_vcoproc_yield(struct vcoproc_scheduler *sched,
                                     struct vcoproc_instance *vcoproc)
 {
     struct vcoproc_schedule_data *sched_data = sched->sched_priv;
