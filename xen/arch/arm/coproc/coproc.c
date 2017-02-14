@@ -189,8 +189,7 @@ static inline bool_t coproc_is_created_vcoproc(struct domain *d,
     return coproc_get_vcoproc(d, coproc) ? true : false;
 }
 
-static void coproc_deinit_vcoproc(struct domain *d,
-                                  struct vcoproc_instance *vcoproc)
+static void coproc_deinit_vcoproc(struct vcoproc_instance *vcoproc)
 {
     struct coproc_device *coproc;
 
@@ -201,7 +200,7 @@ static void coproc_deinit_vcoproc(struct domain *d,
     spin_lock(&coproc->vcoprocs_lock);
     list_del(&vcoproc->vcoproc_elem);
     spin_unlock(&coproc->vcoprocs_lock);
-    coproc->ops->vcoproc_deinit(d, vcoproc);
+    coproc->ops->vcoproc_deinit(vcoproc);
     xfree(vcoproc);
 }
 
@@ -233,7 +232,7 @@ static int coproc_attach_to_domain(struct domain *d,
     ret = vcoproc_scheduler_vcoproc_init(coproc->sched, vcoproc);
     if ( ret )
     {
-        coproc_deinit_vcoproc(d, vcoproc);
+        coproc_deinit_vcoproc(vcoproc);
         goto out;
     }
 
@@ -287,7 +286,7 @@ static int coproc_detach_from_domain(struct domain *d,
     list_del_init(&vcoproc->instance_elem);
     vcoproc_d->num_instances--;
 
-    coproc_deinit_vcoproc(d, vcoproc);
+    coproc_deinit_vcoproc(vcoproc);
 
     printk("Destroyed vcoproc \"%s\" for dom%u\n",
             dev_path(coproc->dev), d->domain_id);

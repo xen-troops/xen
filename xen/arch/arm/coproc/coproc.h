@@ -81,7 +81,7 @@ struct coproc_ops {
     /* callback to perform initialization for the vcoproc instance */
     int (*vcoproc_init)(struct vcoproc_instance *);
     /* callback to perform deinitialization for the vcoproc instance */
-    void (*vcoproc_deinit)(struct domain *, struct vcoproc_instance *);
+    void (*vcoproc_deinit)(struct vcoproc_instance *);
     /* callback to perform context switch from the running vcoproc instance */
     s_time_t (*ctx_switch_from)(struct vcoproc_instance *);
     /* callback to perform context switch to the waiting vcoproc instance */
