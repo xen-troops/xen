@@ -96,11 +96,11 @@ int vcoproc_scheduler_vcoproc_init(struct vcoproc_scheduler *,
 int vcoproc_scheduler_vcoproc_destroy(struct vcoproc_scheduler *,
                                       struct vcoproc_instance *);
 void vcoproc_schedule(struct vcoproc_scheduler *);
-void vcoproc_sheduler_vcoproc_wake(struct vcoproc_scheduler *,
+void vcoproc_scheduler_vcoproc_wake(struct vcoproc_scheduler *,
                                    struct vcoproc_instance *);
-void vcoproc_sheduler_vcoproc_sleep(struct vcoproc_scheduler *,
+void vcoproc_scheduler_vcoproc_sleep(struct vcoproc_scheduler *,
                                     struct vcoproc_instance *);
-void vcoproc_sheduler_vcoproc_yield(struct vcoproc_scheduler *,
+void vcoproc_scheduler_vcoproc_yield(struct vcoproc_scheduler *,
                                     struct vcoproc_instance *);
 
 #endif /* __ARCH_ARM_COPROC_SCHEDULE_H_ */
