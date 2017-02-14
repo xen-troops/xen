@@ -126,6 +126,7 @@ struct vcoproc_instance {
     /*
      * this list is used to append this vcoproc
      * to the "domain's" instances list
+     * must not be touched by any of vcoprocs
      */
     struct list_head instance_elem;
 
