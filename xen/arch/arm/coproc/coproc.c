@@ -138,7 +138,7 @@ static struct vcoproc_instance *coproc_init_vcoproc(struct domain *d,
     vcoproc->state = VCOPROC_UNKNOWN;
     spin_lock_init(&vcoproc->lock);
 
-    ret = coproc->ops->vcoproc_init(d, coproc, vcoproc);
+    ret = coproc->ops->vcoproc_init(vcoproc);
     if ( ret )
     {
         printk("Failed to initialize vcoproc_instance for %s\n",
