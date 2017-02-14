@@ -1329,7 +1329,7 @@ static void parse_config_data(const char *config_source,
     XLU_Config *config;
     XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms,
                    *usbctrls, *usbdevs;
-    XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs;
+    XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs, *coprocs;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian;
     int pci_power_mgmt = 0;
     int pci_msitranslate = 0;
@@ -2145,6 +2145,24 @@ skip_vfb:
             dtdev->path = strdup(buf);
             if (dtdev->path == NULL) {
                 fprintf(stderr, "unable to duplicate string for dtdevs\n");
+                exit(-1);
+            }
+        }
+    }
+
+    if (!xlu_cfg_get_list (config, "coproc", &coprocs, 0, 0)) {
+        b_info->num_coprocs = 0;
+        b_info->coprocs = NULL;
+        for (i = 0; (buf = xlu_cfg_get_listitem(coprocs, i)) != NULL; i++) {
+            libxl_device_coproc *coproc;
+
+            coproc = ARRAY_EXTEND_INIT_NODEVID(b_info->coprocs,
+                                               b_info->num_coprocs,
+                                               libxl_device_coproc_init);
+
+            coproc->path = strdup(buf);
+            if (coproc->path == NULL) {
+                fprintf(stderr, "unable to duplicate string for coprocs\n");
                 exit(-1);
             }
         }

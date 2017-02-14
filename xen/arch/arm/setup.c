@@ -51,6 +51,8 @@
 #include <xsm/xsm.h>
 #include <asm/acpi.h>
 
+#include "coproc/coproc.h"
+
 struct bootinfo __initdata bootinfo;
 
 struct cpuinfo_arm __read_mostly boot_cpu_data;
@@ -836,6 +838,10 @@ void __init start_xen(unsigned long boot_phys_offset,
     setup_virt_paging();
 
     iommu_setup();
+
+#ifdef CONFIG_HAS_COPROC
+    coproc_init();
+#endif
 
     do_initcalls();
 
