@@ -108,8 +108,7 @@ static int vcoproc_xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
     return 0;
 }
 
-static void vcoproc_xxx_vcoproc_deinit(struct domain *d,
-                                       struct vcoproc_instance *vcoproc_xxx)
+static void vcoproc_xxx_vcoproc_deinit(struct vcoproc_instance *vcoproc_xxx)
 {
     /* nothing to do */
 }
