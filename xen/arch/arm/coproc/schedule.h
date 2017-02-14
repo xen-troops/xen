@@ -88,9 +88,9 @@ struct vcoproc_scheduler {
     void *sched_priv;
 };
 
-struct coproc_device;
+struct mcoproc_device;
 
-struct vcoproc_scheduler *vcoproc_scheduler_init(struct coproc_device *);
+struct vcoproc_scheduler *vcoproc_scheduler_init(struct mcoproc_device *);
 int vcoproc_scheduler_vcoproc_init(struct vcoproc_scheduler *,
                                    struct vcoproc_instance *);
 int vcoproc_scheduler_vcoproc_destroy(struct vcoproc_scheduler *,

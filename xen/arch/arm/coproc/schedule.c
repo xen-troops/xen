@@ -46,15 +46,17 @@ static void vcoproc_scheduler_set_current(const struct vcoproc_scheduler *sched,
     sched_data->curr = vcoproc;
 }
 
-static struct vcoproc_instance *vcoproc_scheduler_get_current(const struct vcoproc_scheduler *sched)
+static struct vcoproc_instance *
+vcoproc_scheduler_get_current(const struct vcoproc_scheduler *sched)
 {
     struct vcoproc_schedule_data *sched_data = sched->sched_priv;
 
     return sched_data->curr;
 }
 
-static bool_t vcoproc_scheduler_vcoproc_is_destroyed(struct vcoproc_scheduler *sched,
-                                                     struct vcoproc_instance *vcoproc)
+static bool_t
+vcoproc_scheduler_vcoproc_is_destroyed(struct vcoproc_scheduler *sched,
+                                       struct vcoproc_instance *vcoproc)
 {
     if ( !vcoproc )
         return true;
@@ -76,7 +78,7 @@ int vcoproc_scheduler_vcoproc_init(struct vcoproc_scheduler *sched,
     if ( !vcoproc->sched_priv )
     {
         printk("Failed to allocate scheduler-specific data for vcoproc \"%s\"\n",
-               dev_path(vcoproc->coproc->dev));
+               dev_path(vcoproc->mcoproc->dev));
         spin_unlock_irqrestore(&sched_data->schedule_lock, flags);
         return -ENOMEM;
     }
@@ -201,26 +203,30 @@ static inline void schedule_trace(struct vcoproc_instance *curr,
         break;
 
     case 1:
-        COPROC_VERBOSE(NULL, "--dom %d (%s) CONTINUE RUNNING (BUSY)----\n",
+        COPROC_VERBOSE(curr ? curr->mcoproc->dev : NULL,
+                       "--dom %d (%"PRIpaddr") CONTINUE RUNNING (BUSY)----\n",
                        curr ? curr->domain->domain_id : -1,
-                       curr ? dev_path(curr->coproc->dev) : "NULL");
+                       curr ? curr->mmios[0].addr : 0);
         break;
 
     case 2:
-        COPROC_VERBOSE(NULL, "--dom %d (%s) CONTINUE RUNNING (SINGLE)--\n",
+        COPROC_VERBOSE(curr ? curr->mcoproc->dev : NULL,
+                       "--dom %d (%"PRIpaddr") CONTINUE RUNNING (SINGLE)--\n",
                        curr ? curr->domain->domain_id : -1,
-                       curr ? dev_path(curr->coproc->dev) : "NULL");
+                       curr ? curr->mmios[0].addr : 0);
         break;
 
     case 3:
         if (next)
-            COPROC_VERBOSE(NULL, "--dom %d (%s) START RUNNING--------------\n",
+            COPROC_VERBOSE(next ? next->mcoproc->dev : NULL,
+                           "--dom %d (%"PRIpaddr") START RUNNING----------\n",
                            next ? next->domain->domain_id : -1,
-                           next ? dev_path(next->coproc->dev) : "NULL");
+                           next ? next->mmios[0].addr : 0);
         else
-            COPROC_VERBOSE(NULL, "--dom %d (%s )STOP RUNNING---------------\n",
+            COPROC_VERBOSE(curr ? curr->mcoproc->dev : NULL,
+                           "--dom %d (%"PRIpaddr" )STOP RUNNING-----------\n",
                            curr ? curr->domain->domain_id : -1,
-                           curr ? dev_path(curr->coproc->dev) : "NULL");
+                           curr ? curr->mmios[0].addr : 0);
         break;
 
     default:
@@ -231,13 +237,13 @@ static inline void schedule_trace(struct vcoproc_instance *curr,
 static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
                                                 struct vcoproc_instance *next)
 {
-    struct coproc_device *coproc;
+    struct mcoproc_device *mcoproc;
     int ret;
 
     if ( unlikely(curr == next) )
         return 0;
 
-    coproc = next ? next->coproc : curr->coproc;
+    mcoproc = next ? next->mcoproc : curr->mcoproc;
 
     if ( likely(curr) )
     {
@@ -260,7 +266,7 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
         else
         {
             panic("Failed to switch context from vcoproc \"%s\"\n",
-                  dev_path(coproc->dev));
+                  dev_path(mcoproc->dev));
         }
     }
 
@@ -274,7 +280,7 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
             next->state = VCOPROC_RUNNING;
         else
             panic("Failed to switch context to vcoproc \"%s\" (%d)\n",
-                  dev_path(coproc->dev), ret);
+                  dev_path(mcoproc->dev), ret);
     }
 
     return 0;
@@ -342,13 +348,14 @@ static void s_timer_fn(void *data)
     vcoproc_schedule(sched);
 }
 
-struct vcoproc_scheduler * __init vcoproc_scheduler_init(struct coproc_device *coproc)
+struct vcoproc_scheduler * __init
+vcoproc_scheduler_init(struct mcoproc_device *mcoproc)
 {
     struct vcoproc_scheduler *sched;
     struct vcoproc_schedule_data *sched_data;
     int i, ret;
 
-    if ( !coproc )
+    if ( !mcoproc )
         return ERR_PTR(-EINVAL);
 
     for ( i = 0; vcoproc_schedulers[i]; i++ )
@@ -361,18 +368,18 @@ struct vcoproc_scheduler * __init vcoproc_scheduler_init(struct coproc_device *c
     if ( !vcoproc_schedulers[i] )
     {
         printk("Failed to find scheduler \"%s\" for coproc \"%s\"\n",
-               opt_vcoproc_sched, dev_path(coproc->dev));
+               opt_vcoproc_sched, dev_path(mcoproc->dev));
         return ERR_PTR(-ENODEV);
     }
 
     printk("Using scheduler \"%s\" for coproc \"%s\"\n",
-           vcoproc_schedulers[i]->opt_name, dev_path(coproc->dev));
+           vcoproc_schedulers[i]->opt_name, dev_path(mcoproc->dev));
 
     sched = xmalloc(struct vcoproc_scheduler);
     if ( !sched )
     {
         printk("Failed to allocate scheduler for coproc \"%s\"\n",
-               dev_path(coproc->dev));
+               dev_path(mcoproc->dev));
         return ERR_PTR(-ENOMEM);
     }
     memcpy(sched, vcoproc_schedulers[i], sizeof(*sched));
@@ -381,7 +388,7 @@ struct vcoproc_scheduler * __init vcoproc_scheduler_init(struct coproc_device *c
     if ( !sched_data )
     {
         printk("Failed to allocate schedule data for coproc \"%s\"\n",
-               dev_path(coproc->dev));
+               dev_path(mcoproc->dev));
         ret = -ENOMEM;
         goto out_free_sched;
     }
@@ -394,7 +401,7 @@ struct vcoproc_scheduler * __init vcoproc_scheduler_init(struct coproc_device *c
     if ( ret )
     {
         printk("Failed to init scheduler for coproc \"%s\"\n",
-               dev_path(coproc->dev));
+               dev_path(mcoproc->dev));
         goto out_free_data;
     }
 
