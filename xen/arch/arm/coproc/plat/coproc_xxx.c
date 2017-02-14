@@ -94,16 +94,14 @@ static int vcoproc_xxx_ctx_switch_to(struct vcoproc_instance *next)
     return 0;
 }
 
-static int vcoproc_xxx_vcoproc_init(struct domain *d,
-                                    struct coproc_device *coproc,
-                                    struct vcoproc_instance *vcoproc)
+static int vcoproc_xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
 {
     int i;
 
-    for ( i = 0; i < coproc->num_mmios; i++ )
+    for ( i = 0; i < vcoproc->coproc->num_mmios; i++ )
     {
-        struct mmio *mmio = &coproc->mmios[i];
-        register_mmio_handler(d, &vcoproc_xxx_mmio_handler,
+        struct mmio *mmio = &vcoproc->coproc->mmios[i];
+        register_mmio_handler(vcoproc->domain, &vcoproc_xxx_mmio_handler,
                               mmio->addr, mmio->size, mmio);
     }
 
