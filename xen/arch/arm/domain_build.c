@@ -924,44 +924,6 @@ static int make_timer_node(const struct domain *d, void *fdt,
     return res;
 }
 
-#ifdef CONFIG_HAS_COPROC
-static int make_coproc_node(const struct domain *d, void *fdt,
-                            const struct dt_device_node *node)
-{
-    const struct dt_property *prop;
-    const char *name, *path;
-    int res = 0;
-
-    dt_dprintk("Create coproc node\n");
-
-    path = dt_node_full_name(node);
-    name = strrchr(path, '/');
-    name = name ? name + 1 : path;
-
-    res = fdt_begin_node(fdt, name);
-    if ( res )
-        return res;
-
-    dt_for_each_property_node (node, prop)
-    {
-        const void *prop_data = prop->value;
-        u32 prop_len = prop->length;
-
-        /* Don't expose the property "xen,coproc" to the guest */
-        if ( dt_property_name_is_equal(prop, "xen,coproc") )
-            continue;
-
-        res = fdt_property(fdt, prop->name, prop_data, prop_len);
-        if ( res )
-            return res;
-    }
-
-    res = fdt_end_node(fdt);
-
-    return res;
-}
-#endif
-
 static int map_irq_to_domain(struct domain *d, unsigned int irq,
                              bool_t need_mapping, const char *devname)
 
@@ -1102,60 +1064,6 @@ static int map_device_children(struct domain *d,
     return 0;
 }
 
-#ifdef CONFIG_HAS_COPROC
-/* Just give permission to the guest to manage coproc IRQs for now */
-static int handle_coproc_node(struct domain *d, struct dt_device_node *dev)
-{
-    unsigned int nirq, i;
-    struct dt_raw_irq rirq;
-    int res;
-
-    dt_dprintk("Handle coproc node\n");
-
-    nirq = dt_number_of_irq(dev);
-
-    for ( i = 0; i < nirq; i++ )
-    {
-        res = dt_device_get_raw_irq(dev, i, &rirq);
-        if ( res )
-        {
-            printk(XENLOG_ERR "Unable to retrieve irq %u for %s\n",
-                   i, dt_node_full_name(dev));
-            return res;
-        }
-
-        /*
-         * Don't map IRQ that have no physical meaning
-         * ie: IRQ whose controller is not the GIC
-         */
-        if ( rirq.controller != dt_interrupt_controller )
-        {
-            dt_dprintk("irq %u not connected to primary controller. Connected to %s\n",
-                      i, dt_node_full_name(rirq.controller));
-            continue;
-        }
-
-        res = platform_get_irq(dev, i);
-        if ( res < 0 )
-        {
-            printk(XENLOG_ERR "Unable to get irq %u for %s\n",
-                   i, dt_node_full_name(dev));
-            return res;
-        }
-
-        res = irq_permit_access(d, res);
-        if ( res )
-        {
-            printk(XENLOG_ERR "Unable to permit to dom%u access to IRQ %u\n",
-                   d->domain_id, res);
-            return res;
-        }
-    }
-
-    return 0;
-}
-#endif
-
 /*
  * For a given device node:
  *  - Give permission to the guest to manage IRQ and MMIO range
@@ -1287,6 +1195,9 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         DT_MATCH_TYPE("memory"),
         /* The memory mapped timer is not supported by Xen. */
         DT_MATCH_COMPATIBLE("arm,armv7-timer-mem"),
+#ifdef CONFIG_HAS_COPROC
+        DT_MATCH_PROP("xen,coproc"),
+#endif
         { /* sentinel */ },
     };
     static const struct dt_device_match timer_matches[] __initconst =
@@ -1332,21 +1243,8 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         return make_timer_node(d, kinfo->fdt, node);
 
 #ifdef CONFIG_HAS_COPROC
-    if ( (device_get_class(node) == DEVICE_COPROC) &&
-         (dt_device_used_by(node) == DOMID_XEN) )
-    {
-        res = handle_coproc_node(d, node);
-        if ( res)
-            return res;
-
-        if ( coproc_is_attached_to_domain(d, path) )
-            return make_coproc_node(d, kinfo->fdt, node);
-        else
-        {
-            dt_dprintk("  Skip it (won't be used in domain)\n");
-            return 0;
-        }
-    }
+    if ( dt_device_is_vcoproc(node) )
+        return vcoproc_handle_node(d, kinfo->fdt, node);
 #endif
 
     /* Skip nodes used by Xen */

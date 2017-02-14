@@ -25,10 +25,6 @@
 
 #include "coproc.h"
 
-/* dom0_coprocs: comma-separated list of coprocs for domain 0 */
-static char __initdata opt_dom0_coprocs[128] = "";
-string_param("dom0_coprocs", opt_dom0_coprocs);
-
 /*
  * the "framework's" global list is used to keep track
  * of all coproc devices that have been registered in the framework
@@ -36,17 +32,15 @@ string_param("dom0_coprocs", opt_dom0_coprocs);
 static LIST_HEAD(coprocs);
 /* to protect both operations with the coproc and global coprocs list here */
 static DEFINE_SPINLOCK(coprocs_lock);
-/* the number of registered coproc devices */
-static int num_coprocs;
 
 void vcoproc_continue_running(struct vcoproc_instance *same)
 {
     /* nothing to do */
 }
 
-static struct coproc_device *coproc_find_by_path(const char *path)
+static struct mcoproc_device *mcoproc_find_by_path(const char *path)
 {
-    struct coproc_device *coproc;
+    struct mcoproc_device *coproc;
     bool_t found = false;
 
     if ( !path )
@@ -72,130 +66,165 @@ out:
     return found ? coproc : NULL;
 }
 
-static struct vcoproc_instance *coproc_init_vcoproc(struct domain *d,
-                                                    struct coproc_device *coproc)
+static struct vcoproc_instance *
+coproc_init_vcoproc(struct domain *d, struct mcoproc_device *mcoproc,
+                    const struct dt_device_node *np_vcoproc)
 {
     struct vcoproc_instance *vcoproc;
-    int ret;
+    int ret = 0;
+    int i;
 
     vcoproc = xzalloc(struct vcoproc_instance);
     if ( !vcoproc )
     {
         printk("Failed to allocate vcoproc_instance for %s\n",
-               dev_path(coproc->dev));
+               dev_path(mcoproc->dev));
         return ERR_PTR(-ENOMEM);
     }
 
-    vcoproc->coproc = coproc;
+    vcoproc->mcoproc = mcoproc;
     vcoproc->domain = d;
     vcoproc->state = VCOPROC_UNKNOWN;
     spin_lock_init(&vcoproc->lock);
 
-    ret = coproc->ops->vcoproc_init(vcoproc);
+    vcoproc->num_mmios = dt_number_of_address(np_vcoproc);
+
+    if ( vcoproc->num_mmios != mcoproc->num_mmios )
+    {
+        printk("MMIO num mistmatch for \"%s\", %u vs %u\n",
+               dt_node_full_name(np_vcoproc), vcoproc->num_mmios,
+               mcoproc->num_mmios);
+        ret = -ENODEV;
+        goto err;
+    }
+
+    vcoproc->mmios = xzalloc_array(struct vcoproc_mmio, vcoproc->num_mmios );
+    if ( !vcoproc->mmios )
+    {
+        printk("Failed to allocate %d mmio(s) for \"%s\"\n", vcoproc->num_mmios,
+               dev_path(mcoproc->dev));
+        ret = -ENOMEM;
+        goto err;
+    }
+
+    for ( i = 0; vcoproc->num_mmios > i; i++ )
+    {
+        struct mcoproc_mmio *m_mmio = &mcoproc->mmios[i];
+        struct pcoproc_mmio *p_mmio = m_mmio->p_mmio;
+        u64 size;
+        int index = dt_property_match_string(np_vcoproc, "reg-names",
+                                             p_mmio->name);
+
+        vcoproc->mmios[i].vcoproc = vcoproc;
+
+        if (index < 0)
+        {
+            if ( vcoproc->num_mmios > 1 )
+            {
+                printk("More than one mmio and failed name match for %s\n",
+                       dev_path(mcoproc->dev));
+                goto err;
+            }
+            else
+                index = 0;
+        }
+
+        ret = dt_device_get_address(np_vcoproc, index,
+                                    &vcoproc->mmios[i].addr,
+                                    &size);
+        if ( ret )
+        {
+            printk("Unable to retrieve address %u for %s\n",
+                   0, dev_path(mcoproc->dev));
+            goto err;
+        }
+        if ( size != m_mmio->size )
+        {
+            printk("MMIO size mistmatch for \"%s\"\n",
+                   dt_node_full_name(np_vcoproc));
+            ret = -ENODEV;
+            goto err;
+        }
+        vcoproc->mmios[i].m_mmio = m_mmio;
+        printk("Register MMIO handler: domain %d, vcoproc %s, addr %"PRIX64", "
+               "size %"PRIX64"\n", vcoproc->domain->domain_id,
+               dt_node_full_name(np_vcoproc), vcoproc->mmios[i].addr, size);
+        register_mmio_handler(vcoproc->domain,
+                              p_mmio->ops,
+                              vcoproc->mmios[i].addr,
+                              size,
+                              &vcoproc->mmios[i]);
+    }
+/*  TODO: Decide if we need to do something with IRQ here */
+
+    ret = mcoproc->ops->vcoproc_init(vcoproc);
     if ( ret )
     {
         printk("Failed to initialize vcoproc_instance for %s\n",
-               dev_path(coproc->dev));
-        goto out;
+               dev_path(mcoproc->dev));
+        goto err;
     }
 
-    spin_lock(&coproc->vcoprocs_lock);
-    list_add(&vcoproc->vcoproc_elem, &coproc->vcoprocs);
-    spin_unlock(&coproc->vcoprocs_lock);
+    spin_lock(&mcoproc->vcoprocs_lock);
+    list_add(&vcoproc->vcoproc_elem, &mcoproc->vcoprocs);
+    spin_unlock(&mcoproc->vcoprocs_lock);
 
     return vcoproc;
 
-out:
+err:
+    xfree(vcoproc->mmios);
     xfree(vcoproc);
     return ERR_PTR(ret);
 }
 
-struct vcoproc_instance *coproc_get_vcoproc(struct domain *d,
-                                            struct coproc_device *coproc)
-{
-    struct vcoproc_instance *vcoproc = NULL;
-    bool_t found = false;
-    unsigned long flags;
-
-    spin_lock_irqsave(&coproc->vcoprocs_lock, flags);
-
-    if ( list_empty(&coproc->vcoprocs) )
-        goto out;
-
-    list_for_each_entry( vcoproc, &coproc->vcoprocs, vcoproc_elem )
-    {
-        if ( vcoproc->domain == d )
-        {
-            found = true;
-            break;
-        }
-    }
-
-out:
-    spin_unlock_irqrestore(&coproc->vcoprocs_lock, flags);
-
-    return found ? vcoproc : NULL;
-}
-
-static inline bool_t coproc_is_created_vcoproc(struct domain *d,
-                                               struct coproc_device *coproc)
-{
-    return coproc_get_vcoproc(d, coproc) ? true : false;
-}
-
 static void coproc_deinit_vcoproc(struct vcoproc_instance *vcoproc)
 {
-    struct coproc_device *coproc;
+    struct mcoproc_device *mcoproc;
 
     if ( !vcoproc )
         return;
 
-    coproc = vcoproc->coproc;
-    spin_lock(&coproc->vcoprocs_lock);
+    mcoproc = vcoproc->mcoproc;
+    spin_lock(&mcoproc->vcoprocs_lock);
     list_del(&vcoproc->vcoproc_elem);
-    spin_unlock(&coproc->vcoprocs_lock);
-    coproc->ops->vcoproc_deinit(vcoproc);
+    spin_unlock(&mcoproc->vcoprocs_lock);
+    mcoproc->ops->vcoproc_deinit(vcoproc);
     xfree(vcoproc);
 }
 
-static int coproc_attach_to_domain(struct domain *d,
-                                   struct coproc_device *coproc)
+static int vcoproc_spawn(struct domain *d,
+                         struct mcoproc_device *mcoproc,
+                         const struct dt_device_node *np_vcoproc)
 {
     struct vcoproc *vcoproc_d = &d->arch.vcoproc;
     struct vcoproc_instance *vcoproc;
     int ret;
 
-    if ( !coproc )
+    if ( !mcoproc )
         return -EINVAL;
 
     spin_lock(&coprocs_lock);
 
-    if ( coproc_is_created_vcoproc(d, coproc) )
-    {
-        ret = -EEXIST;
-        goto out;
-    }
-
-    vcoproc = coproc_init_vcoproc(d, coproc);
+    vcoproc = coproc_init_vcoproc(d, mcoproc, np_vcoproc);
     if ( IS_ERR(vcoproc) )
     {
+        printk("coproc_init_vcoproc failed\n");
         ret = PTR_ERR(vcoproc);
         goto out;
     }
 
-    ret = vcoproc_scheduler_vcoproc_init(coproc->sched, vcoproc);
+    ret = vcoproc_scheduler_vcoproc_init(mcoproc->sched, vcoproc);
     if ( ret )
     {
         coproc_deinit_vcoproc(vcoproc);
         goto out;
     }
 
-    BUG_ON(vcoproc_d->num_instances >= num_coprocs);
     list_add_tail(&vcoproc->instance_elem, &vcoproc_d->instances);
     vcoproc_d->num_instances++;
 
-    printk("Created vcoproc \"%s\" for dom%u\n",
-           dev_path(coproc->dev), d->domain_id);
+    printk("Spawned vcoproc \"%s\" for dom%u\n",
+           dt_node_full_name(np_vcoproc), d->domain_id);
 
 out:
     spin_unlock(&coprocs_lock);
@@ -203,22 +232,128 @@ out:
     return ret;
 }
 
-static int coproc_find_and_attach_to_domain(struct domain *d, const char *path)
+static int vcoproc_spawn_path(struct domain *d, const char *path,
+                              const struct dt_device_node *np_vcoproc)
 {
-    struct coproc_device *coproc;
+    struct mcoproc_device *mcoproc;
 
-    coproc = coproc_find_by_path(path);
-    if ( !coproc )
+    mcoproc = mcoproc_find_by_path(path);
+    if ( !mcoproc )
+    {
+        printk("coproc %s is not found\n", path);
         return -ENODEV;
+    }
 
-    return coproc_attach_to_domain(d, coproc);
+    return vcoproc_spawn(d, mcoproc, np_vcoproc);
 }
 
-static int coproc_detach_from_domain(struct domain *d,
-                                     struct vcoproc_instance *vcoproc)
+static int vcoproc_make_node(const struct domain *d, void *fdt,
+                             const struct dt_device_node *cnode,
+                             const struct dt_device_node *vnode)
+{
+    const struct dt_property *cprop, *vprop;
+    const char *name, *path;
+    int ret = 0;
+
+    path = dt_node_full_name(vnode);
+    name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+
+    ret = fdt_begin_node(fdt, name);
+    if ( ret )
+        return ret;
+
+    /*
+     * Run through the coproc's properties,
+     * search for the same property in vcoproc, if found in vcoproc
+     * copy value property from vcoproc, otherwise from coproc. With
+     * some exceptions.
+     */
+    dt_for_each_property_node (cnode, cprop)
+    {
+        const void *prop_data = cprop->value;
+        u32 prop_len = cprop->length;
+
+        /* Don't expose the property "xen,coproc" to the guest */
+        if ( dt_property_name_is_equal(cprop, "xen,coproc") )
+            continue;
+
+        /* Copy interrupts from the real coproc solely*/
+        if ( dt_property_name_is_equal(cprop, "interrupts")
+             || dt_property_name_is_equal(cprop, "interrupt-names") )
+        {
+            ret = fdt_property(fdt, cprop->name, prop_data, prop_len);
+            if ( ret )
+                return ret;
+            continue;
+        }
+
+        dt_for_each_property_node (vnode, vprop) 
+        {
+            if ( dt_property_name_is_equal(vprop, cprop->name) )
+            {
+                prop_data = vprop->value;
+                prop_len = vprop->length;
+            }
+        }
+
+        ret = fdt_property(fdt, cprop->name, prop_data, prop_len);
+        if ( ret )
+            return ret;
+    }
+
+    ret = fdt_end_node(fdt);
+
+    dprintk(XENLOG_INFO, "Created vcoproc node \"%s\"\n", name);
+    return ret;
+}
+
+int vcoproc_handle_node(struct domain *d, void *fdt,
+                              const struct dt_device_node *node)
+{
+    int ret;
+    const char *path;
+    const struct dt_device_node *cnode;
+
+    ret = dt_property_read_string(node, "xen,vcoproc", &path);
+    if ( ret )
+    {
+        printk("Node is not a vcoproc description node\n");
+        return -EINVAL;
+    }
+
+    dprintk(XENLOG_INFO, "Handle vcoproc node %s\n", dt_node_full_name(node));
+    dprintk(XENLOG_INFO, "\txen,vcoproc = \"%s\"\n", path);
+
+    if ( *path == '/' )
+        cnode = dt_find_node_by_path(path);
+    else
+    {
+        cnode = dt_find_node_by_alias(path);
+        path = dt_node_full_name(cnode);
+    }
+
+    if ( cnode == NULL )
+    {
+        printk("Vcoproc node does not refer a coproc node\n");
+        return -EINVAL;
+    }
+
+    ret = vcoproc_spawn_path(d, path, node);
+    if ( ret )
+        return ret;
+
+    if ( fdt != NULL )
+        ret = vcoproc_make_node(d, fdt, cnode, node);
+
+    return ret;
+}
+
+static int vcoproc_eliminate(struct domain *d,
+                             struct vcoproc_instance *vcoproc)
 {
     struct vcoproc *vcoproc_d = &d->arch.vcoproc;
-    struct coproc_device *coproc;
+    struct mcoproc_device *mcoproc;
     int ret;
 
     if ( !vcoproc )
@@ -226,9 +361,9 @@ static int coproc_detach_from_domain(struct domain *d,
 
     spin_lock(&coprocs_lock);
 
-    coproc = vcoproc->coproc;
+    mcoproc = vcoproc->mcoproc;
 
-    ret = vcoproc_scheduler_vcoproc_destroy(coproc->sched, vcoproc);
+    ret = vcoproc_scheduler_vcoproc_destroy(mcoproc->sched, vcoproc);
     if ( ret )
     {
         if ( ret == -EBUSY )
@@ -242,8 +377,8 @@ static int coproc_detach_from_domain(struct domain *d,
 
     coproc_deinit_vcoproc(vcoproc);
 
-    printk("Destroyed vcoproc \"%s\" for dom%u\n",
-            dev_path(coproc->dev), d->domain_id);
+    dprintk(XENLOG_INFO, "Destroyed vcoproc \"%s\" for dom%u\n",
+            dev_path(mcoproc->dev), d->domain_id);
 
 out:
     spin_unlock(&coprocs_lock);
@@ -251,209 +386,231 @@ out:
     return ret;
 }
 
-bool_t coproc_is_attached_to_domain(struct domain *d, const char *path)
+static int mcoproc_acquire_mmios(struct mcoproc_device *mcoproc,
+                                 const struct pcoproc_desc *desc)
 {
-    struct coproc_device *coproc;
-    bool_t is_created;
-
-    coproc = coproc_find_by_path(path);
-    if ( !coproc )
-        return false;
-
-    spin_lock(&coprocs_lock);
-    is_created = coproc_is_created_vcoproc(d, coproc);
-    spin_unlock(&coprocs_lock);
-
-    return is_created;
-}
-
-struct coproc_device *coproc_alloc(struct dt_device_node *np,
-                                   const struct coproc_ops *ops)
-{
-    struct coproc_device *coproc;
-    struct device *dev = &np->dev;
-    unsigned int num_irqs, num_mmios;
-    int i, ret;
-
-    coproc = xzalloc(struct coproc_device);
-    if ( !coproc )
-    {
-        printk("Failed to allocate coproc_device for \"%s\"\n",
-               dev_path(dev));
-        return ERR_PTR(-ENOMEM);
-    }
-    coproc->dev = dev;
+    int i;
+    int ret = 0;
+    u32 num_mmios;
+    struct dt_device_node *np = dev_to_dt(mcoproc->dev);
 
     num_mmios = dt_number_of_address(np);
 
     if ( !num_mmios )
     {
         printk("Failed to find at least one mmio for \"%s\"\n",
-               dev_path(coproc->dev));
+               dev_path(mcoproc->dev));
         ret = -ENODEV;
         goto out;
     }
 
-    coproc->mmios = xzalloc_array(struct mmio, num_mmios);
-    if ( !coproc->mmios )
+    if ( num_mmios != desc->p_mmio_num )
+    {
+        printk("MMIO num mistmatch for \"%s\"\n",
+               dev_path(mcoproc->dev));
+        ret = -ENODEV;
+        goto out;
+    }
+
+    mcoproc->mmios = xzalloc_array(struct mcoproc_mmio, num_mmios);
+    if ( !mcoproc->mmios )
     {
         printk("Failed to allocate %d mmio(s) for \"%s\"\n", num_mmios,
-               dev_path(coproc->dev));
+               dev_path(mcoproc->dev));
         ret = -ENOMEM;
         goto out;
     }
 
     for ( i = 0; i < num_mmios; ++i )
     {
-        struct mmio *mmio = &coproc->mmios[i];
-        ret = dt_device_get_address(np, i, &mmio->addr, &mmio->size);
+        struct mcoproc_mmio *m_mmio = &mcoproc->mmios[i];
+        struct pcoproc_mmio *p_mmio = &desc->p_mmio[i];
+        int index = dt_property_match_string(np, "reg-names", p_mmio->name);
+
+        if (index < 0)
+        {
+            if ( num_mmios > 1 )
+            {
+                printk("More than one mmio and failed name match for %s\n",
+                       dev_path(mcoproc->dev));
+                goto out;
+            }
+            else
+                index = 0;
+        }
+
+        ret = dt_device_get_address(np, index, &m_mmio->addr, &m_mmio->size);
         if ( ret )
         {
-            printk("Failed to get mmio index %d for \"%s\"\n",
-                   i, dev_path(coproc->dev));
+            printk("Failed to get single mmio range for \"%s\"\n",
+                   dev_path(mcoproc->dev));
             goto out;
         }
 
-        mmio->base = ioremap_nocache(mmio->addr, mmio->size);
-        if ( !mmio->base )
+        if (p_mmio->size && p_mmio->size != m_mmio->size)
         {
-            printk("Failed to remap mmio index %d for \"%s\"\n",
-                   i, dev_path(coproc->dev));
+            printk("MMIO size mistmatch for \"%s\"\n",
+                   dev_path(mcoproc->dev));
+            ret = -ENODEV;
+            goto out;
+        }
+
+        m_mmio->base = ioremap_nocache(m_mmio->addr, m_mmio->size);
+        if ( IS_ERR(m_mmio->base) )
+        {
+            printk("Failed to remap single mmio range for \"%s\"\n",
+                   dev_path(mcoproc->dev));
             ret = -ENOMEM;
             goto out;
         }
-        mmio->coproc = coproc;
+        m_mmio->p_mmio = p_mmio;
     }
-    coproc->num_mmios = num_mmios;
+
+    mcoproc->num_mmios = num_mmios;
+
+out:
+    return ret;
+}
+
+static int mcoproc_acquire_irqs(struct mcoproc_device *mcoproc,
+                                 const struct pcoproc_desc *desc)
+{
+    int i;
+    int ret = 0;
+    unsigned int num_irqs;
+    struct dt_device_node *np = dev_to_dt(mcoproc->dev);
 
     num_irqs = dt_number_of_irq(np);
 
     if ( !num_irqs )
     {
         printk("Failed to find at least one irq for \"%s\"\n",
-               dev_path(coproc->dev));
+               dev_path(mcoproc->dev));
         ret = -ENODEV;
         goto out;
     }
 
-    coproc->irqs = xzalloc_array(unsigned int, num_irqs);
-    if ( !coproc->irqs )
+    if ( num_irqs != desc->p_irq_num )
+    {
+        printk("IRQ num mistmatch for \"%s\"\n",
+               dev_path(mcoproc->dev));
+        ret = -ENODEV;
+        goto out;
+    }
+
+    mcoproc->irqs = xzalloc_array(struct mcoproc_irq, num_irqs);
+    if ( !mcoproc->irqs )
     {
         printk("Failed to allocate %d irq(s) for \"%s\"\n", num_irqs,
-               dev_path(coproc->dev));
+               dev_path(mcoproc->dev));
         ret = -ENOMEM;
         goto out;
     }
 
     for ( i = 0; i < num_irqs; ++i )
     {
-        int irq = platform_get_irq(np, i);
+        struct pcoproc_irq *p_irq = &desc->p_irq[i];
+        struct mcoproc_irq *m_irq = &mcoproc->irqs[i];
+        int index = dt_property_match_string(np, "interrupt-names",
+                                             p_irq->name);
+        int irq;
 
+        if (index < 0)
+        {
+            if ( num_irqs > 1 )
+            {
+                printk("More than one irq and failed name match for %s\n",
+                       dev_path(mcoproc->dev));
+                goto out;
+            }
+            else
+                index = 0;
+        }
+
+        irq = platform_get_irq(np, index);
         if ( irq < 0 )
         {
-            printk("Failed to get irq index %d for \"%s\"\n", i,
-                   dev_path(coproc->dev));
+            printk("Failed to get irq index %d for \"%s\"\n", 0,
+                   dev_path(mcoproc->dev));
             ret = -ENODEV;
             goto out;
         }
-        coproc->irqs[i] = irq;
+        ret = request_irq(irq,
+                          IRQF_SHARED,
+                          p_irq->handler,
+                          p_irq->name,
+                          mcoproc);
+        if ( ret )
+        {
+            printk("Failed to request irq %d for \"%s\"\n", irq,
+                   dev_path(mcoproc->dev));
+            ret = -ENODEV;
+            goto out;
+        }
+        m_irq->irq = irq;
+        m_irq->p_irq = p_irq;
     }
-    coproc->num_irqs = num_irqs;
 
-    INIT_LIST_HEAD(&coproc->vcoprocs);
-    spin_lock_init(&coproc->vcoprocs_lock);
-    coproc->ops = ops;
-
-    return coproc;
+    mcoproc->num_irqs = num_irqs;
 
 out:
-    coproc_release(coproc);
+    return ret;
+}
+
+struct mcoproc_device *coproc_alloc(struct dt_device_node *np,
+                                    const struct pcoproc_desc *desc,
+                                    const struct coproc_ops *ops)
+{
+    struct mcoproc_device *mcoproc;
+    struct device *dev = &np->dev;
+    int ret = 0;
+
+    mcoproc = xzalloc(struct mcoproc_device);
+    if ( !mcoproc )
+    {
+        printk("Failed to allocate mcoproc_device for \"%s\"\n",
+               dev_path(dev));
+        return ERR_PTR(-ENOMEM);
+    }
+    mcoproc->dev = dev;
+
+    ret = mcoproc_acquire_mmios(mcoproc, desc);
+    if ( ret )
+        goto out;
+
+    ret = mcoproc_acquire_irqs(mcoproc, desc);
+    if ( ret )
+        goto out;
+
+    INIT_LIST_HEAD(&mcoproc->vcoprocs);
+    spin_lock_init(&mcoproc->vcoprocs_lock);
+    mcoproc->ops = ops;
+
+    return mcoproc;
+
+out:
+    coproc_release(mcoproc);
     return ERR_PTR(ret);
 }
 
-void coproc_release(struct coproc_device *coproc)
+void coproc_release(struct mcoproc_device *mcoproc)
 {
     int i;
 
-    if ( IS_ERR_OR_NULL(coproc) )
+    if ( IS_ERR_OR_NULL(mcoproc) )
         return;
-    xfree(coproc->irqs);
-    for ( i = 0; i < coproc->num_mmios; i++ )
-    {
-        if ( !IS_ERR_OR_NULL(coproc->mmios[i].base) )
-            iounmap(coproc->mmios[i].base);
-    }
-    xfree(coproc->mmios);
-    xfree(coproc);
-}
 
-static int __init vcoproc_dom0_init(struct domain *d)
-{
-    const char *curr, *next;
-    int len, ret = 0;
+    for ( i = 0; i < mcoproc->num_irqs; i++ )
+        if ( mcoproc->irqs[i].irq )
+            release_irq(mcoproc->irqs[i].irq, mcoproc);
 
-    if ( !strcmp(opt_dom0_coprocs, "") )
-        return 0;
+    for ( i = 0; i < mcoproc->num_mmios; i++ )
+        if ( !IS_ERR_OR_NULL(mcoproc->mmios[i].base) )
+            iounmap(mcoproc->mmios[i].base);
 
-    printk("Got list of coprocs \"%s\" for dom%u\n",
-           opt_dom0_coprocs, d->domain_id);
-
-    /*
-     * For the moment, we'll create vcoproc for each registered coproc
-     * which is described in the list of coprocs for domain 0 in bootargs.
-     */
-    for ( curr = opt_dom0_coprocs; curr; curr = next )
-    {
-        struct dt_device_node *node = NULL;
-        char *buf;
-        bool_t is_alias = false;
-
-        next = strchr(curr, ',');
-        if ( next )
-        {
-            len = next - curr;
-            next++;
-        }
-        else
-            len = strlen(curr);
-
-        if ( *curr != '/' )
-            is_alias = true;
-
-        buf = xmalloc_array(char, len + 1);
-        if ( !buf )
-        {
-            ret = -ENOMEM;
-            break;
-        }
-
-        strlcpy(buf, curr, len + 1);
-        if ( is_alias )
-            node = dt_find_node_by_alias(buf);
-        else
-            node = dt_find_node_by_path(buf);
-        if ( !node )
-        {
-            printk("Unable to find node by %s \"%s\"\n",
-                   is_alias ? "alias" : "path", buf);
-            ret = -EINVAL;
-        }
-        xfree(buf);
-        if ( ret )
-            break;
-
-        curr = dt_node_full_name(node);
-
-        ret = coproc_find_and_attach_to_domain(d, curr);
-        if (ret)
-        {
-            printk("Failed to attach coproc \"%s\" to dom%u (%d)\n",
-                   curr, d->domain_id, ret);
-            break;
-        }
-    }
-
-    return ret;
+    xfree(mcoproc->irqs);
+    xfree(mcoproc->mmios);
+    xfree(mcoproc);
 }
 
 int vcoproc_domain_init(struct domain *d)
@@ -463,27 +620,6 @@ int vcoproc_domain_init(struct domain *d)
 
     vcoproc_d->num_instances = 0;
     INIT_LIST_HEAD(&vcoproc_d->instances);
-
-    /*
-     * We haven't known yet if the guest domain are going to use coprocs.
-     * So, just return okay for the moment. It won't be an issue later if
-     * guest domain doesn't request any.
-     * But we definitely know when domain 0 is being created.
-     */
-    if ( !num_coprocs )
-    {
-        if ( d->domain_id == 0 && strcmp(opt_dom0_coprocs, "") )
-        {
-            printk("There is no registered coproc for creating vcoproc\n");
-            return -ENODEV;
-        }
-
-        return 0;
-    }
-
-    /* We already have the list of coprocs for domain 0 only. */
-    if ( d->domain_id == 0 )
-        ret = vcoproc_dom0_init(d);
 
     return ret;
 }
@@ -502,7 +638,7 @@ int coproc_release_vcoprocs(struct domain *d)
     list_for_each_entry_safe( vcoproc, temp, &vcoproc_d->instances,
                               instance_elem )
     {
-        ret = coproc_detach_from_domain(d, vcoproc);
+        ret = vcoproc_eliminate(d, vcoproc);
         if ( ret )
             return ret;
     }
@@ -514,7 +650,7 @@ int coproc_do_domctl(struct xen_domctl *domctl, struct domain *d,
                      XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 {
     char *path;
-    int ret;
+    int ret = 0;
 
     switch ( domctl->cmd )
     {
@@ -536,7 +672,7 @@ int coproc_do_domctl(struct xen_domctl *domctl, struct domain *d,
 
         printk("Got coproc \"%s\" for dom%u\n", path, d->domain_id);
 
-        ret = coproc_find_and_attach_to_domain(d, path);
+//        ret = coproc_find_and_attach_to_domain(d, path);
         if ( ret )
             printk("Failed to attach coproc \"%s\" to dom%u (%d)\n",
                    path, d->domain_id, ret);
@@ -551,24 +687,24 @@ int coproc_do_domctl(struct xen_domctl *domctl, struct domain *d,
     return ret;
 }
 
-int __init coproc_register(struct coproc_device *coproc)
+int __init coproc_register(struct mcoproc_device *mcoproc)
 {
-    if ( !coproc || !coproc->ops )
+    if ( !mcoproc || !mcoproc->ops )
         return -EINVAL;
 
-    if ( coproc_find_by_path(dev_path(coproc->dev)) )
+    if ( mcoproc_find_by_path(dev_path(mcoproc->dev)) )
         return -EEXIST;
 
-    coproc->sched = vcoproc_scheduler_init(coproc);
-    if ( IS_ERR(coproc->sched) )
-        return PTR_ERR(coproc->sched);
+    mcoproc->sched = vcoproc_scheduler_init(mcoproc);
+    if ( IS_ERR(mcoproc->sched) )
+        return PTR_ERR(mcoproc->sched);
 
     spin_lock(&coprocs_lock);
-    list_add_tail(&coproc->coproc_elem, &coprocs);
-    num_coprocs++;
+    list_add_tail(&mcoproc->coproc_elem, &coprocs);
     spin_unlock(&coprocs_lock);
 
-    printk("Registered new coproc \"%s\"\n", dev_path(coproc->dev));
+    dprintk(XENLOG_INFO, "Registered new coproc \"%s\"\n",
+            dev_path(mcoproc->dev));
 
     return 0;
 }
@@ -594,7 +730,6 @@ void coproc_debug_toggle(unsigned char key)
 void __init coproc_init(void)
 {
     struct dt_device_node *node;
-    unsigned int num_coprocs = 0;
     int ret;
 
     register_keyhandler('c', coproc_debug_toggle,
@@ -608,16 +743,13 @@ void __init coproc_init(void)
      */
     dt_for_each_device_node(dt_host, node)
     {
-        if ( !dt_get_property(node, "xen,coproc", NULL) )
+        if ( !dt_device_for_scf(node) )
             continue;
 
         ret = device_init(node, DEVICE_COPROC, NULL);
-        if ( !ret )
-            num_coprocs++;
+        if ( ret )
+            printk("SCF driver missed for %s\n", dt_node_full_name(node) );
     }
-
-    if ( !num_coprocs )
-        printk("Unable to find compatible coprocs in the device tree\n");
 }
 
 /*
