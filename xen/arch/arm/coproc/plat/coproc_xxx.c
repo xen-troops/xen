@@ -68,9 +68,9 @@ static int vcoproc_xxx_write(struct vcpu *v, mmio_info_t *info, register_t r,
             vgic_vcpu_inject_spi(ctx.vcoproc->domain, ctx.coproc->irqs[i]);
 
         if ( r & CORPOC_XXX_ENABLE )
-            vcoproc_sheduler_vcoproc_wake(ctx.coproc->sched, ctx.vcoproc);
+            vcoproc_scheduler_vcoproc_wake(ctx.coproc->sched, ctx.vcoproc);
         else
-            vcoproc_sheduler_vcoproc_sleep(ctx.coproc->sched, ctx.vcoproc);
+            vcoproc_scheduler_vcoproc_sleep(ctx.coproc->sched, ctx.vcoproc);
     }
 #endif
 
