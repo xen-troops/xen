@@ -34,12 +34,14 @@ static s_time_t coproc_wait_time = MILLISECS(500);
 static int vcoproc_xxx_read(struct vcpu *v, mmio_info_t *info, register_t *r,
                             void *priv)
 {
-    struct mmio *mmio = priv;
+    struct vcoproc_mmio *mmio = priv;
     struct vcoproc_rw_context ctx;
+    struct mcoproc_device *mcoproc;
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
-    COPROC_DEBUG(ctx.coproc->dev,
-                 "read r%d=%"PRIregister" offset %#08x base %#08x\n",
+    mcoproc = ctx.vcoproc->mcoproc;
+    COPROC_DEBUG(mcoproc->dev, "domain %u, read r%d=%"PRIregister
+                 " offset %#08x base %#08x\n", v->domain->domain_id,
                  ctx.dabt.reg, *r, ctx.offset, (uint32_t)mmio->addr);
 
     return 1;
@@ -48,12 +50,14 @@ static int vcoproc_xxx_read(struct vcpu *v, mmio_info_t *info, register_t *r,
 static int vcoproc_xxx_write(struct vcpu *v, mmio_info_t *info, register_t r,
                              void *priv)
 {
-    struct mmio *mmio = priv;
+    struct vcoproc_mmio *mmio = priv;
     struct vcoproc_rw_context ctx;
+    struct mcoproc_device *mcoproc;
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
-    COPROC_DEBUG(ctx.coproc->dev,
-                 "write r%d=%"PRIregister" offset %#08x base %#08x\n",
+    mcoproc = ctx.vcoproc->mcoproc;
+    COPROC_DEBUG(mcoproc->dev, "domain %u, write r%d=%"PRIregister
+                 " offset %#08x base %#08x\n", v->domain->domain_id,
                  ctx.dabt.reg, r, ctx.offset, (uint32_t)mmio->addr);
 
 #if 1
@@ -66,22 +70,50 @@ static int vcoproc_xxx_write(struct vcpu *v, mmio_info_t *info, register_t r,
         int i;
 
         /* Just inject all irqs that coproc has */
-        for ( i = 0; i < ctx.coproc->num_irqs; i++ )
-            vgic_vcpu_inject_spi(ctx.vcoproc->domain, ctx.coproc->irqs[i]);
+        for ( i = 0; i < mcoproc->num_irqs; i++ )
+            vgic_vcpu_inject_spi(ctx.vcoproc->domain, mcoproc->irqs[i].irq);
 
         if ( r & CORPOC_XXX_ENABLE )
-            vcoproc_scheduler_vcoproc_wake(ctx.coproc->sched, ctx.vcoproc);
+            vcoproc_scheduler_vcoproc_wake(mcoproc->sched, ctx.vcoproc);
         else
-            vcoproc_scheduler_vcoproc_sleep(ctx.coproc->sched, ctx.vcoproc);
+            vcoproc_scheduler_vcoproc_sleep(mcoproc->sched, ctx.vcoproc);
     }
 #endif
 
     return 1;
 }
 
-static const struct mmio_handler_ops vcoproc_xxx_mmio_handler = {
+static struct mmio_handler_ops vcoproc_xxx_mmio_handler = {
     .read = vcoproc_xxx_read,
     .write = vcoproc_xxx_write,
+};
+
+static struct pcoproc_mmio coproc_xxx_mmio[] = {
+    {
+        .size = 0,
+        .ops = &vcoproc_xxx_mmio_handler,
+    },
+};
+
+static void coproc_xxx_irq_handler(int irq, void *dev,
+                                   struct cpu_user_regs *regs)
+{
+    struct mcoproc_device *coproc_xxx = dev;
+
+    (void)coproc_xxx;
+}
+
+static struct pcoproc_irq coproc_xxx_irq[] = {
+    {
+        .handler = coproc_xxx_irq_handler,
+    },
+};
+
+static const struct pcoproc_desc coproc_xxx_desc = {
+    .p_mmio_num = ARRAY_SIZE(coproc_xxx_mmio),
+    .p_mmio = coproc_xxx_mmio,
+    .p_irq_num = ARRAY_SIZE(coproc_xxx_irq),
+    .p_irq = coproc_xxx_irq,
 };
 
 s_time_t vcoproc_xxx_ctx_switch_from(struct vcoproc_instance *curr)
@@ -98,15 +130,7 @@ static int vcoproc_xxx_ctx_switch_to(struct vcoproc_instance *next)
 
 static int vcoproc_xxx_vcoproc_init(struct vcoproc_instance *vcoproc)
 {
-    int i;
-
-    for ( i = 0; i < vcoproc->coproc->num_mmios; i++ )
-    {
-        struct mmio *mmio = &vcoproc->coproc->mmios[i];
-        register_mmio_handler(vcoproc->domain, &vcoproc_xxx_mmio_handler,
-                              mmio->addr, mmio->size, mmio);
-    }
-
+    /* nothing to do */
     return 0;
 }
 
@@ -122,53 +146,29 @@ static const struct coproc_ops vcoproc_xxx_vcoproc_ops = {
     .ctx_switch_to       = vcoproc_xxx_ctx_switch_to,
 };
 
-static void coproc_xxx_irq_handler(int irq, void *dev,
-                                   struct cpu_user_regs *regs)
-{
-    struct coproc_device *coproc_xxx = dev;
-
-    (void)coproc_xxx;
-}
-
 static int coproc_xxx_dt_probe(struct dt_device_node *np)
 {
-    struct coproc_device *coproc_xxx;
+    struct mcoproc_device *coproc_xxx;
     struct device *dev = &np->dev;
-    int i, ret;
+    int ret;
 
-    coproc_xxx = coproc_alloc(np, &vcoproc_xxx_vcoproc_ops);
+    coproc_xxx = coproc_alloc(np,  &coproc_xxx_desc, &vcoproc_xxx_vcoproc_ops);
     if ( IS_ERR_OR_NULL(coproc_xxx) )
-        return PTR_ERR(coproc_xxx);
-
-    for ( i = 0; i < coproc_xxx->num_irqs; ++i )
     {
-        ret = request_irq(coproc_xxx->irqs[i],
-                         IRQF_SHARED,
-                         coproc_xxx_irq_handler,
-                         "coproc_xxx irq",
-                         coproc_xxx);
-        if ( ret )
-        {
-            COPROC_ERROR(dev, "failed to request irq %d (%u)\n", i,
-                         coproc_xxx->irqs[i]);
-            goto out_release_irqs;
-        }
+        ret = PTR_ERR(coproc_xxx);
+        COPROC_DEBUG(dev, "failed to allocate coproc (%d)\n", ret);
+        return ret;
     }
 
     ret = coproc_register(coproc_xxx);
     if ( ret )
     {
         COPROC_DEBUG(dev, "failed to register coproc (%d)\n", ret);
-        goto out_release_irqs;
+        coproc_release(coproc_xxx);
+        return ret;
     }
 
     return 0;
-
-out_release_irqs:
-    while ( i-- )
-        release_irq(coproc_xxx->irqs[i], coproc_xxx);
-    coproc_release(coproc_xxx);
-    return ret;
 }
 
 static const struct dt_device_match coproc_xxx_dt_match[] __initconst =
@@ -177,17 +177,12 @@ static const struct dt_device_match coproc_xxx_dt_match[] __initconst =
     { /* sentinel */ },
 };
 
-static __init int coproc_xxx_init(struct dt_device_node *dev, const void *data)
+static __init int coproc_xxx_init(struct dt_device_node *np, const void *data)
 {
-    int ret;
+    /*TODO: Decide should we still need used by DOMID_XEN */
+    dt_device_set_used_by(np, DOMID_XEN);
 
-    dt_device_set_used_by(dev, DOMID_XEN);
-
-    ret = coproc_xxx_dt_probe(dev);
-    if ( ret )
-        return ret;
-
-    return 0;
+    return coproc_xxx_dt_probe(np);
 }
 
 DT_DEVICE_START(coproc_xxx, "COPROC_XXX", DEVICE_COPROC)
