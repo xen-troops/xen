@@ -266,26 +266,24 @@ bool_t coproc_is_attached_to_domain(struct domain *d, const char *path)
     return is_created;
 }
 
-struct coproc_device *coproc_alloc(struct platform_device *pdev,
+struct coproc_device *coproc_alloc(struct dt_device_node *np,
                                    const struct coproc_ops *ops)
 {
     struct coproc_device *coproc;
-    struct device *dev = &pdev->dev;
-    struct resource *res;
-    int num_irqs, num_mmios, i, ret;
+    struct device *dev = &np->dev;
+    unsigned int num_irqs, num_mmios;
+    int i, ret;
 
     coproc = xzalloc(struct coproc_device);
     if ( !coproc )
     {
         printk("Failed to allocate coproc_device for \"%s\"\n",
-               dev_path(coproc->dev));
+               dev_path(dev));
         return ERR_PTR(-ENOMEM);
     }
     coproc->dev = dev;
 
-    num_mmios = 0;
-    while ( (res = platform_get_resource(pdev, IORESOURCE_MEM, num_mmios)) )
-        num_mmios++;
+    num_mmios = dt_number_of_address(np);
 
     if ( !num_mmios )
     {
@@ -306,24 +304,28 @@ struct coproc_device *coproc_alloc(struct platform_device *pdev,
 
     for ( i = 0; i < num_mmios; ++i )
     {
-        res = platform_get_resource(pdev, IORESOURCE_MEM, i);
-        coproc->mmios[i].base = devm_ioremap_resource(dev, res);
-        if ( IS_ERR(coproc->mmios[i].base) )
+        struct mmio *mmio = &coproc->mmios[i];
+        ret = dt_device_get_address(np, i, &mmio->addr, &mmio->size);
+        if ( ret )
         {
-            printk("Failed to remap IO for \"%s\"\n", dev_path(coproc->dev));
-            ret = PTR_ERR(coproc->mmios[i].base);
+            printk("Failed to get mmio index %d for \"%s\"\n",
+                   i, dev_path(coproc->dev));
             goto out;
         }
 
-        coproc->mmios[i].size = resource_size(res);
-        coproc->mmios[i].addr = resource_addr(res);
-        coproc->mmios[i].coproc = coproc;
+        mmio->base = ioremap_nocache(mmio->addr, mmio->size);
+        if ( !mmio->base )
+        {
+            printk("Failed to remap mmio index %d for \"%s\"\n",
+                   i, dev_path(coproc->dev));
+            ret = -ENOMEM;
+            goto out;
+        }
+        mmio->coproc = coproc;
     }
     coproc->num_mmios = num_mmios;
 
-    num_irqs = 0;
-    while ( (res = platform_get_resource(pdev, IORESOURCE_IRQ, num_irqs)) )
-        num_irqs++;
+    num_irqs = dt_number_of_irq(np);
 
     if ( !num_irqs )
     {
@@ -344,7 +346,7 @@ struct coproc_device *coproc_alloc(struct platform_device *pdev,
 
     for ( i = 0; i < num_irqs; ++i )
     {
-        int irq = platform_get_irq(pdev, i);
+        int irq = platform_get_irq(np, i);
 
         if ( irq < 0 )
         {
