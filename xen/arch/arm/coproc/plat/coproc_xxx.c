@@ -128,13 +128,13 @@ static void coproc_xxx_irq_handler(int irq, void *dev,
     (void)coproc_xxx;
 }
 
-static int coproc_xxx_dt_probe(struct platform_device *pdev)
+static int coproc_xxx_dt_probe(struct dt_device_node *np)
 {
     struct coproc_device *coproc_xxx;
-    struct device *dev = &pdev->dev;
+    struct device *dev = &np->dev;
     int i, ret;
 
-    coproc_xxx = coproc_alloc(pdev, &vcoproc_xxx_vcoproc_ops);
+    coproc_xxx = coproc_alloc(np, &vcoproc_xxx_vcoproc_ops);
     if ( IS_ERR_OR_NULL(coproc_xxx) )
         return PTR_ERR(coproc_xxx);
 
