@@ -175,6 +175,9 @@ struct iommu_ops {
                                   unsigned int flags);
     int __must_check (*unmap_pages)(struct domain *d, unsigned long gfn,
                                     unsigned int order);
+#ifdef CONFIG_ARM
+    int (*alloc_page_table)(struct domain *d);
+#endif /* CONFIG_ARM */
     void (*free_page_table)(struct page_info *);
 #ifdef CONFIG_X86
     void (*update_ire_from_apic)(unsigned int apic, unsigned int reg, unsigned int value);
