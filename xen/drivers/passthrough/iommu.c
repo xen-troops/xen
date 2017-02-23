@@ -142,7 +142,14 @@ int iommu_domain_init(struct domain *d, bool_t use_iommu)
         return 0;
 
     hd->platform_ops = iommu_get_ops();
-    return hd->platform_ops->init(d);
+    ret = hd->platform_ops->init(d);
+    if ( ret )
+        return ret;
+
+    if ( use_iommu && !is_hardware_domain(d) )
+        ret = iommu_construct(d);
+
+    return ret;
 }
 
 static void __hwdom_init check_hwdom_reqs(struct domain *d)
