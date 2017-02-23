@@ -639,7 +639,7 @@ void __init coproc_init(void)
      */
     dt_for_each_device_node(dt_host, node)
     {
-        if ( !dt_get_property(node, "xen,coproc", NULL) )
+        if ( !dt_device_for_coproc(node) )
             continue;
 
         ret = device_init(node, DEVICE_COPROC, NULL);

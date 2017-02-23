@@ -1332,7 +1332,7 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         return make_timer_node(d, kinfo->fdt, node);
 
 #ifdef CONFIG_HAS_COPROC
-    if ( device_get_class(node) == DEVICE_COPROC )
+    if ( dt_device_for_coproc(node) )
     {
         res = handle_coproc_node(d, node);
         if ( res)
