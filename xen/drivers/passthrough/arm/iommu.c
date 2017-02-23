@@ -19,6 +19,7 @@
 #include <xen/iommu.h>
 #include <xen/device_tree.h>
 #include <asm/device.h>
+#include <xen/sched.h>
 
 static const struct iommu_ops *iommu_ops;
 
@@ -57,6 +58,12 @@ void __hwdom_init arch_iommu_check_autotranslated_hwdom(struct domain *d)
 {
     /* ARM doesn't require specific check for hwdom */
     return;
+}
+
+void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
+{
+    if ( need_iommu(d) && !iommu_use_hap_pt(d) )
+        arch_iommu_populate_page_table(d);
 }
 
 int arch_iommu_domain_init(struct domain *d)
