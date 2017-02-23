@@ -141,7 +141,7 @@ static int __init parse_dom0_iommu_param(const char *s)
 }
 custom_param("dom0-iommu", parse_dom0_iommu_param);
 
-int iommu_domain_init(struct domain *d)
+int iommu_domain_init(struct domain *d, bool use_iommu)
 {
     struct domain_iommu *hd = dom_iommu(d);
     int ret = 0;
@@ -154,7 +154,17 @@ int iommu_domain_init(struct domain *d)
         return 0;
 
     hd->platform_ops = iommu_get_ops();
-    return hd->platform_ops->init(d);
+    ret = hd->platform_ops->init(d, use_iommu);
+    if ( ret )
+        return ret;
+
+    if ( use_iommu )
+    {
+        hd->status = IOMMU_STATUS_initialized;
+        hd->need_sync = !iommu_use_hap_pt(d);
+    }
+
+    return 0;
 }
 
 static void __hwdom_init check_hwdom_reqs(struct domain *d)
