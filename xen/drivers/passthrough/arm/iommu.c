@@ -70,6 +70,7 @@ void arch_iommu_domain_destroy(struct domain *d)
 
 int arch_iommu_populate_page_table(struct domain *d)
 {
-    /* The IOMMU shares the p2m with the CPU */
-    return -ENOSYS;
+    const struct iommu_ops *ops = iommu_get_ops();
+
+    return ops->alloc_page_table ? ops->alloc_page_table(d) : -ENOSYS;
 }
