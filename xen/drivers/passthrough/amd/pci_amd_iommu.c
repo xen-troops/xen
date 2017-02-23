@@ -238,7 +238,7 @@ static int get_paging_mode(unsigned long entries)
     return level;
 }
 
-static int amd_iommu_domain_init(struct domain *d)
+static int amd_iommu_domain_init(struct domain *d, bool use_iommu)
 {
     struct domain_iommu *hd = dom_iommu(d);
 
