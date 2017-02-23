@@ -639,6 +639,17 @@ bool_t dt_device_is_available(const struct dt_device_node *device);
 bool_t dt_device_for_passthrough(const struct dt_device_node *device);
 
 /**
+ * dt_device_for_coproc - Check if a device is a coprocessor to be shared
+ * by CSF
+ *
+ * @device: Node to check
+ *
+ * Return true if the property "xen,coproc" is present in the node,
+ * false otherwise.
+ */
+ bool_t dt_device_for_coproc(const struct dt_device_node *device);
+
+/**
  * dt_match_node - Tell if a device_node has a matching of dt_device_match
  * @matches: array of dt_device_match structures to search in
  * @node: the dt_device_node structure to match against
