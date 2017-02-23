@@ -135,7 +135,7 @@ static int __init parse_iommu_param(const char *s)
     return rc;
 }
 
-int iommu_domain_init(struct domain *d)
+int iommu_domain_init(struct domain *d, bool use_iommu)
 {
     struct domain_iommu *hd = dom_iommu(d);
     int ret = 0;
@@ -148,7 +148,13 @@ int iommu_domain_init(struct domain *d)
         return 0;
 
     hd->platform_ops = iommu_get_ops();
-    return hd->platform_ops->init(d);
+    ret = hd->platform_ops->init(d, use_iommu);
+    if ( ret )
+        return ret;
+
+    d->need_iommu = use_iommu;
+
+    return 0;
 }
 
 static void __hwdom_init check_hwdom_reqs(struct domain *d)
