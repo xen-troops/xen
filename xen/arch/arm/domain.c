@@ -565,7 +565,7 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     ASSERT(config != NULL);
 
     /* p2m_init relies on some value initialized by the IOMMU subsystem */
-    if ( (rc = iommu_domain_init(d)) != 0 )
+    if ( (rc = iommu_domain_init(d, false)) != 0 )
         goto fail;
 
     if ( (rc = p2m_init(d)) != 0 )

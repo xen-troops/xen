@@ -649,7 +649,7 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
         if ( (rc = init_domain_irq_mapping(d)) != 0 )
             goto fail;
 
-        if ( (rc = iommu_domain_init(d)) != 0 )
+        if ( (rc = iommu_domain_init(d, false)) != 0 )
             goto fail;
     }
     spin_lock_init(&d->arch.e820_lock);

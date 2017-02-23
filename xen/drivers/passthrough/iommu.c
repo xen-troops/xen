@@ -129,7 +129,7 @@ static void __init parse_iommu_param(char *s)
     } while ( ss );
 }
 
-int iommu_domain_init(struct domain *d)
+int iommu_domain_init(struct domain *d, bool_t use_iommu)
 {
     struct domain_iommu *hd = dom_iommu(d);
     int ret = 0;
