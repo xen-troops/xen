@@ -118,6 +118,42 @@ void __hwdom_init arch_iommu_check_autotranslated_hwdom(struct domain *d)
         panic("Presently, iommu must be enabled for PVH hardware domain\n");
 }
 
+void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
+{
+    const struct domain_iommu *hd = dom_iommu(d);
+
+    if ( need_iommu(d) && !iommu_use_hap_pt(d) )
+    {
+        struct page_info *page;
+        unsigned int i = 0;
+        int rc = 0;
+
+        page_list_for_each ( page, &d->page_list )
+        {
+            unsigned long mfn = page_to_mfn(page);
+            unsigned long gfn = mfn_to_gmfn(d, mfn);
+            unsigned int mapping = IOMMUF_readable;
+            int ret;
+
+            if ( ((page->u.inuse.type_info & PGT_count_mask) == 0) ||
+                 ((page->u.inuse.type_info & PGT_type_mask)
+                  == PGT_writable_page) )
+                mapping |= IOMMUF_writable;
+
+            ret = hd->platform_ops->map_pages(d, gfn, mfn, 0, mapping);
+            if ( !rc )
+                rc = ret;
+
+            if ( !(i++ & 0xfffff) )
+                process_pending_softirqs();
+        }
+
+        if ( rc )
+            printk(XENLOG_WARNING "d%d: IOMMU mapping failed: %d\n",
+                   d->domain_id, rc);
+    }
+}
+
 int arch_iommu_domain_init(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
