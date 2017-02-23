@@ -2705,7 +2705,7 @@ static int arm_smmu_reassign_dev(struct domain *s, struct domain *t,
 	return 0;
 }
 
-static int arm_smmu_iommu_domain_init(struct domain *d)
+static int arm_smmu_iommu_domain_init(struct domain *d, bool use_iommu)
 {
 	struct arm_smmu_xen_domain *xen_domain;
 
