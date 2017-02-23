@@ -56,7 +56,7 @@ int iommu_setup(void);
 int iommu_add_device(struct pci_dev *pdev);
 int iommu_enable_device(struct pci_dev *pdev);
 int iommu_remove_device(struct pci_dev *pdev);
-int iommu_domain_init(struct domain *d);
+int iommu_domain_init(struct domain *d, bool use_iommu);
 void iommu_hwdom_init(struct domain *d);
 void iommu_domain_destroy(struct domain *d);
 int deassign_device(struct domain *d, u16 seg, u8 bus, u8 devfn);
