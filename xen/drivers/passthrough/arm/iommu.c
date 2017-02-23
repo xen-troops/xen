@@ -32,7 +32,10 @@ void __init iommu_set_ops(const struct iommu_ops *ops)
     BUG_ON(ops == NULL);
 
     if ( iommu_ops && iommu_ops != ops )
+    {
         printk("WARNING: Cannot set IOMMU ops, already set to a different value\n");
+        return;
+    }
 
     iommu_ops = ops;
 }
@@ -70,6 +73,6 @@ void arch_iommu_domain_destroy(struct domain *d)
 
 int arch_iommu_populate_page_table(struct domain *d)
 {
-    /* The IOMMU shares the p2m with the CPU */
-    return -ENOSYS;
+    /* Return an error if the IOMMU shares the p2m with the CPU */
+    return iommu_use_hap_pt(d) ? -ENOSYS : 0;
 }
