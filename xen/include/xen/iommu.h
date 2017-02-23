@@ -181,6 +181,7 @@ struct iommu_ops {
     int __must_check (*unmap_page)(struct domain *d, unsigned long gfn);
     int __must_check (*unmap_pages)(struct domain *d, unsigned long gfn,
                                     unsigned long page_count);
+    int (*alloc_page_table)(struct domain *d);
     void (*free_page_table)(struct page_info *);
 #ifdef CONFIG_X86
     void (*update_ire_from_apic)(unsigned int apic, unsigned int reg, unsigned int value);
