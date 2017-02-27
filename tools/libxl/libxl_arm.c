@@ -78,6 +78,16 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         return ERROR_FAIL;
     }
 
+    /* TODO Are these assumptions enough to make decision about using IOMMU? */
+    if ((d_config->num_dtdevs && d_config->dtdevs) ||
+        (d_config->num_pcidevs && d_config->pcidevs))
+        xc_config->use_iommu = 1;
+    else
+        xc_config->use_iommu = 0;
+
+    LOG(DEBUG, "The use of IOMMU %s expected for this domain",
+        xc_config->use_iommu ? "is" : "isn't");
+
     return 0;
 }
 
