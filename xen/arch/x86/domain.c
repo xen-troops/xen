@@ -514,6 +514,7 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
 {
     int i, paging_initialised = 0;
     int rc = -ENOMEM;
+    bool_t use_iommu;
 
     if ( config == NULL && !is_idle_domain(d) )
         return -EINVAL;
@@ -649,7 +650,8 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
         if ( (rc = init_domain_irq_mapping(d)) != 0 )
             goto fail;
 
-        if ( (rc = iommu_domain_init(d, false)) != 0 )
+        use_iommu = !!(domcr_flags & DOMCRF_use_iommu);
+        if ( (rc = iommu_domain_init(d, use_iommu)) != 0 )
             goto fail;
     }
     spin_lock_init(&d->arch.e820_lock);

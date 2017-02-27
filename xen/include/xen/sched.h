@@ -554,6 +554,9 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
  /* DOMCRF_xs_domain: xenstore domain */
 #define _DOMCRF_xs_domain       6
 #define DOMCRF_xs_domain        (1U<<_DOMCRF_xs_domain)
+ /* DOMCRF_use_iommu: Populate IOMMU page tables at the domain creation time */
+#define _DOMCRF_use_iommu       7
+#define DOMCRF_use_iommu        (1U<<_DOMCRF_use_iommu)
 
 /*
  * rcu_lock_domain_by_id() is more efficient than get_domain_by_id().

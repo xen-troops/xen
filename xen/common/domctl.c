@@ -506,7 +506,8 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                | XEN_DOMCTL_CDF_hap
                | XEN_DOMCTL_CDF_s3_integrity
                | XEN_DOMCTL_CDF_oos_off
-               | XEN_DOMCTL_CDF_xs_domain)) )
+               | XEN_DOMCTL_CDF_xs_domain
+               | XEN_DOMCTL_CDF_use_iommu)) )
             break;
 
         dom = op->domain;
@@ -550,6 +551,8 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             domcr_flags |= DOMCRF_oos_off;
         if ( op->u.createdomain.flags & XEN_DOMCTL_CDF_xs_domain )
             domcr_flags |= DOMCRF_xs_domain;
+        if ( op->u.createdomain.flags & XEN_DOMCTL_CDF_use_iommu )
+            domcr_flags |= DOMCRF_use_iommu;
 
         d = domain_create(dom, domcr_flags, op->u.createdomain.ssidref,
                           &op->u.createdomain.config);

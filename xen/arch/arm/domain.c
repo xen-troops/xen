@@ -554,6 +554,7 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
                        struct xen_arch_domainconfig *config)
 {
     int rc, count = 0;
+    bool_t use_iommu;
 
     BUILD_BUG_ON(GUEST_MAX_VCPUS < MAX_VIRT_CPUS);
     d->arch.relmem = RELMEM_not_started;
@@ -565,7 +566,8 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     ASSERT(config != NULL);
 
     /* p2m_init relies on some value initialized by the IOMMU subsystem */
-    if ( (rc = iommu_domain_init(d, false)) != 0 )
+    use_iommu = !!(domcr_flags & DOMCRF_use_iommu);
+    if ( (rc = iommu_domain_init(d, use_iommu)) != 0 )
         goto fail;
 
     if ( (rc = p2m_init(d)) != 0 )
