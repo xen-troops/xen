@@ -89,6 +89,14 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         return ERROR_FAIL;
     }
 
+    if (d_config->num_dtdevs || d_config->num_pcidevs)
+        config->arch.use_iommu = 1;
+    else
+        config->arch.use_iommu = 0;
+
+    LOG(DEBUG, "IOMMU %s expected to be used for this domain",
+        config->arch.use_iommu ? "is" : "isn't");
+
     return 0;
 }
 
