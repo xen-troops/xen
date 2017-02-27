@@ -323,6 +323,11 @@ struct xen_arch_domainconfig {
      *
      */
     uint32_t clock_frequency;
+    /*
+     * IN
+     * IOMMU is expected to be used for this domain.
+     */
+    uint8_t use_iommu;
 };
 #endif /* __XEN__ || __XEN_TOOLS__ */
 
