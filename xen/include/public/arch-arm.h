@@ -419,15 +419,15 @@ typedef uint64_t xen_callback_t;
  * 16MB == 4096 pages reserved for guest to use as a region to map its
  * grant table in.
  */
-#define GUEST_GNTTAB_BASE xen_mk_ullong(0x38000000)
+#define GUEST_GNTTAB_BASE xen_mk_ullong(0x58000000)
 #define GUEST_GNTTAB_SIZE xen_mk_ullong(0x01000000)
 
-#define GUEST_MAGIC_BASE  xen_mk_ullong(0x39000000)
+#define GUEST_MAGIC_BASE  xen_mk_ullong(0x59000000)
 #define GUEST_MAGIC_SIZE  xen_mk_ullong(0x01000000)
 
 #define GUEST_RAM_BANKS   2
 
-#define GUEST_RAM0_BASE   xen_mk_ullong(0x40000000) /* 3GB of low RAM @ 1GB */
+#define GUEST_RAM0_BASE   xen_mk_ullong(0x60000000) /* 3GB of low RAM @ 1GB */
 #define GUEST_RAM0_SIZE   xen_mk_ullong(0xc0000000)
 
 #define GUEST_RAM1_BASE   xen_mk_ullong(0x0200000000) /* 1016GB of RAM @ 8GB */
