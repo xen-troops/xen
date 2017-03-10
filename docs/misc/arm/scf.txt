@@ -1,0 +1,241 @@
+Share a coprocessor to several domains using guest's Device Tree
+================================================================
+
+This example will configure two dummy coprocessors and correspondent virtual
+coprocessors and is based on an RCar Gen3 device tree already adjusted for Dom0.
+Some free iomem range not assigned to any real device will be used for a dummy
+coprocessors definition. One dummy coprocessor would have a single iomem range
+and one irq. Another one will have several named iomem ranges and irqs.
+Two virtual instances of each coprocessor will be configured for Dom0 using a
+system device tree and other two will be configured for DomU using a partial
+device tree.
+
+Let us have two dummy coprocessors defined as following:
+
+\ {
+	...
+	aliases {
+		...
+		pcoproc0 = &coproc0;
+		pcoproc1 = &coproc1;
+		...
+	};
+	...
+	soc {
+		...
+		coproc0: pcoproc0@0xe6110000 {
+			compatible = "vendor_xxx,coproc_xxx";
+			reg = <0x0 0xe6110000 0x0 0x1000>;
+			interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+
+		coproc1: pcoproc1@0xe6182000 {
+			compatible = "vendor_xxx,coproc_xxc";
+			reg = <0x0 0xe6182000 0x0 0x1000>,
+			      <0x0 0xe6184000 0x0 0x1000>,
+			      <0x0 0xe6188000 0x0 0x8000>;
+			reg-names = "op", "mmu", "sram";
+			interrupts = <GIC_SPI 132 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 135 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "op", "mmu";
+			status = "okay";
+		};
+
+		...
+	};
+	...
+};
+
+Notes:
+    * If a coprocessor has several iomem ranges they must be named. Same for
+      interrupts. Names are used for matching both for shared coprocessor
+      platform code probe as well as mapping virtual coprocessors into domains.
+
+1) Mark the coprocessor node to let Xen know it will be used for sharing.
+This is done in the device tree node describing the device by adding the
+property "xen,coproc".
+
+\ {
+	...
+	aliases {
+		...
+		pcoproc0 = &coproc0;
+		pcoproc1 = &coproc1;
+		...
+	};
+	...
+	soc {
+		...
+		coproc0: pcoproc0@0xe6110000 {
+			compatible = "vendor_xxx,coproc_xxx";
+			reg = <0x0 0xe6110000 0x0 0x1000>;
+			interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
++			xen,coproc;
+		};
+
+		coproc1: pcoproc1@0xe6182000 {
+			compatible = "vendor_xxx,coproc_xxc";
+			reg = <0x0 0xe6182000 0x0 0x1000>,
+			      <0x0 0xe6184000 0x0 0x1000>,
+			      <0x0 0xe6188000 0x0 0x8000>;
+			reg-names = "op", "mmu", "sram";
+			interrupts = <GIC_SPI 132 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 135 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "op", "mmu";
+			status = "okay";
++			xen,coproc;
+		};
+		...
+	};
+	...
+};
+
+2) Create virtual coprocessors nodes. Virtual coprocessor nodes should contain a
+property "xen,vcoproc". The value of this property is a string which reflects a
+full name of a physical coproc node or an alias valid within a system's device
+tree.
+For vcoproc's MMIOs you should find holes of suitable size in a domain memory
+layout. For the first instance of the virtual coprocessor in a domain you freely
+can use MMIO ranges same as a correspondent physical coprocessor uses.
+A virtual coprocessor in a domain will be using the same IRQ(s) as the
+physical coprocessor uses. If several virtual coprocessors baked by one physical
+coprocessor are provided to a domain, they will share the same IRQ(s). 
+
+\ {
+	...
+	aliases {
+		...
+		pcoproc0 = &coproc0;
+		pcoproc1 = &coproc1;
+		...
+	};
+	...
+	soc {
+		...
+		coproc0: pcoproc0@0xe6110000 {
+			compatible = "vendor_xxx,coproc_xxx";
+			reg = <0x0 0xe6110000 0x0 0x1000>;
+			interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+			xen,coproc;
+		};
++
++		coproc0@e6110000 {
++			reg = <0x0 0xe6110000 0x0 0x1000>;
++			/* reference a pcoproc by a full node name */
++			xen,vcoproc = "/soc/pcoproc0@0xe6110000";
++		};
++		coproc0@e6114000 {
++			/* reference a pcoproc by an alias */
++			reg = <0x0 0xe6114000 0x0 0x1000>;
++			xen,vcoproc = "pcoproc0";
++		};
+
+		coproc1: pcoproc1@0xe6182000 {
+			compatible = "vendor_xxx,coproc_xxc";
+			reg = <0x0 0xe6182000 0x0 0x1000>,
+			      <0x0 0xe6184000 0x0 0x1000>,
+			      <0x0 0xe6188000 0x0 0x8000>;
+			reg-names = "op", "mmu", "sram";
+			interrupts = <GIC_SPI 132 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 135 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "op", "mmu";
+			status = "okay";
+			xen,coproc;
+		};
+
++		coproc1@0xe6182000 {
++			reg = <0x0 0xe6182000 0x0 0x1000>,
++			      <0x0 0xe6184000 0x0 0x1000>,
++			      <0x0 0xe6188000 0x0 0x8000>;
++			reg-names = "op", "mmu", "sram";
++			xen,vcoproc = "/soc/pcoproc1@0xe6182000";
++		};
++
++		coproc1@0xe619a000 {
++			reg = <0x0 0xe619a000 0x0 0x1000>,
++			      <0x0 0xe6152000 0x0 0x1000>,
++			      <0x0 0xe6058000 0x0 0x8000>;
++			reg-names = "op", "mmu", "sram";
++			xen,vcoproc = "pcoproc1";
+
+		...
+	};
+	...
+};
+
+Notes:
+    * As you could notice virtual coprocessor "coproc1@0xe619a000" has its iomem
+      ranges mapped to arbitrary addresses, their relative offsets are not kept.
+      This does not take us into issues because range name matching is used.
+
+2) Create a partial device tree describing a virtual coprocessors provided to
+DomU:
+
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+/ {
+    /* #*cells are here to keep DTC happy */
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+	soc {
+		compatible = "simple-bus";
+		ranges;
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		coproc0@e6110000 {
+			xen,vcoproc = "/soc/pcoproc0@0xe6110000";
+			compatible = "vendor_xxx,coproc_xxx";
+			reg = <0x0 0xe6110000 0x0 0x1000>;
+			interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+		coproc0@e6114000 {
+			xen,vcoproc = "pcoproc0";
+			compatible = "vendor_xxx,coproc_xxx";
+			reg = <0x0 0xe6114000 0x0 0x1000>;
+			interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+		coproc1@0xe6182000 {
+			reg = <0x0 0xe6182000 0x0 0x1000>,
+				  <0x0 0xe6184000 0x0 0x1000>,
+				  <0x0 0xe6188000 0x0 0x8000>;
+			reg-names = "op", "mmu", "sram";
+			xen,vcoproc = "/soc/pcoproc1@0xe6182000";
+		};
+
+		coproc1@0xe619a000 {
+			reg = <0x0 0xe619a000 0x0 0x1000>,
+				  <0x0 0xe6152000 0x0 0x1000>,
+				  <0x0 0xe6058000 0x0 0x8000>;
+			reg-names = "op", "mmu", "sram";
+			xen,vcoproc = "pcoproc1";
+	};
+};
+
+Notes:
+    * For a Dom0 device tree in vcoproc nodes you should specify only properties
+      you would like to override, other properties would be taken from physical
+      coprocessor node.
+    * In a DomU partial device tree you should provide all needed properties for
+      virtual coprocessor node which you need in a DomU device tree.
+
+3) Compile the partial guest device with dtc (Device Tree Compiler).
+For our purpose, the compiled file will be called domd-0.dtb and
+placed in /xen/ in Dom0.
+
+3) Specify a partial device tree in a DomU configuration file:
+
+device_tree = "/xen/domd-0.dts"
+
+4) Nothing else should be specified in a domain configuration file. All SCF
+configuration is described in a system device-tree and partial device tree.
+
+
