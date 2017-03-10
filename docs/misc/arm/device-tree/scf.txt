@@ -1,0 +1,16 @@
+Shared coprocessor framework configuration
+==========================================
+
+Any device with the property "xen,coproc" set will be owned by SCF and will not
+be directly exposed to Dom0. "xen,coproc" property is only meaningful for a
+system device tree which is passed to XEN.
+
+Any device with the property "xen,vcoproc" will be processed by SCF to create
+a virtual coprocessor. If succeed, the device will be injected in the domain's
+device tree with that property wiped. The property value is a stringified path
+or an alias (from a system device tree)  of a physical coproc device the virtual
+coprocessor will run on. That physical coprocessor device node has to be marked
+with "xen,coproc" property.
+"xen,vcoproc" property is meaningful for both a system device tree and DomU's
+partial device trees.
+
