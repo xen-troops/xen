@@ -12,4 +12,12 @@ config ARM_SMMU
 
 	  Say Y here if your SoC includes an IOMMU device implementing the
 	  ARM SMMU architecture.
+
+config RCAR_IPMMU
+	bool "Renesas IPMMU found in RCAR SoCs"
+	default y
+	---help---
+	  Support for implementations of the Renesas IPMMU found in RCAR SoCs.
+
+	  Say Y here if you are using Renesas RCAR SoC.
 endif
