@@ -1522,6 +1522,11 @@ bool_t dt_device_for_scf(const struct dt_device_node *device)
     return (dt_find_property(device, "xen,coproc", NULL) != NULL);
 }
 
+bool_t dt_device_is_vcoproc(const struct dt_device_node *device)
+{
+    return (dt_find_property(device, "xen,vcoproc", NULL) != NULL);
+}
+
 static int __dt_parse_phandle_with_args(const struct dt_device_node *np,
                                         const char *list_name,
                                         const char *cells_name,
