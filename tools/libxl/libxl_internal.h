@@ -1209,6 +1209,7 @@ _hidden int libxl__device_exists(libxl__gc *gc, xs_transaction_t t,
                                  libxl__device *device);
 _hidden int libxl__device_generic_add(libxl__gc *gc, xs_transaction_t t,
         libxl__device *device, char **bents, char **fents, char **ro_fents);
+_hidden char *libxl__device_frontend_path(libxl__gc *gc, libxl__device *device);
 _hidden char *libxl__device_backend_path(libxl__gc *gc, libxl__device *device);
 _hidden char *libxl__device_libxl_path(libxl__gc *gc, libxl__device *device);
 _hidden int libxl__parse_backend_path(libxl__gc *gc, const char *path,
@@ -3484,11 +3485,17 @@ struct libxl_device_type {
     void (*add)(libxl__egc *, libxl__ao *, uint32_t, libxl_domain_config *,
                 libxl__multidev *);
     void *(*list)(libxl_ctx *, uint32_t, int *);
+    int (*set_default)(libxl__gc *, uint32_t, void *);
+    int (*to_device)(libxl__gc *, uint32_t, void *, libxl__device *);
+    void (*init)(void *);
+    void (*copy)(libxl_ctx *, void *, void *);
     void (*dispose)(void *);
     int (*compare)(void *, void *);
     void (*merge)(libxl_ctx *, void *, void *);
     int (*dm_needed)(void *, unsigned);
     void (*update_config)(libxl__gc *, void *, void *);
+    int (*from_xenstore)(libxl__gc *, const char *, uint32_t, void *);
+    int (*set_xenstore_config)(libxl__gc *, uint32_t, void *);
 };
 
 #define DEFINE_DEVICE_TYPE_STRUCT_X(name, sname, ...)                          \
@@ -3500,6 +3507,14 @@ struct libxl_device_type {
         .add           = libxl__add_ ## name ## s,                             \
         .list          = (void *(*)(libxl_ctx *, uint32_t, int *))             \
                          libxl_device_ ## sname ## _list,                      \
+        .set_default   = (int (*)(libxl__gc *, uint32_t, void *))              \
+                         libxl__device_ ## sname ## _setdefault,               \
+        .to_device     = (int (*)(libxl__gc *, uint32_t,                       \
+                                  void *, libxl__device *))                    \
+                         libxl__device_from_ ## name,                          \
+        .init          = (void (*)(void *))libxl_device_ ## sname ## _init,    \
+        .copy          = (void (*)(libxl_ctx *, void *, void *))               \
+                         libxl_device_ ## sname ## _copy,                      \
         .dispose       = (void (*)(void *))libxl_device_ ## sname ## _dispose, \
         .compare       = (int (*)(void *, void *))                             \
                          libxl_device_ ## sname ## _compare,                   \
@@ -3534,6 +3549,7 @@ extern const struct libxl_device_type libxl__vtpm_devtype;
 extern const struct libxl_device_type libxl__usbctrl_devtype;
 extern const struct libxl_device_type libxl__usbdev_devtype;
 extern const struct libxl_device_type libxl__pcidev_devtype;
+extern const struct libxl_device_type libxl__vdispl_devtype;
 
 extern const struct libxl_device_type *device_type_tbl[];
 
@@ -4350,6 +4366,14 @@ static inline bool libxl__acpi_defbool_val(const libxl_domain_build_info *b_info
     return libxl_defbool_val(b_info->acpi) &&
            libxl_defbool_val(b_info->u.hvm.acpi);
 }
+
+void libxl__device_add(libxl__egc *egc, uint32_t domid,
+                       const struct libxl_device_type *dt, void *type,
+                       libxl__ao_device *aodev);
+void* libxl__device_list(const struct libxl_device_type *dt,
+                         libxl_ctx *ctx, uint32_t domid, int *num);
+void libxl__device_list_free(const struct libxl_device_type *dt,
+                             void *list, int num);
 #endif
 
 /*
