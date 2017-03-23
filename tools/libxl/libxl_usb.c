@@ -1968,6 +1968,8 @@ void libxl_device_usbdev_list_free(libxl_device_usbdev *list, int nr)
 DEFINE_DEVICE_TYPE_STRUCT(usbctrl,
     .dm_needed = libxl_device_usbctrl_dm_needed
 );
+
+#define libxl__device_from_usbdev NULL
 DEFINE_DEVICE_TYPE_STRUCT(usbdev);
 
 /*
