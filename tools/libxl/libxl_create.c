@@ -1430,6 +1430,8 @@ out:
 
 #define libxl_device_dtdev_list NULL
 #define libxl_device_dtdev_compare NULL
+#define libxl__device_from_dtdev NULL
+#define libxl__device_dtdev_setdefault NULL
 static DEFINE_DEVICE_TYPE_STRUCT(dtdev);
 
 const struct libxl_device_type *device_type_tbl[] = {
@@ -1440,6 +1442,7 @@ const struct libxl_device_type *device_type_tbl[] = {
     &libxl__usbdev_devtype,
     &libxl__pcidev_devtype,
     &libxl__dtdev_devtype,
+    &libxl__vdispl_devtype,
     NULL
 };
 
