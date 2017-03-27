@@ -16,20 +16,76 @@
  * Copyright (C) 2014 ARM Limited
  *
  * Author: Will Deacon <will.deacon@arm.com>
+ *
+ * Based on Linux drivers/iommu/io-pgtable-arm.c
+ * => commit 7c6d90e2bb1a98b86d73b9e8ab4d97ed5507e37c
+ * (iommu/io-pgtable-arm: Fix iova_to_phys for block entries)
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2016-2017 EPAM Systems Inc.
  */
 
-#define pr_fmt(fmt)	"arm-lpae io-pgtable: " fmt
-
-#include <linux/iommu.h>
-#include <linux/kernel.h>
-#include <linux/sizes.h>
-#include <linux/slab.h>
-#include <linux/types.h>
-#include <linux/dma-mapping.h>
-
-#include <asm/barrier.h>
+#include <xen/config.h>
+#include <xen/delay.h>
+#include <xen/errno.h>
+#include <xen/err.h>
+#include <xen/irq.h>
+#include <xen/lib.h>
+#include <xen/list.h>
+#include <xen/mm.h>
+#include <xen/vmap.h>
+#include <xen/rbtree.h>
+#include <xen/sched.h>
+#include <xen/sizes.h>
+#include <xen/log2.h>
+#include <xen/domain_page.h>
+#include <asm/atomic.h>
+#include <asm/device.h>
+#include <asm/io.h>
+#include <asm/platform.h>
 
 #include "io-pgtable.h"
+
+/***** Start of Xen specific code *****/
+
+#define IOMMU_READ	(1 << 0)
+#define IOMMU_WRITE	(1 << 1)
+#define IOMMU_CACHE	(1 << 2) /* DMA cache coherency */
+#define IOMMU_NOEXEC	(1 << 3)
+#define IOMMU_MMIO	(1 << 4) /* e.g. things like MSI doorbells */
+
+#define kfree xfree
+#define kmalloc(size, flags)		_xmalloc(size, sizeof(void *))
+#define kzalloc(size, flags)		_xzalloc(size, sizeof(void *))
+#define devm_kzalloc(dev, size, flags)	_xzalloc(size, sizeof(void *))
+#define kmalloc_array(size, n, flags)	_xmalloc_array(size, sizeof(void *), n)
+
+typedef enum {
+	GFP_KERNEL,
+	GFP_ATOMIC,
+	__GFP_HIGHMEM,
+	__GFP_HIGH
+} gfp_t;
+
+#define __fls(x) (fls(x) - 1)
+#define __ffs(x) (ffs(x) - 1)
+
+/*
+ * Re-define WARN_ON with implementation that "returns" result that
+ * allow us to use following construction:
+ * if (WARN_ON(condition))
+ *     return error;
+ */
+#undef WARN_ON
+#define WARN_ON(condition) ({                                           \
+        int __ret_warn_on = !!(condition);                              \
+        if (unlikely(__ret_warn_on))                                    \
+               WARN();                                                  \
+        unlikely(__ret_warn_on);                                        \
+})
+
+/***** Start of Linux allocator code *****/
 
 #define ARM_LPAE_MAX_ADDR_BITS		48
 #define ARM_LPAE_S2_MAX_CONCAT_PAGES	16
@@ -166,9 +222,10 @@
 #define ARM_LPAE_MAIR_ATTR_IDX_CACHE	1
 #define ARM_LPAE_MAIR_ATTR_IDX_DEV	2
 
+/* Xen: __va is not suitable here use maddr_to_page instead. */
 /* IOPTE accessors */
 #define iopte_deref(pte,d)					\
-	(__va((pte) & ((1ULL << ARM_LPAE_MAX_ADDR_BITS) - 1)	\
+	(maddr_to_page((pte) & ((1ULL << ARM_LPAE_MAX_ADDR_BITS) - 1)	\
 	& ~(ARM_LPAE_GRANULE(d) - 1ULL)))
 
 #define iopte_type(pte,l)					\
@@ -195,11 +252,21 @@ struct arm_lpae_io_pgtable {
 	unsigned long		pg_shift;
 	unsigned long		bits_per_level;
 
-	void			*pgd;
+	/* Xen: We deal with domain pages. */
+	struct page_info	*pgd;
 };
 
 typedef u64 arm_lpae_iopte;
 
+/*
+ * Xen: Overwrite Linux functions that are in charge of memory
+ * allocation/deallocation by Xen ones. The main reason is that we want to
+ * operate with domain pages and as the result we have to use Xen's API for this.
+ * Taking into account that Xen's API deals with struct page_info *page
+ * modify all depended code. Also keep in mind that the domain pages must be
+ * mapped just before using it and unmapped right after we completed.
+ */
+#if 0
 static bool selftest_running = false;
 
 static dma_addr_t __arm_lpae_dma_addr(void *pages)
@@ -259,6 +326,41 @@ static void __arm_lpae_set_pte(arm_lpae_iopte *ptep, arm_lpae_iopte pte,
 					   __arm_lpae_dma_addr(ptep),
 					   sizeof(pte), DMA_TO_DEVICE);
 }
+#endif
+
+static struct page_info *__arm_lpae_alloc_pages(size_t size, gfp_t gfp,
+				    struct io_pgtable_cfg *cfg)
+{
+	struct page_info *pages;
+	unsigned int order = get_order_from_bytes(size);
+	int i;
+
+	pages = alloc_domheap_pages(NULL, order, 0);
+	if (pages == NULL)
+		return NULL;
+
+	for (i = 0; i < (1 << order); i ++)
+		clear_and_clean_page(pages + i);
+
+	return pages;
+}
+
+static void __arm_lpae_free_pages(struct page_info *pages, size_t size,
+				  struct io_pgtable_cfg *cfg)
+{
+	unsigned int order = get_order_from_bytes(size);
+
+	free_domheap_pages(pages, order);
+}
+
+static void __arm_lpae_set_pte(arm_lpae_iopte *ptep, arm_lpae_iopte pte,
+			       struct io_pgtable_cfg *cfg)
+{
+	smp_mb();
+	*ptep = pte;
+	smp_mb();
+	clean_dcache(*ptep);
+}
 
 static int __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 			    unsigned long iova, size_t size, int lvl,
@@ -274,7 +376,9 @@ static int arm_lpae_init_pte(struct arm_lpae_io_pgtable *data,
 
 	if (iopte_leaf(*ptep, lvl)) {
 		/* We require an unmap first */
+#if 0 /* Xen: Not needed */
 		WARN_ON(!selftest_running);
+#endif
 		return -EEXIST;
 	} else if (iopte_type(*ptep, lvl) == ARM_LPAE_PTE_TYPE_TABLE) {
 		/*
@@ -304,6 +408,7 @@ static int arm_lpae_init_pte(struct arm_lpae_io_pgtable *data,
 	return 0;
 }
 
+/* Xen: We deal with domain pages. */
 static int __arm_lpae_map(struct arm_lpae_io_pgtable *data, unsigned long iova,
 			  phys_addr_t paddr, size_t size, arm_lpae_iopte prot,
 			  int lvl, arm_lpae_iopte *ptep)
@@ -311,6 +416,8 @@ static int __arm_lpae_map(struct arm_lpae_io_pgtable *data, unsigned long iova,
 	arm_lpae_iopte *cptep, pte;
 	size_t block_size = ARM_LPAE_BLOCK_SIZE(lvl, data);
 	struct io_pgtable_cfg *cfg = &data->iop.cfg;
+	struct page_info *page;
+	int ret;
 
 	/* Find our entry at the current level */
 	ptep += ARM_LPAE_LVL_IDX(iova, lvl, data);
@@ -326,21 +433,32 @@ static int __arm_lpae_map(struct arm_lpae_io_pgtable *data, unsigned long iova,
 	/* Grab a pointer to the next level */
 	pte = *ptep;
 	if (!pte) {
-		cptep = __arm_lpae_alloc_pages(ARM_LPAE_GRANULE(data),
+		page = __arm_lpae_alloc_pages(ARM_LPAE_GRANULE(data),
 					       GFP_ATOMIC, cfg);
-		if (!cptep)
+		if (!page)
 			return -ENOMEM;
 
-		pte = __pa(cptep) | ARM_LPAE_PTE_TYPE_TABLE;
+		/* Xen: __pa is not suitable here use page_to_maddr instead. */
+		pte = page_to_maddr(page) | ARM_LPAE_PTE_TYPE_TABLE;
 		if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_NS)
 			pte |= ARM_LPAE_PTE_NSTABLE;
 		__arm_lpae_set_pte(ptep, pte, cfg);
+	/* Xen: Sync with my fix for Linux */
+	} else if (!iopte_leaf(pte, lvl)) {
+		page = iopte_deref(pte, data);
 	} else {
-		cptep = iopte_deref(pte, data);
+		/* We require an unmap first */
+#if 0 /* Xen: Not needed */
+		WARN_ON(!selftest_running);
+#endif
+		return -EEXIST;
 	}
 
 	/* Rinse, repeat */
-	return __arm_lpae_map(data, iova, paddr, size, prot, lvl + 1, cptep);
+	cptep = __map_domain_page(page);
+	ret = __arm_lpae_map(data, iova, paddr, size, prot, lvl + 1, cptep);
+	unmap_domain_page(cptep);
+	return ret;
 }
 
 static arm_lpae_iopte arm_lpae_prot_to_pte(struct arm_lpae_io_pgtable *data,
@@ -381,11 +499,12 @@ static arm_lpae_iopte arm_lpae_prot_to_pte(struct arm_lpae_io_pgtable *data,
 	return pte;
 }
 
+/* Xen: We deal with domain pages. */
 static int arm_lpae_map(struct io_pgtable_ops *ops, unsigned long iova,
 			phys_addr_t paddr, size_t size, int iommu_prot)
 {
 	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(ops);
-	arm_lpae_iopte *ptep = data->pgd;
+	arm_lpae_iopte *ptep;
 	int ret, lvl = ARM_LPAE_START_LVL(data);
 	arm_lpae_iopte prot;
 
@@ -394,21 +513,26 @@ static int arm_lpae_map(struct io_pgtable_ops *ops, unsigned long iova,
 		return 0;
 
 	prot = arm_lpae_prot_to_pte(data, iommu_prot);
+	ptep = __map_domain_page(data->pgd);
 	ret = __arm_lpae_map(data, iova, paddr, size, prot, lvl, ptep);
+	unmap_domain_page(ptep);
+
 	/*
 	 * Synchronise all PTE updates for the new mapping before there's
 	 * a chance for anything to kick off a table walk for the new iova.
 	 */
-	wmb();
+	smp_wmb();
 
 	return ret;
 }
 
+/* Xen: We deal with domain pages. */
 static void __arm_lpae_free_pgtable(struct arm_lpae_io_pgtable *data, int lvl,
-				    arm_lpae_iopte *ptep)
+				    struct page_info *page)
 {
 	arm_lpae_iopte *start, *end;
 	unsigned long table_size;
+	arm_lpae_iopte *ptep = __map_domain_page(page);
 
 	if (lvl == ARM_LPAE_START_LVL(data))
 		table_size = data->pgd_size;
@@ -432,7 +556,8 @@ static void __arm_lpae_free_pgtable(struct arm_lpae_io_pgtable *data, int lvl,
 		__arm_lpae_free_pgtable(data, lvl + 1, iopte_deref(pte, data));
 	}
 
-	__arm_lpae_free_pages(start, table_size, &data->iop.cfg);
+	unmap_domain_page(start);
+	__arm_lpae_free_pages(page, table_size, &data->iop.cfg);
 }
 
 static void arm_lpae_free_pgtable(struct io_pgtable *iop)
@@ -443,6 +568,7 @@ static void arm_lpae_free_pgtable(struct io_pgtable *iop)
 	kfree(data);
 }
 
+/* Xen: We deal with domain pages. */
 static int arm_lpae_split_blk_unmap(struct arm_lpae_io_pgtable *data,
 				    unsigned long iova, size_t size,
 				    arm_lpae_iopte prot, int lvl,
@@ -469,8 +595,12 @@ static int arm_lpae_split_blk_unmap(struct arm_lpae_io_pgtable *data,
 				   tablep) < 0) {
 			if (table) {
 				/* Free the table we allocated */
-				tablep = iopte_deref(table, data);
-				__arm_lpae_free_pgtable(data, lvl + 1, tablep);
+				/*
+				 * Xen: iopte_deref returns struct page_info *,
+				 * it is exactly what we need. Pass it directly to function
+				 * instead of adding new variable.
+				 */
+				__arm_lpae_free_pgtable(data, lvl + 1, iopte_deref(table, data));
 			}
 			return 0; /* Bytes unmapped */
 		}
@@ -482,6 +612,7 @@ static int arm_lpae_split_blk_unmap(struct arm_lpae_io_pgtable *data,
 	return size;
 }
 
+/* Xen: We deal with domain pages. */
 static int __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 			    unsigned long iova, size_t size, int lvl,
 			    arm_lpae_iopte *ptep)
@@ -489,6 +620,7 @@ static int __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 	arm_lpae_iopte pte;
 	struct io_pgtable *iop = &data->iop;
 	size_t blk_size = ARM_LPAE_BLOCK_SIZE(lvl, data);
+	int ret;
 
 	/* Something went horribly wrong and we ran out of page table */
 	if (WARN_ON(lvl == ARM_LPAE_MAX_LEVELS))
@@ -496,6 +628,10 @@ static int __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 
 	ptep += ARM_LPAE_LVL_IDX(iova, lvl, data);
 	pte = *ptep;
+	/*
+	 * Xen: TODO: Sometimes we catch this since p2m tries to unmap
+	 * the same page twice.
+	 */
 	if (WARN_ON(!pte))
 		return 0;
 
@@ -508,8 +644,12 @@ static int __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 			io_pgtable_tlb_add_flush(iop, iova, size,
 						ARM_LPAE_GRANULE(data), false);
 			io_pgtable_tlb_sync(iop);
-			ptep = iopte_deref(pte, data);
-			__arm_lpae_free_pgtable(data, lvl + 1, ptep);
+			/*
+			 * Xen: iopte_deref returns struct page_info *,
+			 * it is exactly what we need. Pass it directly to function
+			 * instead of adding new variable.
+			 */
+			__arm_lpae_free_pgtable(data, lvl + 1, iopte_deref(pte, data));
 		} else {
 			io_pgtable_tlb_add_flush(iop, iova, size, size, true);
 		}
@@ -526,39 +666,48 @@ static int __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 	}
 
 	/* Keep on walkin' */
-	ptep = iopte_deref(pte, data);
-	return __arm_lpae_unmap(data, iova, size, lvl + 1, ptep);
+	ptep = __map_domain_page(iopte_deref(pte, data));
+	ret = __arm_lpae_unmap(data, iova, size, lvl + 1, ptep);
+	unmap_domain_page(ptep);
+	return ret;
 }
 
+/* Xen: We deal with domain pages. */
 static int arm_lpae_unmap(struct io_pgtable_ops *ops, unsigned long iova,
 			  size_t size)
 {
 	size_t unmapped;
 	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(ops);
-	arm_lpae_iopte *ptep = data->pgd;
+	arm_lpae_iopte *ptep = __map_domain_page(data->pgd);
 	int lvl = ARM_LPAE_START_LVL(data);
 
 	unmapped = __arm_lpae_unmap(data, iova, size, lvl, ptep);
 	if (unmapped)
 		io_pgtable_tlb_sync(&data->iop);
+	unmap_domain_page(ptep);
+
+	/* Xen: Add barrier here to synchronise all PTE updates. */
+	smp_wmb();
 
 	return unmapped;
 }
 
+/* Xen: We deal with domain pages. */
 static phys_addr_t arm_lpae_iova_to_phys(struct io_pgtable_ops *ops,
 					 unsigned long iova)
 {
 	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(ops);
-	arm_lpae_iopte pte, *ptep = data->pgd;
+	arm_lpae_iopte pte, *ptep = __map_domain_page(data->pgd);
 	int lvl = ARM_LPAE_START_LVL(data);
 
 	do {
 		/* Valid IOPTE pointer? */
 		if (!ptep)
-			return 0;
+			break;
 
 		/* Grab the IOPTE we're interested in */
 		pte = *(ptep + ARM_LPAE_LVL_IDX(iova, lvl, data));
+		unmap_domain_page(ptep);
 
 		/* Valid entry? */
 		if (!pte)
@@ -569,9 +718,10 @@ static phys_addr_t arm_lpae_iova_to_phys(struct io_pgtable_ops *ops,
 			goto found_translation;
 
 		/* Take it to the next level */
-		ptep = iopte_deref(pte, data);
+		ptep = __map_domain_page(iopte_deref(pte, data));
 	} while (++lvl < ARM_LPAE_MAX_LEVELS);
 
+	unmap_domain_page(ptep);
 	/* Ran out of page tables to walk */
 	return 0;
 
@@ -626,16 +776,25 @@ arm_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg)
 	if (!(cfg->pgsize_bitmap & (SZ_4K | SZ_16K | SZ_64K)))
 		return NULL;
 
+	/*
+	 * Xen: Just to be sure that minimum page supported by the IOMMU
+	 * is not bigger than PAGE_SIZE.
+	 */
+	if (PAGE_SIZE & ((1 << __ffs(cfg->pgsize_bitmap)) - 1))
+		return NULL;
+
 	if (cfg->ias > ARM_LPAE_MAX_ADDR_BITS)
 		return NULL;
 
 	if (cfg->oas > ARM_LPAE_MAX_ADDR_BITS)
 		return NULL;
 
+#if 0 /* Xen: Not needed */
 	if (!selftest_running && cfg->iommu_dev->dma_pfn_offset) {
 		dev_err(cfg->iommu_dev, "Cannot accommodate DMA offset for IOMMU page tables\n");
 		return NULL;
 	}
+#endif
 
 	data = kmalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -736,10 +895,11 @@ arm_64_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
 		goto out_free_data;
 
 	/* Ensure the empty pgd is visible before any actual TTBR write */
-	wmb();
+	smp_wmb();
 
 	/* TTBRs */
-	cfg->arm_lpae_s1_cfg.ttbr[0] = virt_to_phys(data->pgd);
+	/* Xen: virt_to_phys is not suitable here use page_to_maddr instead */
+	cfg->arm_lpae_s1_cfg.ttbr[0] = page_to_maddr(data->pgd);
 	cfg->arm_lpae_s1_cfg.ttbr[1] = 0;
 	return &data->iop;
 
@@ -748,6 +908,7 @@ out_free_data:
 	return NULL;
 }
 
+#if 0 /* Xen: Not needed */
 static struct io_pgtable *
 arm_64_lpae_alloc_pgtable_s2(struct io_pgtable_cfg *cfg, void *cookie)
 {
@@ -840,6 +1001,7 @@ out_free_data:
 	kfree(data);
 	return NULL;
 }
+#endif
 
 static struct io_pgtable *
 arm_32_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
@@ -859,6 +1021,7 @@ arm_32_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
 	return iop;
 }
 
+#if 0 /* Xen: Not needed */
 static struct io_pgtable *
 arm_32_lpae_alloc_pgtable_s2(struct io_pgtable_cfg *cfg, void *cookie)
 {
@@ -874,26 +1037,34 @@ arm_32_lpae_alloc_pgtable_s2(struct io_pgtable_cfg *cfg, void *cookie)
 
 	return iop;
 }
+#endif
 
 struct io_pgtable_init_fns io_pgtable_arm_64_lpae_s1_init_fns = {
 	.alloc	= arm_64_lpae_alloc_pgtable_s1,
 	.free	= arm_lpae_free_pgtable,
 };
 
+#if 0 /* Xen: Not needed */
 struct io_pgtable_init_fns io_pgtable_arm_64_lpae_s2_init_fns = {
 	.alloc	= arm_64_lpae_alloc_pgtable_s2,
 	.free	= arm_lpae_free_pgtable,
 };
+#endif
 
 struct io_pgtable_init_fns io_pgtable_arm_32_lpae_s1_init_fns = {
 	.alloc	= arm_32_lpae_alloc_pgtable_s1,
 	.free	= arm_lpae_free_pgtable,
 };
 
+#if 0 /* Xen: Not needed */
 struct io_pgtable_init_fns io_pgtable_arm_32_lpae_s2_init_fns = {
 	.alloc	= arm_32_lpae_alloc_pgtable_s2,
 	.free	= arm_lpae_free_pgtable,
 };
+#endif
+
+/* Xen: */
+#undef CONFIG_IOMMU_IO_PGTABLE_LPAE_SELFTEST
 
 #ifdef CONFIG_IOMMU_IO_PGTABLE_LPAE_SELFTEST
 
