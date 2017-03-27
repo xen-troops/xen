@@ -16,21 +16,32 @@
  * Copyright (C) 2014 ARM Limited
  *
  * Author: Will Deacon <will.deacon@arm.com>
+ *
+ * Based on Linux drivers/iommu/io-pgtable.c
+ * => commit 54c6d242fa32cba8313936e3a35f27dc2c7c3e04
+ * (iommu/io-pgtable: Fix a brace coding style issue)
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2016-2017 EPAM Systems Inc.
  */
 
-#include <linux/bug.h>
-#include <linux/kernel.h>
-#include <linux/types.h>
-
 #include "io-pgtable.h"
+
+/* Xen: Just compile what we exactly want. */
+#define CONFIG_IOMMU_IO_PGTABLE_LPAE
 
 static const struct io_pgtable_init_fns *
 io_pgtable_init_table[IO_PGTABLE_NUM_FMTS] = {
 #ifdef CONFIG_IOMMU_IO_PGTABLE_LPAE
 	[ARM_32_LPAE_S1] = &io_pgtable_arm_32_lpae_s1_init_fns,
+#if 0 /* Xen: Not needed */
 	[ARM_32_LPAE_S2] = &io_pgtable_arm_32_lpae_s2_init_fns,
+#endif
 	[ARM_64_LPAE_S1] = &io_pgtable_arm_64_lpae_s1_init_fns,
+#if 0 /* Xen: Not needed */
 	[ARM_64_LPAE_S2] = &io_pgtable_arm_64_lpae_s2_init_fns,
+#endif
 #endif
 #ifdef CONFIG_IOMMU_IO_PGTABLE_ARMV7S
 	[ARM_V7S] = &io_pgtable_arm_v7s_init_fns,
