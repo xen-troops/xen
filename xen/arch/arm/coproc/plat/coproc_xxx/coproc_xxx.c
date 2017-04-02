@@ -24,14 +24,12 @@
 
 #include "coproc_xxx.h"
 
-/* TODO Some common code from here might be moved to framework */
-
 /* the amount of time to wait for the particular coproc */
 static s_time_t coproc_wait_time = MILLISECS(500);
 
 #define DT_MATCH_COPROC_XXX DT_MATCH_COMPATIBLE("vendor_xxx,coproc_xxx")
 
-static int vcoproc_xxx_read(struct vcpu *v, mmio_info_t *info, register_t *r,
+int vcoproc_xxx_read(struct vcpu *v, mmio_info_t *info, register_t *r,
                             void *priv)
 {
     struct vcoproc_mmio *mmio = priv;
@@ -47,7 +45,7 @@ static int vcoproc_xxx_read(struct vcpu *v, mmio_info_t *info, register_t *r,
     return 1;
 }
 
-static int vcoproc_xxx_write(struct vcpu *v, mmio_info_t *info, register_t r,
+int vcoproc_xxx_write(struct vcpu *v, mmio_info_t *info, register_t r,
                              void *priv)
 {
     struct vcoproc_mmio *mmio = priv;
@@ -95,7 +93,7 @@ static struct pcoproc_mmio coproc_xxx_mmio[] = {
     },
 };
 
-static void coproc_xxx_irq_handler(int irq, void *dev,
+void coproc_xxx_irq_handler(int irq, void *dev,
                                    struct cpu_user_regs *regs)
 {
     struct mcoproc_device *coproc_xxx = dev;
@@ -139,7 +137,7 @@ static void vcoproc_xxx_vcoproc_deinit(struct vcoproc_instance *vcoproc_xxx)
     /* nothing to do */
 }
 
-static const struct coproc_ops vcoproc_xxx_vcoproc_ops = {
+struct coproc_ops vcoproc_xxx_vcoproc_ops = {
     .vcoproc_init        = vcoproc_xxx_vcoproc_init,
     .vcoproc_deinit      = vcoproc_xxx_vcoproc_deinit,
     .ctx_switch_from     = vcoproc_xxx_ctx_switch_from,
