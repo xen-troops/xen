@@ -197,6 +197,17 @@ int device_tree_for_each_node(const void *fdt,
 void __init dt_unflatten_host_device_tree(void);
 
 /**
+ * dt_unflatten_device_tree - Unflatten a device tree
+ *
+ * Create a hierarchical device tree for a DTB to be able
+ * to retrieve parents.
+ *
+ * Returns a pointer to memory allocated for unflattened device tree.
+ * Return value must be used for memory freeing solely.
+ */
+void *dt_unflatten_device_tree(void *fdt, struct dt_device_node ** pdt);
+
+/**
  * IRQ translation callback
  * TODO: For the moment we assume that we only have ONE
  * interrupt-controller.
