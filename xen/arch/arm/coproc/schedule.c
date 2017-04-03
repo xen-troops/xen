@@ -190,42 +190,37 @@ void vcoproc_scheduler_vcoproc_yield(struct vcoproc_scheduler *sched,
     vcoproc_schedule(sched);
 }
 
-extern bool_t coproc_debug;
-
 static inline void schedule_trace(struct vcoproc_instance *curr,
                                   struct vcoproc_instance *next,
                                   int stage)
 {
-    if ( !coproc_debug )
-        return;
-
     switch ( stage )
     {
     case 0:
-        printk("----------NOTHING TO SCHEDULE-----------------------\n");
+        COPROC_VERBOSE(NULL, "--NOTHING TO SCHEDULE--------------------\n");
         break;
 
     case 1:
-        printk("----------dom %d (%s) CONTINUE RUNNING (BUSY)------------\n",
-               curr ? curr->domain->domain_id : -1,
-               curr ? dev_path(curr->coproc->dev) : "NULL");
+        COPROC_VERBOSE(NULL, "--dom %d (%s) CONTINUE RUNNING (BUSY)----\n",
+                       curr ? curr->domain->domain_id : -1,
+                       curr ? dev_path(curr->coproc->dev) : "NULL");
         break;
 
     case 2:
-        printk("----------dom %d (%s) CONTINUE RUNNING (SINGLE)----------\n",
-               curr ? curr->domain->domain_id : -1,
-               curr ? dev_path(curr->coproc->dev) : "NULL");
+        COPROC_VERBOSE(NULL, "--dom %d (%s) CONTINUE RUNNING (SINGLE)--\n",
+                       curr ? curr->domain->domain_id : -1,
+                       curr ? dev_path(curr->coproc->dev) : "NULL");
         break;
 
     case 3:
         if (next)
-            printk("----------dom %d (%s) START RUNNING----------------------\n",
-                   next ? next->domain->domain_id : -1,
-                   next ? dev_path(next->coproc->dev) : "NULL");
+            COPROC_VERBOSE(NULL, "--dom %d (%s) START RUNNING--------------\n",
+                           next ? next->domain->domain_id : -1,
+                           next ? dev_path(next->coproc->dev) : "NULL");
         else
-            printk("----------dom %d (%s )STOP RUNNING-----------------------\n",
-                   curr ? curr->domain->domain_id : -1,
-                   curr ? dev_path(curr->coproc->dev) : "NULL");
+            COPROC_VERBOSE(NULL, "--dom %d (%s )STOP RUNNING---------------\n",
+                           curr ? curr->domain->domain_id : -1,
+                           curr ? dev_path(curr->coproc->dev) : "NULL");
         break;
 
     default:
