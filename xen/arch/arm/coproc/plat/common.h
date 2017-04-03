@@ -133,15 +133,6 @@ COPROC_REG_HELPERS(32, 0x3);
 
 #undef COPROC_REG_HELPERS
 
-/* Device logger functions */
-#define dev_print(dev, lvl, fmt, ...) \
-    printk(lvl "coproc: %s: " fmt, dt_node_full_name(dev_to_dt(dev)), ## __VA_ARGS__)
-
-#define dev_dbg(dev, fmt, ...) dev_print(dev, XENLOG_DEBUG, fmt, ## __VA_ARGS__)
-#define dev_notice(dev, fmt, ...) dev_print(dev, XENLOG_INFO, fmt, ## __VA_ARGS__)
-#define dev_warn(dev, fmt, ...) dev_print(dev, XENLOG_WARNING, fmt, ## __VA_ARGS__)
-#define dev_err(dev, fmt, ...) dev_print(dev, XENLOG_ERR, fmt, ## __VA_ARGS__)
-
 #endif /* __ARCH_ARM_COPROC_PLAT_COMMON_H__ */
 
 /*
