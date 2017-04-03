@@ -573,12 +573,22 @@ int __init coproc_register(struct coproc_device *coproc)
     return 0;
 }
 
-bool_t coproc_debug = true;
+int coproc_debug = COPROC_DBG_ERROR;
 
 void coproc_debug_toggle(unsigned char key)
 {
-    coproc_debug = !coproc_debug;
-    printk("coproc debug is %s\n", coproc_debug ? "enabled" : "disabled");
+    if ( key == 'c' )
+    {
+        /* FIXME: this corresponds to XENLOG_DEBUG */
+        if ( coproc_debug < COPROC_DBG_LAST )
+            coproc_debug++;
+    }
+    else
+    {
+        if ( coproc_debug > 0 )
+            coproc_debug--;
+    }
+    printk("coproc debug level is %d\n", coproc_debug);
 }
 
 void __init coproc_init(void)
@@ -587,7 +597,10 @@ void __init coproc_init(void)
     unsigned int num_coprocs = 0;
     int ret;
 
-    register_keyhandler('c', coproc_debug_toggle, "toggle debug for coproc", 0);
+    register_keyhandler('c', coproc_debug_toggle,
+                        "increase debug level for coproc", 0);
+    register_keyhandler('v', coproc_debug_toggle,
+                        "decrease debug level for coproc", 0);
 
     /*
      * For the moment, we'll create coproc for each device that presents
