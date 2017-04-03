@@ -22,6 +22,7 @@
 #include <xen/guest_access.h>
 #include <xen/keyhandler.h>
 #include <xen/vmap.h>
+#include <xen/libfdt/libfdt.h>
 
 #include "coproc.h"
 
@@ -349,6 +350,27 @@ int vcoproc_handle_node(struct domain *d, void *fdt,
     return ret;
 }
 
+static int vcoproc_browse_node(struct domain *d,
+                               const struct dt_device_node *node)
+{
+    struct dt_device_node *child;
+    int ret;
+
+    if ( dt_device_is_vcoproc(node) )
+    {
+        return vcoproc_handle_node(d, NULL, node);
+    }
+
+    for ( child = node->child; child != NULL; child = child->sibling )
+    {
+        ret = vcoproc_browse_node(d, child);
+        if ( ret )
+            return ret;
+    }
+
+    return 0;
+}
+
 static int vcoproc_eliminate(struct domain *d,
                              struct vcoproc_instance *vcoproc)
 {
@@ -649,34 +671,54 @@ int coproc_release_vcoprocs(struct domain *d)
 int coproc_do_domctl(struct xen_domctl *domctl, struct domain *d,
                      XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 {
-    char *path;
+    void *fdt, *raw;
     int ret = 0;
+    struct dt_device_node *pdt;
 
     switch ( domctl->cmd )
     {
-    case XEN_DOMCTL_attach_coproc:
+    case XEN_DOMCTL_browse_pfdt:
         if ( unlikely(d->is_dying) )
         {
             ret = -EINVAL;
             break;
         }
 
-        path = safe_copy_string_from_guest(domctl->u.attach_coproc.path,
-                                           domctl->u.attach_coproc.size,
-                                           PAGE_SIZE);
-        if ( IS_ERR(path) )
+        fdt = xmalloc_bytes(domctl->u.attach_coproc.size);
+
+        if ( !fdt )
         {
-            ret = PTR_ERR(path);
+            ret = -ENOMEM;
             break;
         }
 
-        printk("Got coproc \"%s\" for dom%u\n", path, d->domain_id);
+        ret = copy_from_guest(fdt, domctl->u.attach_coproc.fdt,
+                              domctl->u.attach_coproc.size);
 
-//        ret = coproc_find_and_attach_to_domain(d, path);
         if ( ret )
-            printk("Failed to attach coproc \"%s\" to dom%u (%d)\n",
-                   path, d->domain_id, ret);
-        xfree(path);
+        {
+            xfree(fdt);
+            break;
+        }
+
+        dprintk(XENLOG_INFO, "Got pfdt with size %u for dom%u\n",
+                domctl->u.attach_coproc.size, d->domain_id);
+
+        raw = dt_unflatten_device_tree(fdt, &pdt);
+
+        if ( raw )
+        {
+            ret = vcoproc_browse_node(d, pdt);
+            if ( ret )
+                printk("Failed to attach vcoprocs from pfdt to dom%u (%d)\n",
+                       d->domain_id, ret);
+            xfree(raw);
+        }
+        else
+            ret = -ENOMEM;
+
+        xfree(fdt);
+
         break;
 
     default:

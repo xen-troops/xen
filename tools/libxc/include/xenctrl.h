@@ -1258,7 +1258,8 @@ int xc_domain_soft_reset(xc_interface *xch,
 
 int xc_attach_coproc(xc_interface *xch,
                      uint32_t domid,
-                     char *path);
+                     void *fdt,
+                     int size);
 
 #if defined(__i386__) || defined(__x86_64__)
 /*

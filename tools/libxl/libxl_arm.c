@@ -100,21 +100,36 @@ int libxl__arch_domain_save_config(libxl__gc *gc,
     return 0;
 }
 
+static int check_partial_fdt(libxl__gc *gc, void *fdt, size_t size);
 static int attach_coprocs(libxl__gc *gc,
                           const libxl_domain_build_info *info,
                           uint32_t domid)
 {
-    int i, rc;
+    int rc;
+    void *pfdt = NULL;
+    int pfdt_size = 0;
 
-    for (i = 0; i < info->num_coprocs; i++) {
-        const libxl_device_coproc *coproc = &info->coprocs[i];
+    if (!info->device_tree)
+        return 0;
 
-        LOG(DEBUG, "Attach coproc \"%s\" to dom%u", coproc->path, domid);
-        rc = xc_attach_coproc(CTX->xch, domid, coproc->path);
-        if (rc < 0) {
-            LOG(ERROR, "xc_attach_coproc failed: %d", rc);
-            return rc;
-        }
+    LOG(DEBUG, " - Partial device tree provided: %s", info->device_tree);
+
+    rc = libxl_read_file_contents(CTX, info->device_tree,
+                                  &pfdt, &pfdt_size);
+    if (rc) {
+        LOGEV(ERROR, rc, "failed to read the partial device file %s",
+              info->device_tree);
+        return ERROR_FAIL;
+    }
+    libxl__ptr_add(gc, pfdt);
+
+    if (check_partial_fdt(gc, pfdt, pfdt_size))
+        return ERROR_FAIL;
+
+    rc = xc_attach_coproc(CTX->xch, domid, pfdt, pfdt_size);
+    if (rc < 0) {
+        LOG(ERROR, "xc_attach_coproc failed: %d", rc);
+        return rc;
     }
 
     return 0;
@@ -695,9 +710,12 @@ static int copy_properties(libxl__gc *gc, void *fdt, void *pfdt,
         }
 
         nameoff = fdt32_to_cpu(prop->nameoff);
-        r = fdt_property(fdt, fdt_string(pfdt, nameoff),
-                         prop->data, fdt32_to_cpu(prop->len));
-        if (r) return r;
+        if (strcmp(fdt_string(pfdt, nameoff), "xen,vcoproc"))
+        {
+            r = fdt_property(fdt, fdt_string(pfdt, nameoff),
+                             prop->data, fdt32_to_cpu(prop->len));
+            if (r) return r;
+        }
     }
 
     /* FDT_ERR_NOTFOUND => There is no more properties for this node */
@@ -786,29 +804,82 @@ static int copy_partial_fdt(libxl__gc *gc, void *fdt, void *pfdt)
     return 0;
 }
 
-static int copy_coprocs_nodes(libxl__gc *gc, void *fdt, void *pfdt,
-                              const libxl_domain_build_info *info)
+struct backlink {
+    int nodeoff;
+    int copied;
+    struct backlink *parent;
+};
+
+static int copy_ancestor(libxl__gc *gc, void *fdt, void *pfdt,
+                         struct backlink *nodelink)
 {
-    int i, rc;
+    int ret = 0;
 
-    LOG(DEBUG, "Copy coprocs nodes from the partial FDT");
+    if (nodelink && nodelink->copied == 0)
+    {
+        const char *name = fdt_get_name(pfdt, nodelink->nodeoff, NULL);
+        copy_ancestor(gc, fdt, pfdt, nodelink->parent);
+        LOG(DEBUG, "Begin node %s", name);
+        ret = fdt_begin_node(fdt, name);
+        if (ret) return ret;
+        
+        ret = copy_properties(gc, fdt, pfdt, nodelink->nodeoff);
+        if (ret) return ret;
+        nodelink->copied = 1;
+    }
+    return ret;
+}
 
-    for (i = 0; i < info->num_coprocs; i++) {
-        const libxl_device_coproc *coproc = &info->coprocs[i];
+static int descent_for_vcoproc(libxl__gc *gc, void *fdt, void *pfdt,
+                               struct backlink *nodelink)
+{
+    int nodeoff;
+    int ret = 0;
+    struct backlink node;
 
-        if (!coproc->path) {
-            LOG(ERROR, "Bad coproc node for the partial FDT");
-            continue;
+    LOG(DEBUG, "process node %s", fdt_get_name(pfdt, nodelink->nodeoff, NULL));
+    if (fdt_getprop(pfdt, nodelink->nodeoff, "xen,vcoproc", NULL))
+    {
+        LOG(DEBUG, "\"xen,vcoproc\" is found, copy ancestors");
+        ret = copy_ancestor(gc, fdt, pfdt, nodelink->parent);
+        if (ret) return ret;
+        LOG(DEBUG, "\"xen,vcoproc\" is found, copy node %s", fdt_get_name(pfdt,
+            nodelink->nodeoff, NULL));
+        ret = copy_node(gc, fdt, pfdt, nodelink->nodeoff, 0);
+    }
+    else
+    {
+        for (nodeoff = fdt_first_subnode(pfdt, nodelink->nodeoff);
+             nodeoff >= 0;
+             nodeoff = fdt_next_subnode(pfdt, nodeoff))
+        {
+            node.nodeoff = nodeoff;
+            node.parent = nodelink;
+            node.copied = 0;
+            ret = descent_for_vcoproc(gc, fdt, pfdt, &node);
+            if (ret) return ret;
         }
-
-        rc = copy_node_by_path(gc, coproc->path, fdt, pfdt);
-        if (rc < 0) {
-            LOG(ERROR, "Can't copy coproc node \"%s\" from the partial FDT", coproc->path);
-            return rc;
+        if (nodelink->copied && nodelink->parent)
+        {
+            ret = fdt_end_node(fdt);
+            LOG(DEBUG, "Ended node %s", fdt_get_name(pfdt, nodelink->nodeoff,
+                NULL));
         }
     }
 
-    return 0;
+    return ret;
+}
+
+static int copy_vcoproc_nodes(libxl__gc *gc, void *fdt, void *pfdt,
+                              const libxl_domain_build_info *info)
+{
+    struct backlink node;
+
+    node.parent = NULL; /* the parent is a root subnode */
+    node.nodeoff = fdt_path_offset(pfdt, "/"); /* find the root offset */
+    node.copied = 1; /* root is already present before us */
+
+    return descent_for_vcoproc(gc, fdt, pfdt, &node);
 }
 
 #else
@@ -829,7 +900,7 @@ static int copy_partial_fdt(libxl__gc *gc, void *fdt, void *pfdt)
     return -FDT_ERR_INTERNAL;
 }
 
-static int copy_coprocs_nodes(libxl__gc *gc, void *fdt, void *pfdt,
+static int copy_vcoproc_nodes(libxl__gc *gc, void *fdt, void *pfdt,
                               const libxl_domain_build_info *info)
 {
     /*
@@ -953,7 +1024,7 @@ next_resize:
 
         if (pfdt) {
             FDT( copy_partial_fdt(gc, fdt, pfdt) );
-            FDT( copy_coprocs_nodes(gc, fdt, pfdt, info) );
+            FDT( copy_vcoproc_nodes(gc, fdt, pfdt, info) );
         }
 
         FDT( fdt_end_node(fdt) );
