@@ -38,8 +38,9 @@ static int vcoproc_xxx_read(struct vcpu *v, mmio_info_t *info, register_t *r,
     struct vcoproc_rw_context ctx;
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
-    dev_dbg(ctx.coproc->dev, "read r%d=%"PRIregister" offset %#08x base %#08x\n",
-            ctx.dabt.reg, *r, ctx.offset, (uint32_t)mmio->addr);
+    COPROC_DEBUG(ctx.coproc->dev,
+                 "read r%d=%"PRIregister" offset %#08x base %#08x\n",
+                 ctx.dabt.reg, *r, ctx.offset, (uint32_t)mmio->addr);
 
     return 1;
 }
@@ -51,8 +52,9 @@ static int vcoproc_xxx_write(struct vcpu *v, mmio_info_t *info, register_t r,
     struct vcoproc_rw_context ctx;
 
     vcoproc_get_rw_context(v->domain, mmio, info, &ctx);
-    dev_dbg(ctx.coproc->dev, "write r%d=%"PRIregister" offset %#08x base %#08x\n",
-            ctx.dabt.reg, r, ctx.offset, (uint32_t)mmio->addr);
+    COPROC_DEBUG(ctx.coproc->dev,
+                 "write r%d=%"PRIregister" offset %#08x base %#08x\n",
+                 ctx.dabt.reg, r, ctx.offset, (uint32_t)mmio->addr);
 
 #if 1
     /* for debug purposes */
@@ -147,7 +149,8 @@ static int coproc_xxx_dt_probe(struct dt_device_node *np)
                          coproc_xxx);
         if ( ret )
         {
-            dev_err(dev, "failed to request irq %d (%u)\n", i, coproc_xxx->irqs[i]);
+            COPROC_ERROR(dev, "failed to request irq %d (%u)\n", i,
+                         coproc_xxx->irqs[i]);
             goto out_release_irqs;
         }
     }
@@ -155,7 +158,7 @@ static int coproc_xxx_dt_probe(struct dt_device_node *np)
     ret = coproc_register(coproc_xxx);
     if ( ret )
     {
-        dev_err(dev, "failed to register coproc (%d)\n", ret);
+        COPROC_DEBUG(dev, "failed to register coproc (%d)\n", ret);
         goto out_release_irqs;
     }
 
