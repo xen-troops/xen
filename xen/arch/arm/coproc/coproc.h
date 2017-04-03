@@ -136,6 +136,44 @@ struct vcoproc_instance {
     void *priv;
 };
 
+/* coproc logger functions */
+
+extern int coproc_debug;
+
+#define coproc_dev_print(dev, lvl, coproc_lvl, fmt, ...)                       \
+do                                                                             \
+{                                                                              \
+    if ( coproc_lvl <= coproc_debug )                                          \
+        printk(lvl "coproc: %s: " fmt,                                         \
+               dev ? dt_node_full_name(dev_to_dt(dev)) : "",                   \
+               ## __VA_ARGS__);                                                \
+} while (0)
+
+/*
+ * this is defined for convenience so we don't have to translate
+ * XENLOG_XXX into corresponding numbers at runtime
+ */
+enum COPROC_DBG_LEVEL
+{
+    COPROC_DBG_ERROR,
+    COPROC_DBG_WARN,
+    COPROC_DBG_INFO,
+    COPROC_DBG_DEBUG,
+    COPROC_DBG_VERB,
+    COPROC_DBG_LAST
+};
+
+#define COPROC_ERROR(dev, fmt, ...)                                            \
+    coproc_dev_print(dev, XENLOG_ERR,     COPROC_DBG_ERROR, fmt, ## __VA_ARGS__)
+#define COPROC_WARN(dev, fmt, ...)                                             \
+    coproc_dev_print(dev, XENLOG_WARNING, COPROC_DBG_WARN, fmt, ## __VA_ARGS__)
+#define COPROC_NOTE(dev, fmt, ...)                                             \
+    coproc_dev_print(dev, XENLOG_INFO,    COPROC_DBG_INFO, fmt, ## __VA_ARGS__)
+#define COPROC_DEBUG(dev, fmt, ...)                                            \
+    coproc_dev_print(dev, XENLOG_DEBUG,   COPROC_DBG_DEBUG, fmt, ## __VA_ARGS__)
+#define COPROC_VERBOSE(dev, fmt, ...)                                            \
+    coproc_dev_print(dev, XENLOG_DEBUG,   COPROC_DBG_VERB, fmt, ## __VA_ARGS__)
+
 void coproc_init(void);
 struct coproc_device * coproc_alloc(struct dt_device_node *,
                                     const struct coproc_ops *);
