@@ -145,7 +145,7 @@ do                                                                             \
 {                                                                              \
     if ( coproc_lvl <= coproc_debug )                                          \
         printk(lvl "coproc: %s: " fmt,                                         \
-               dev ? dt_node_full_name(dev_to_dt(dev)) : "",                   \
+               (dev) ? dt_node_full_name(dev_to_dt(dev)) : "",                 \
                ## __VA_ARGS__);                                                \
 } while (0)
 
