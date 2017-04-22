@@ -546,6 +546,11 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
         flags |= XEN_DOMCTL_CDF_hap;
     }
 
+    /* TODO Are these assumptions enough to make decision about using IOMMU? */
+    if ((d_config->num_dtdevs && d_config->dtdevs) ||
+        (d_config->num_pcidevs && d_config->pcidevs))
+        flags |= XEN_DOMCTL_CDF_use_iommu;
+
     /* Ultimately, handle is an array of 16 uint8_t, same as uuid */
     libxl_uuid_copy(ctx, (libxl_uuid *)handle, &info->uuid);
 

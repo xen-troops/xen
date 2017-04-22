@@ -2844,6 +2844,9 @@ static __init int arm_smmu_dt_init(struct dt_device_node *dev,
 
 	platform_features &= smmu->features;
 
+	/* Always share P2M table between the CPU and the SMMU */
+	iommu_hap_pt_share = true;
+
 	return 0;
 }
 

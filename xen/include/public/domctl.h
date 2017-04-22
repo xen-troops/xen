@@ -66,6 +66,9 @@ struct xen_domctl_createdomain {
  /* Is this a xenstore domain? */
 #define _XEN_DOMCTL_CDF_xs_domain     5
 #define XEN_DOMCTL_CDF_xs_domain      (1U<<_XEN_DOMCTL_CDF_xs_domain)
+ /* Should IOMMU page tables be populated at the domain creation time? */
+#define _XEN_DOMCTL_CDF_use_iommu     6
+#define XEN_DOMCTL_CDF_use_iommu      (1U<<_XEN_DOMCTL_CDF_use_iommu)
     uint32_t flags;
     struct xen_arch_domainconfig config;
 };

@@ -129,7 +129,7 @@ static void __init parse_iommu_param(char *s)
     } while ( ss );
 }
 
-int iommu_domain_init(struct domain *d)
+int iommu_domain_init(struct domain *d, bool_t use_iommu)
 {
     struct domain_iommu *hd = dom_iommu(d);
     int ret = 0;
@@ -142,7 +142,14 @@ int iommu_domain_init(struct domain *d)
         return 0;
 
     hd->platform_ops = iommu_get_ops();
-    return hd->platform_ops->init(d);
+    ret = hd->platform_ops->init(d);
+    if ( ret )
+        return ret;
+
+    if ( use_iommu && !is_hardware_domain(d) )
+        ret = iommu_construct(d);
+
+    return ret;
 }
 
 static void __hwdom_init check_hwdom_reqs(struct domain *d)
@@ -170,36 +177,8 @@ void __hwdom_init iommu_hwdom_init(struct domain *d)
 
     register_keyhandler('o', &iommu_dump_p2m_table, "dump iommu p2m table", 0);
     d->need_iommu = !!iommu_dom0_strict;
-    if ( need_iommu(d) && !iommu_use_hap_pt(d) )
-    {
-        struct page_info *page;
-        unsigned int i = 0;
-        int rc = 0;
 
-        page_list_for_each ( page, &d->page_list )
-        {
-            unsigned long mfn = page_to_mfn(page);
-            unsigned long gfn = mfn_to_gmfn(d, mfn);
-            unsigned int mapping = IOMMUF_readable;
-            int ret;
-
-            if ( ((page->u.inuse.type_info & PGT_count_mask) == 0) ||
-                 ((page->u.inuse.type_info & PGT_type_mask)
-                  == PGT_writable_page) )
-                mapping |= IOMMUF_writable;
-
-            ret = hd->platform_ops->map_page(d, gfn, mfn, mapping);
-            if ( !rc )
-                rc = ret;
-
-            if ( !(i++ & 0xfffff) )
-                process_pending_softirqs();
-        }
-
-        if ( rc )
-            printk(XENLOG_WARNING "d%d: IOMMU mapping failed: %d\n",
-                   d->domain_id, rc);
-    }
+    arch_iommu_hwdom_init(d);
 
     return hd->platform_ops->hwdom_init(d);
 }
@@ -244,28 +223,44 @@ void iommu_domain_destroy(struct domain *d)
     if ( !iommu_enabled || !dom_iommu(d)->platform_ops )
         return;
 
-    if ( need_iommu(d) )
-        iommu_teardown(d);
+    iommu_teardown(d);
 
     arch_iommu_domain_destroy(d);
 }
 
-int iommu_map_page(struct domain *d, unsigned long gfn, unsigned long mfn,
-                   unsigned int flags)
+int iommu_map_pages(struct domain *d, unsigned long gfn, unsigned long mfn,
+                    unsigned long page_count, unsigned int flags)
 {
     const struct domain_iommu *hd = dom_iommu(d);
-    int rc;
+    int rc = 0;
+    unsigned long i;
 
     if ( !iommu_enabled || !hd->platform_ops )
         return 0;
 
-    rc = hd->platform_ops->map_page(d, gfn, mfn, flags);
+    if ( hd->platform_ops->map_pages &&
+         (page_count > 1 || !hd->platform_ops->map_page) )
+        rc = hd->platform_ops->map_pages(d, gfn, mfn, page_count, flags);
+    else if ( hd->platform_ops->map_page )
+    {
+        for ( i = 0; i < page_count; i++, gfn++, mfn++ )
+        {
+            rc = hd->platform_ops->map_page(d, gfn, mfn, flags);
+            if ( unlikely(rc) )
+            {
+                /* TODO Do we need to unmap if map failed? */
+                page_count = 1;
+                break;
+            }
+        }
+    }
+
     if ( unlikely(rc) )
     {
         if ( !d->is_shutting_down && printk_ratelimit() )
             printk(XENLOG_ERR
-                   "d%d: IOMMU mapping gfn %#lx to mfn %#lx failed: %d\n",
-                   d->domain_id, gfn, mfn, rc);
+                   "d%d: IOMMU mapping gfn %#lx to mfn %#lx page count %lu failed: %d\n",
+                   d->domain_id, gfn, mfn, page_count, rc);
 
         if ( !is_hardware_domain(d) )
             domain_crash(d);
@@ -274,21 +269,37 @@ int iommu_map_page(struct domain *d, unsigned long gfn, unsigned long mfn,
     return rc;
 }
 
-int iommu_unmap_page(struct domain *d, unsigned long gfn)
+int iommu_unmap_pages(struct domain *d, unsigned long gfn,
+                      unsigned long page_count)
 {
     const struct domain_iommu *hd = dom_iommu(d);
-    int rc;
+    int ret, rc = 0;
+    unsigned long i;
 
     if ( !iommu_enabled || !hd->platform_ops )
         return 0;
 
-    rc = hd->platform_ops->unmap_page(d, gfn);
+    if ( hd->platform_ops->unmap_pages &&
+         (page_count > 1 || !hd->platform_ops->unmap_page) )
+        rc = hd->platform_ops->unmap_pages(d, gfn, page_count);
+    else if ( hd->platform_ops->unmap_page )
+    {
+        for ( i = 0; i < page_count; i++, gfn++ )
+        {
+            ret = hd->platform_ops->unmap_page(d, gfn);
+            if ( likely(!rc) )
+                rc = ret;
+        }
+        if ( unlikely(rc) )
+            page_count = 1;
+    }
+
     if ( unlikely(rc) )
     {
         if ( !d->is_shutting_down && printk_ratelimit() )
             printk(XENLOG_ERR
-                   "d%d: IOMMU unmapping gfn %#lx failed: %d\n",
-                   d->domain_id, gfn, rc);
+                   "d%d: IOMMU unmapping gfn %#lx page count %lu failed: %d\n",
+                   d->domain_id, gfn, page_count, rc);
 
         if ( !is_hardware_domain(d) )
             domain_crash(d);
