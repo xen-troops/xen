@@ -630,11 +630,13 @@ static void ipmmu_ctx_write1(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 static void ipmmu_ctx_write2(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 			     u32 data)
 {
+#if 0
 	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(domain->d)->arch.priv;
 	struct iommu_domain *io_domain;
 
 	list_for_each_entry(io_domain, &xen_domain->contexts, list)
 		ipmmu_ctx_write1(to_vmsa_domain(io_domain), reg, data);
+#endif
 
 	ipmmu_ctx_write(domain, reg, data);
 }
