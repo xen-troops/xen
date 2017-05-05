@@ -438,6 +438,16 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
             continue;
         }
 
+        /* Don't expose IOMMU specific properties to the guest */
+        if ( dt_property_name_is_equal(prop, "iommus") )
+            continue;
+
+        if ( dt_property_name_is_equal(prop, "iommu-map") )
+            continue;
+
+        if ( dt_property_name_is_equal(prop, "iommu-map-mask") )
+            continue;
+
         res = fdt_property(kinfo->fdt, prop->name, prop_data, prop_len);
 
         if ( res )
