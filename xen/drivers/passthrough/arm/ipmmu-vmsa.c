@@ -220,6 +220,7 @@ struct ipmmu_features {
 	bool has_eight_ctx;
 	bool setup_imbuscr;
 	bool twobit_imttbcr_sl0;
+	bool imctr_va64;
 };
 
 #ifdef CONFIG_RCAR_DDR_BACKUP
@@ -334,6 +335,7 @@ static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 #define IM_CTX_SIZE			0x40
 
 #define IMCTR				0x0000
+#define IMCTR_VA64			(1 << 29)
 #define IMCTR_TRE			(1 << 17)
 #define IMCTR_AFE			(1 << 16)
 #define IMCTR_RTSEL_MASK		(3 << 4)
@@ -381,7 +383,7 @@ static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 #define IMTTBCR_SL0_LVL_2		(0 << 4)
 #define IMTTBCR_SL0_LVL_1		(1 << 4)
 #define IMTTBCR_TSZ0_MASK		(7 << 0)
-#define IMTTBCR_TSZ0_SHIFT		O
+#define IMTTBCR_TSZ0_SHIFT		0
 
 #define IMTTBCR_SL0_TWOBIT_LVL_3	(0 << 6)
 #define IMTTBCR_SL0_TWOBIT_LVL_2	(1 << 6)
@@ -424,6 +426,7 @@ static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 #define IMMAIR_ATTR_IDX_DEV		2
 
 #define IMEAR				0x0030
+#define IMEUAR				0x0034
 
 #define IMPCTR				0x0200
 #define IMPSTR				0x0208
@@ -770,7 +773,7 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	 */
 	domain->cfg.quirks = IO_PGTABLE_QUIRK_ARM_NS;
 	domain->cfg.pgsize_bitmap = SZ_1G | SZ_2M | SZ_4K,
-	domain->cfg.ias = 32;
+	domain->cfg.ias = domain->root->features->imctr_va64 ? 39 : 32;
 	domain->cfg.oas = 40;
 	domain->cfg.tlb = &ipmmu_gather_ops;
 #if 0 /* Xen: Not needed */
@@ -783,8 +786,9 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	 */
 	domain->cfg.iommu_dev = domain->root->dev;
 
-	domain->iop = alloc_io_pgtable_ops(ARM_32_LPAE_S1, &domain->cfg,
-					   domain);
+	domain->iop = alloc_io_pgtable_ops(domain->root->features->imctr_va64 ?
+					   ARM_64_LPAE_S1 : ARM_32_LPAE_S1,
+					   &domain->cfg, domain);
 	if (!domain->iop)
 		return -EINVAL;
 
@@ -818,6 +822,14 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	ipmmu_ctx_write(domain, IMTTUBR0, ttbr >> 32);
 
 	/*
+	 * With enabling IMCTR_VA64 we need to setup TTBR1 as well
+	 */
+	if (domain->root->features->imctr_va64) {
+		ipmmu_ctx_write(domain, IMTTLBR1, ttbr);
+		ipmmu_ctx_write(domain, IMTTUBR1, ttbr >> 32);
+	}
+
+	/*
 	 * TTBCR
 	 * We use long descriptors with inner-shareable WBWA tables and allocate
 	 * the whole 32-bit VA space to TTBR0.
@@ -827,6 +839,19 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 		tmp = IMTTBCR_SL0_TWOBIT_LVL_1;
 	else
 		tmp = IMTTBCR_SL0_LVL_1;
+
+	/*
+	 * As we are going to use TTBR1 we need to setup attributes for the memory
+	 * associated with the translation table walks using TTBR1.
+	 * Also for using IMCTR_VA64 mode we need to calculate and setup
+	 * TTBR0/TTBR1 addressed regions.
+	 */
+	if (domain->root->features->imctr_va64) {
+		tmp |= IMTTBCR_SH1_INNER_SHAREABLE | IMTTBCR_ORGN1_WB_WA |
+				IMTTBCR_IRGN1_WB_WA;
+		tmp |= (64ULL - domain->cfg.ias) << IMTTBCR_TSZ0_SHIFT;
+		tmp |= (64ULL - domain->cfg.ias) << IMTTBCR_TSZ1_SHIFT;
+	}
 
 	ipmmu_ctx_write(domain, IMTTBCR, IMTTBCR_EAE |
 			IMTTBCR_SH0_INNER_SHAREABLE | IMTTBCR_ORGN0_WB_WA |
@@ -855,7 +880,8 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	 * Xen: Enable the context for the root IPMMU only.
 	 */
 	ipmmu_ctx_write(domain, IMCTR,
-			 IMCTR_INTEN | IMCTR_FLUSH | IMCTR_MMUEN);
+			 (domain->root->features->imctr_va64 ? IMCTR_VA64 : 0)
+			 | IMCTR_INTEN | IMCTR_FLUSH | IMCTR_MMUEN);
 
 	return 0;
 }
@@ -909,13 +935,14 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 	const u32 err_mask = IMSTR_MHIT | IMSTR_ABORT | IMSTR_PF | IMSTR_TF;
 	struct ipmmu_vmsa_device *mmu = domain->mmu;
 	u32 status;
-	u32 iova;
+	u64 iova;
 
 	status = ipmmu_ctx_read(domain, IMSTR);
 	if (!(status & err_mask))
 		return IRQ_NONE;
 
-	iova = ipmmu_ctx_read(domain, IMEAR);
+	iova = ipmmu_ctx_read(domain, IMEAR) |
+			((u64)ipmmu_ctx_read(domain, IMEUAR) << 32);
 
 	/*
 	 * Clear the error status flags. Unlike traditional interrupt flag
@@ -927,10 +954,10 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 
 	/* Log fatal errors. */
 	if (status & IMSTR_MHIT)
-		dev_err_ratelimited(mmu->dev, "d%d: Multiple TLB hits @0x%08x\n",
+		dev_err_ratelimited(mmu->dev, "d%d: Multiple TLB hits @0x%"PRIx64"\n",
 				domain->d->domain_id, iova);
 	if (status & IMSTR_ABORT)
-		dev_err_ratelimited(mmu->dev, "d%d: Page Table Walk Abort @0x%08x\n",
+		dev_err_ratelimited(mmu->dev, "d%d: Page Table Walk Abort @0x%"PRIx64"\n",
 				domain->d->domain_id, iova);
 
 	if (!(status & (IMSTR_PF | IMSTR_TF)))
@@ -946,7 +973,7 @@ static irqreturn_t ipmmu_domain_irq(struct ipmmu_vmsa_domain *domain)
 		return IRQ_HANDLED;
 
 	dev_err_ratelimited(mmu->dev,
-			"d%d: Unhandled fault: status 0x%08x iova 0x%08x\n",
+			"d%d: Unhandled fault: status 0x%08x iova 0x%"PRIx64"\n",
 			domain->d->domain_id, status, iova);
 
 	return IRQ_HANDLED;
@@ -1219,8 +1246,7 @@ size_t ipmmu_unmap(struct iommu_domain *io_domain, unsigned long iova, size_t si
 	if ((dma_addr_t)iova + size > max_iova) {
 		printk("out-of-bound: iova 0x%lx + size 0x%zx > max_iova 0x%"PRIx64"\n",
 			   iova, size, max_iova);
-		/* TODO Return -EINVAL instead */
-		return 0;
+		return -EINVAL;
 	}
 
 	/*
@@ -1277,8 +1303,7 @@ int ipmmu_map(struct iommu_domain *io_domain, unsigned long iova,
 	if ((dma_addr_t)iova + size > max_iova) {
 		printk("out-of-bound: iova 0x%lx + size 0x%zx > max_iova 0x%"PRIx64"\n",
 		       iova, size, max_iova);
-		/* TODO Return -EINVAL instead */
-		return 0;
+		return -EINVAL;
 	}
 
 	while (size) {
@@ -1725,6 +1750,7 @@ static const struct ipmmu_features ipmmu_features_default = {
 	.has_eight_ctx = false,
 	.setup_imbuscr = true,
 	.twobit_imttbcr_sl0 = false,
+	.imctr_va64 = false,
 };
 
 static const struct ipmmu_features ipmmu_features_rcar_gen3 = {
@@ -1733,6 +1759,7 @@ static const struct ipmmu_features ipmmu_features_rcar_gen3 = {
 	.has_eight_ctx = true,
 	.setup_imbuscr = false,
 	.twobit_imttbcr_sl0 = true,
+	.imctr_va64 = true,
 };
 
 static const struct of_device_id ipmmu_of_ids[] = {
