@@ -870,26 +870,9 @@ out:
         else
         {
             if ( iommu_flags )
-                for ( i = 0; i < (1 << order); i++ )
-                {
-                    rc = iommu_map_page(d, gfn + i, mfn_x(mfn) + i, iommu_flags);
-                    if ( unlikely(rc) )
-                    {
-                        while ( i-- )
-                            /* If statement to satisfy __must_check. */
-                            if ( iommu_unmap_page(p2m->domain, gfn + i) )
-                                continue;
-
-                        break;
-                    }
-                }
+                rc = iommu_map_pages(d, gfn, mfn_x(mfn), order, iommu_flags);
             else
-                for ( i = 0; i < (1 << order); i++ )
-                {
-                    ret = iommu_unmap_page(d, gfn + i);
-                    if ( !rc )
-                        rc = ret;
-                }
+                rc = iommu_unmap_pages(d, gfn, order);
         }
     }
 

@@ -322,6 +322,11 @@ struct xen_arch_domainconfig {
      *
      */
     uint32_t clock_frequency;
+    /*
+     * IN
+     * Inform the hypervisor that the use of IOMMU is expected for this domain.
+     */
+    uint8_t use_iommu;
 };
 #endif /* __XEN__ || __XEN_TOOLS__ */
 

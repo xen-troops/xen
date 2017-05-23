@@ -984,7 +984,15 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
         p2m_free_entry(p2m, orig_pte, level);
 
     if ( need_iommu(p2m->domain) && (p2m_valid(orig_pte) || p2m_valid(*entry)) )
-        rc = iommu_iotlb_flush(p2m->domain, gfn_x(sgfn), 1UL << page_order);
+    {
+        if ( iommu_use_hap_pt(p2m->domain) )
+            rc = iommu_iotlb_flush(p2m->domain, gfn_x(sgfn), 1UL << page_order);
+        else if ( !mfn_eq(smfn, INVALID_MFN) )
+            rc = iommu_map_pages(p2m->domain, gfn_x(sgfn), mfn_x(smfn),
+                                 page_order, p2m_get_iommu_flags(t));
+        else
+            rc = iommu_unmap_pages(p2m->domain, gfn_x(sgfn), page_order);
+    }
     else
         rc = 0;
 
