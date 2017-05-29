@@ -1767,17 +1767,17 @@ static const struct ipmmu_features ipmmu_features_rcar_gen3 = {
 
 static const struct of_device_id ipmmu_of_ids[] = {
 	{
-		.compatible = "renesas,ipmmu-vmsa",
+		.compatible = "~renesas,ipmmu-vmsa",
 		.data = &ipmmu_features_default,
 	}, {
-		.compatible = "renesas,ipmmu-r8a7795",
+		.compatible = "~renesas,ipmmu-r8a7795",
 		.data = &ipmmu_features_rcar_gen3,
 	}, {
-		.compatible = "renesas,ipmmu-r8a7796",
+		.compatible = "~renesas,ipmmu-r8a7796",
 		.data = &ipmmu_features_rcar_gen3,
 	}, {
 		/* Xen: It is not clear how to deal with it */
-		.compatible = "renesas,ipmmu-pmb-r8a7795",
+		.compatible = "~renesas,ipmmu-pmb-r8a7795",
 		.data = NULL,
 	}, {
 		/* Terminator */
