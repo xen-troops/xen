@@ -338,11 +338,7 @@ typedef struct
 ************************************************************************/
 #if defined(RGXFW_META_SUPPORT_2ND_THREAD)
 	#define RGX_META_COREMEM_STACK_SIZE  (RGX_META_STACK_SIZE*2)
-#if defined(SUPPORT_PDVFS_THREAD1)
-	#define RGX_META_COREMEM_BSS_SIZE    (0xF00)
-#else
-	#define RGX_META_COREMEM_BSS_SIZE    (0xC00)
-#endif
+	#define RGX_META_COREMEM_BSS_SIZE    (0xF40)
 	#if defined(RGX_FEATURE_META_DMA)
 		#define RGX_META_COREMEM_CCBBUF_SIZE (0x2E0)
 		#define RGX_META_COREMEM_DATA_SIZE   (RGX_META_COREMEM_CCBBUF_SIZE + RGX_META_COREMEM_BSS_SIZE + RGX_META_COREMEM_STACK_SIZE)

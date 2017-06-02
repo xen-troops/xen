@@ -86,23 +86,31 @@ extern "C" {
 #define PVRSRV_NEED_PVR_TRACE
 #endif
 
+#if !defined(DOXYGEN)
 #if defined(__KERNEL__)
 	IMG_IMPORT const IMG_CHAR *PVRSRVGetErrorStringKM(PVRSRV_ERROR eError);
 #	define PVRSRVGETERRORSTRING PVRSRVGetErrorStringKM
 #else
+/*************************************************************************/ /*
+PVRSRVGetErrorString
+Returns a string describing the provided PVRSRV_ERROR code
+NB No doxygen comments provided as this function does not require porting
+   for other operating systems
+*/ /**************************************************************************/
 	IMG_IMPORT const IMG_CHAR *PVRSRVGetErrorString(PVRSRV_ERROR eError);
 #	define PVRSRVGETERRORSTRING PVRSRVGetErrorString
+#endif
 #endif
 
 /* PVR_ASSERT() and PVR_DBG_BREAK handling */
 
-#if defined(PVRSRV_NEED_PVR_ASSERT)
+#if defined(PVRSRV_NEED_PVR_ASSERT) || defined(DOXYGEN)
 
 /* Unfortunately the klocworks static analysis checker doesn't understand our
  * ASSERT macros. Thus it reports lots of false positive. Defining our Assert
  * macros in a special way when the code is analysed by klocworks avoids
  * them. */
-#if defined(__KLOCWORK__) 
+#if defined(__KLOCWORK__)
   #define PVR_ASSERT(x) do { if (!(x)) abort(); } while (0)
 #else /* ! __KLOCWORKS__ */
 
@@ -139,6 +147,16 @@ extern "C" {
 
 #else /* defined(LINUX) && defined(__KERNEL__) */
 
+/*************************************************************************/ /*!
+@Function       PVRSRVDebugAssertFail
+@Description    Indicate to the user that a debug assertion has failed and
+                prevent the program from continuing.
+                Invoked from the macro PVR_ASSERT().
+@Input          pszFile       The name of the source file where the assertion failed
+@Input          ui32Line      The line number of the failed assertion
+@Input          pszAssertion  String describing the assertion
+@Return         NEVER!
+*/ /**************************************************************************/
 IMG_IMPORT void IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 													   IMG_UINT32 ui32Line,
 													   const IMG_CHAR *pszAssertion)
@@ -193,7 +211,7 @@ IMG_IMPORT void IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
      * ASSERT macros. Thus it reports lots of false positive. Defining our Assert
      * macros in a special way when the code is analysed by klocworks avoids
      * them. */
-    #if defined(__KLOCWORK__) 
+    #if defined(__KLOCWORK__)
         #define PVR_ASSERT(EXPR) do { if (unlikely(!(EXPR))) abort(); } while (0)
     #else
         #define PVR_ASSERT(EXPR) (void)(EXPR) /*!< Null Implementation of PVR_ASSERT (does nothing) */
@@ -206,17 +224,17 @@ IMG_IMPORT void IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 
 /* PVR_DPF() handling */
 
-#if defined(PVRSRV_NEED_PVR_DPF)
+#if defined(PVRSRV_NEED_PVR_DPF) || defined(DOXYGEN)
 
 	/* New logging mechanism */
-	#define PVR_DBG_FATAL		DBGPRIV_FATAL
-	#define PVR_DBG_ERROR		DBGPRIV_ERROR
-	#define PVR_DBG_WARNING		DBGPRIV_WARNING
-	#define PVR_DBG_MESSAGE		DBGPRIV_MESSAGE
-	#define PVR_DBG_VERBOSE		DBGPRIV_VERBOSE
+	#define PVR_DBG_FATAL		DBGPRIV_FATAL		/*!< Debug level passed to PVRSRVDebugPrintf() for fatal errors. */
+	#define PVR_DBG_ERROR		DBGPRIV_ERROR		/*!< Debug level passed to PVRSRVDebugPrintf() for non-fatal errors. */
+	#define PVR_DBG_WARNING		DBGPRIV_WARNING		/*!< Debug level passed to PVRSRVDebugPrintf() for warnings. */
+	#define PVR_DBG_MESSAGE		DBGPRIV_MESSAGE		/*!< Debug level passed to PVRSRVDebugPrintf() for information only. */
+	#define PVR_DBG_VERBOSE		DBGPRIV_VERBOSE		/*!< Debug level passed to PVRSRVDebugPrintf() for very low-priority debug. */
 	#define PVR_DBG_CALLTRACE	DBGPRIV_CALLTRACE
 	#define PVR_DBG_ALLOC		DBGPRIV_ALLOC
-	#define PVR_DBG_BUFFERED	DBGPRIV_BUFFERED
+	#define PVR_DBG_BUFFERED	DBGPRIV_BUFFERED	/*!< Debug level passed to PVRSRVDebugPrintf() when debug should be written to the debug circular buffer. */
 	#define PVR_DBG_DEBUG		DBGPRIV_DEBUG
 	#define PVR_DBGDRIV_MESSAGE	DBGPRIV_DBGDRV_MESSAGE
 
@@ -238,7 +256,7 @@ IMG_IMPORT void IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 #endif
 
 	/* Some are compiled out completely in release builds */
-#if defined(DEBUG)
+#if defined(DEBUG) || defined(DOXYGEN)
 	#define __PVR_DPF_0x004UL(...) PVRSRVDebugPrintf(DBGPRIV_WARNING, __VA_ARGS__)
 	#define __PVR_DPF_0x008UL(...) PVRSRVDebugPrintf(DBGPRIV_MESSAGE, __VA_ARGS__)
 	#define __PVR_DPF_0x010UL(...) PVRSRVDebugPrintf(DBGPRIV_VERBOSE, __VA_ARGS__)
@@ -279,6 +297,14 @@ IMG_IMPORT void IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 		{ if (unlikely(_expr == NULL)) { \
 			PVR_DPF((PVR_DBG_ERROR, "%s() failed (PVRSRV_ERROR_OUT_OF_MEMORY) in %s()", _call, __func__)); \
 			return (PVRSRV_ERROR_OUT_OF_MEMORY); }\
+		MSC_SUPPRESS_4127\
+		} while (0)
+
+	#define PVR_LOGG_IF_NOMEM(_expr, _call, _err, _go) do \
+		{ if (unlikely(_expr == NULL)) { \
+			PVR_DPF((PVR_DBG_ERROR, "%s() failed (PVRSRV_ERROR_OUT_OF_MEMORY) in %s()", _call, __func__)); \
+			_err = PVRSRV_ERROR_OUT_OF_MEMORY; \
+			goto _go; } \
 		MSC_SUPPRESS_4127\
 		} while (0)
 
@@ -323,12 +349,48 @@ IMG_IMPORT void IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 		MSC_SUPPRESS_4127\
 		} while (0)
 
+/*************************************************************************/ /*!
+@Function       PVRSRVDebugPrintf
+@Description    Output a debug message to the user, using an OS-specific
+                method, to a log or console which can be read by developers
+                Invoked from the macro PVR_DPF().
+@Input          ui32DebugLevel   The debug level of the message. This can
+                                 be used to restrict the output of debug
+                                 messages based on their severity.
+                                 If this is PVR_DBG_BUFFERED, the message
+                                 should be written into a debug circular
+                                 buffer instead of being output immediately
+                                 (useful when performance would otherwise
+                                 be adversely affected).
+                                 The debug circular buffer shall only be
+                                 output when PVRSRVDebugPrintfDumpCCB() is
+                                 called.
+@Input          pszFileName      The source file containing the code that is
+                                 generating the message
+@Input          ui32Line         The line number in the source file
+@Input          pszFormat        The formatted message string
+@Input          ...              Zero or more arguments for use by the
+                                 formatted string
+@Return         None
+*/ /**************************************************************************/
 IMG_IMPORT void IMG_CALLCONV PVRSRVDebugPrintf(IMG_UINT32 ui32DebugLevel,
-												   const IMG_CHAR *pszFileName,
-												   IMG_UINT32 ui32Line,
-												   const IMG_CHAR *pszFormat,
-												   ...) __printf(4, 5);
+                                               const IMG_CHAR *pszFileName,
+                                               IMG_UINT32 ui32Line,
+                                               const IMG_CHAR *pszFormat,
+                                               ...) __printf(4, 5);
 
+/*************************************************************************/ /*!
+@Function       PVRSRVDebugPrintfDumpCCB
+@Description    When PVRSRVDebugPrintf() is called with the ui32DebugLevel
+                specified as DBGPRIV_BUFFERED, the debug shall be written to
+                the debug circular buffer instead of being output immediately.
+                (This could be used to obtain debug without incurring a
+                performance hit by printing it at that moment).
+                This function shall dump the contents of that debug circular
+                buffer to be output in an OS-specific method to a log or
+                console which can be read by developers.
+@Return         None
+*/ /**************************************************************************/
 IMG_IMPORT void IMG_CALLCONV PVRSRVDebugPrintfDumpCCB(void);
 
 #else  /* defined(PVRSRV_NEED_PVR_DPF) */
@@ -339,6 +401,7 @@ IMG_IMPORT void IMG_CALLCONV PVRSRVDebugPrintfDumpCCB(void);
 	#define PVR_LOG_IF_ERROR(_rc, _call) (void)(_rc)
 
 	#define PVR_LOGR_IF_NOMEM(_expr, _call) do { if (unlikely(_expr == NULL)) { return (PVRSRV_ERROR_OUT_OF_MEMORY); } MSC_SUPPRESS_4127 } while (0)
+	#define PVR_LOGG_IF_NOMEM(_expr, _call, _err, _go) do { if (unlikely(_expr == NULL)) { _err = PVRSRV_ERROR_OUT_OF_MEMORY; goto _go; } MSC_SUPPRESS_4127	} while (0)
 	#define PVR_LOGR_IF_ERROR(_rc, _call) do { if (unlikely(_rc != PVRSRV_OK)) { return (_rc); } MSC_SUPPRESS_4127 } while(0)
 	#define PVR_LOGRN_IF_ERROR(_rc, _call) do { if (unlikely(_rc != PVRSRV_OK)) { return; } MSC_SUPPRESS_4127 } while(0)
 	#define PVR_LOGG_IF_ERROR(_rc, _call, _go) do { if (unlikely(_rc != PVRSRV_OK)) { goto _go; } MSC_SUPPRESS_4127 } while(0)
@@ -406,7 +469,7 @@ IMG_IMPORT void IMG_CALLCONV PVRSRVDebugPrintfDumpCCB(void);
 
 #endif /* defined(PVR_DPF_FUNCTION_TRACE_ON) */
 
-#if defined(__KERNEL__)
+#if defined(__KERNEL__) || defined(DOXYGEN)
 /*Use PVR_DPF() unless message is necessary in release build */
 #ifdef PVR_DISABLE_LOGGING
 #define PVR_LOG(X)
@@ -414,23 +477,40 @@ IMG_IMPORT void IMG_CALLCONV PVRSRVDebugPrintfDumpCCB(void);
 #define PVR_LOG(X) PVRSRVReleasePrintf X;
 #endif
 
+/*************************************************************************/ /*!
+@Function       PVRSRVReleasePrintf
+@Description    Output an important message, using an OS-specific method,
+                to a log or console which can be read by developers in
+                release builds.
+                Invoked from the macro PVR_LOG().
+@Input          pszFormat   The message format string
+@Input          ...         Zero or more arguments for use by the format string
+@Return         None
+*/ /**************************************************************************/
 IMG_IMPORT void IMG_CALLCONV PVRSRVReleasePrintf(const IMG_CHAR *pszFormat, ...) __printf(1, 2);
 #endif
 
 /* PVR_TRACE() handling */
 
-#if defined(PVRSRV_NEED_PVR_TRACE)
+#if defined(PVRSRV_NEED_PVR_TRACE) || defined(DOXYGEN)
 
 	#define PVR_TRACE(X)	PVRSRVTrace X    /*!< PowerVR Debug Trace Macro */
 	/* Empty string implementation that is -O0 build friendly */
 	#define PVR_TRACE_EMPTY_LINE()	PVR_TRACE(("%s", ""))
 
+/*************************************************************************/ /*!
+@Function       PVRTrace
+@Description    Output a debug message to the user
+                Invoked from the macro PVR_TRACE().
+@Input          pszFormat   The message format string
+@Input          ...         Zero or more arguments for use by the format string
+*/ /**************************************************************************/
 IMG_IMPORT void IMG_CALLCONV PVRSRVTrace(const IMG_CHAR* pszFormat, ... )
 	__printf(1, 2);
 
 #else /* defined(PVRSRV_NEED_PVR_TRACE) */
     /*! Null Implementation of PowerVR Debug Trace Macro (does nothing) */
-	#define PVR_TRACE(X)    
+	#define PVR_TRACE(X)
 
 #endif /* defined(PVRSRV_NEED_PVR_TRACE) */
 
