@@ -87,6 +87,9 @@ typedef struct _PVRSRV_DEV_CONNECTION_ PVRSRV_DEV_CONNECTION;
 #define SRV_FLAGS_INIT_PROCESS          (1U << 1)  /*!< Allows connect to succeed if SrvInit
 											* has not yet run (used by SrvInit itself) */
 
+#define SRV_WORKEST_ENABLED             (1U << 2)  /*!< If Workload Estimation is enabled */
+#define SRV_PDVFS_ENABLED               (1U << 3)  /*!< If PDVFS is enabled */
+
 /*
  * Bits 20 - 27 are used to pass information needed for validation
  * of the GPU Virtualisation Validation mechanism. In particular:

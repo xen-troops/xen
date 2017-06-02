@@ -49,16 +49,24 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgx_cr_defs_km.h"
 #undef __IMG_EXPLICIT_INCLUDE_HWDEFS
 
+/* The following Macros are picked up through BVNC headers for PDUMP and
+ * no hardware operations to be compatible with old build infrastructure.
+ */
+#if defined(PDUMP) || defined(NO_HARDWARE) || !defined(SUPPORT_MULTIBVNC_RUNTIME_BVNC_ACQUISITION)
 /******************************************************************************
  * Check for valid B.X.N.C
  *****************************************************************************/
 #if !defined(RGX_BVNC_KM_B) || !defined(RGX_BVNC_KM_V) || !defined(RGX_BVNC_KM_N) || !defined(RGX_BVNC_KM_C)
 #error "Need to specify BVNC (RGX_BVNC_KM_B, RGX_BVNC_KM_V, RGX_BVNC_KM_N and RGX_BVNC_C)"
 #endif
+#endif
 
+#if defined(PDUMP) || defined(NO_HARDWARE)
 /* Check core/config compatibility */
-#if (RGX_BVNC_KM_B != RGX_BNC_KM_B) || (RGX_BVNC_KM_N != RGX_BNC_KM_N) || (RGX_BVNC_KM_C != RGX_BNC_KM_C) 
+#if (RGX_BVNC_KM_B != RGX_BNC_KM_B) || (RGX_BVNC_KM_N != RGX_BNC_KM_N) || (RGX_BVNC_KM_C != RGX_BNC_KM_C)
 #error "BVNC headers are mismatching (KM core/config)"
+#endif
+
 #endif
 
 /******************************************************************************
@@ -66,14 +74,43 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *****************************************************************************/
 #define _RGX_BVNC_ST2(S)	#S
 #define _RGX_BVNC_ST(S)		_RGX_BVNC_ST2(S)
+#if defined(PDUMP) || defined(NO_HARDWARE) || defined(PVRSRV_GPUVIRT_GUESTDRV) || !defined(SUPPORT_MULTIBVNC_RUNTIME_BVNC_ACQUISITION)
 #define RGX_BVNC_KM			_RGX_BVNC_ST(RGX_BVNC_KM_B) "." _RGX_BVNC_ST(RGX_BVNC_KM_V) "." _RGX_BVNC_ST(RGX_BVNC_KM_N) "." _RGX_BVNC_ST(RGX_BVNC_KM_C)
+#endif
 #define RGX_BVNC_KM_V_ST	_RGX_BVNC_ST(RGX_BVNC_KM_V)
 
 /******************************************************************************
  * RGX Defines
  *****************************************************************************/
 
-#if defined(RGX_FEATURE_META)
+#define			BVNC_FIELD_MASK			((1 << BVNC_FIELD_WIDTH) - 1)
+#define         C_POSITION              (0)
+#define         N_POSITION              ((C_POSITION) + (BVNC_FIELD_WIDTH))
+#define         V_POSITION              ((N_POSITION) + (BVNC_FIELD_WIDTH))
+#define         B_POSITION              ((V_POSITION) + (BVNC_FIELD_WIDTH))
+
+#define         B_POSTION_MASK          (((IMG_UINT64)(BVNC_FIELD_MASK) << (B_POSITION)))
+#define         V_POSTION_MASK          (((IMG_UINT64)(BVNC_FIELD_MASK) << (V_POSITION)))
+#define         N_POSTION_MASK          (((IMG_UINT64)(BVNC_FIELD_MASK) << (N_POSITION)))
+#define         C_POSTION_MASK          (((IMG_UINT64)(BVNC_FIELD_MASK) << (C_POSITION)))
+
+#define         GET_B(x)                (((x) & (B_POSTION_MASK)) >> (B_POSITION))
+#define         GET_V(x)                (((x) & (V_POSTION_MASK)) >> (V_POSITION))
+#define         GET_N(x)                (((x) & (N_POSTION_MASK)) >> (N_POSITION))
+#define         GET_C(x)                (((x) & (C_POSTION_MASK)) >> (C_POSITION))
+
+#define         BVNC_PACK(B,V,N,C)      ((((IMG_UINT64)B)) << (B_POSITION) | \
+                                         (((IMG_UINT64)V)) << (V_POSITION) | \
+                                         (((IMG_UINT64)N)) << (N_POSITION) | \
+                                         (((IMG_UINT64)C)) << (C_POSITION) \
+                                        )
+
+#define RGX_CR_CORE_ID_CONFIG_N_SHIFT                     (8U)
+#define RGX_CR_CORE_ID_CONFIG_C_SHIFT                     (0U)
+
+#define RGX_CR_CORE_ID_CONFIG_N_CLRMSK                    (0XFFFF00FFU)
+#define RGX_CR_CORE_ID_CONFIG_C_CLRMSK                    (0XFFFFFF00U)
+
 /* META cores (required for the RGX_FEATURE_META) */
 #define MTP218   (1)
 #define MTP219   (2)
@@ -93,18 +130,20 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define RGX_FEATURE_META_COREMEM_SIZE (0)
 #define RGX_META_COREMEM_SIZE         (0)
 #else
+#if defined(RGX_FEATURE_META_COREMEM_SIZE) && (RGX_FEATURE_META_COREMEM_SIZE != 0)
 #define RGX_META_COREMEM_SIZE         (RGX_FEATURE_META_COREMEM_SIZE*1024)
+#else
+#define RGX_META_COREMEM_SIZE         (0)
+#endif
 #endif
 
-#if (RGX_FEATURE_META_COREMEM_SIZE != 0)
+#if defined(RGX_FEATURE_META_COREMEM_SIZE) && (RGX_FEATURE_META_COREMEM_SIZE != 0)
 #define RGX_META_COREMEM          (1)
 #define RGX_META_COREMEM_CODE     (1)
-#if !defined(FIX_HW_BRN_50767)
+#if !defined(__KERNEL__) && !defined(FIX_HW_BRN_50767)
 #define RGX_META_COREMEM_DATA     (1)
 #endif
 #endif
-
-#endif  /*RGX_FEATURE_META*/
 
 /* ISP requires valid state on all three pipes regardless of the number of
  * active pipes/tiles in flight.
@@ -185,9 +224,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /* META second thread feature depending on META variants and available CoreMem*/
 #if defined(RGX_FEATURE_META) && (RGX_FEATURE_META == MTP218 || RGX_FEATURE_META == MTP219) && defined(RGX_FEATURE_S7_TOP_INFRASTRUCTURE) && (RGX_FEATURE_META_COREMEM_SIZE == 256)
 #define RGXFW_META_SUPPORT_2ND_THREAD
-#if defined(SUPPORT_PDVFS)
-#define SUPPORT_PDVFS_THREAD1
-#endif
 #endif
 
 #if RGX_FEATURE_VIRTUAL_ADDRESS_SPACE_BITS == 40
@@ -249,11 +285,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #else
 #define RGX_FEATURE_SLC_SIZE_IN_BYTES (0)
 #endif
-#endif
-
-/* Proactive DVFS Second thread */
-#if defined(ENABLE_PDVFS_GPIO_THREAD1) && defined(RGXFW_META_SUPPORT_2ND_THREAD)
-#define SUPPORT_PDVFS_THREAD1
 #endif
 
 #endif /* _RGXDEFS_KM_H_ */

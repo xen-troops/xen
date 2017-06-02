@@ -100,6 +100,10 @@ typedef enum _RGXFWIF_DM_
 	RGXFWIF_DM_FORCE_I32  = 0x7fffffff   /*!< Force enum to be at least 32-bits wide */
 } RGXFWIF_DM;
 
+/* Maximum number of DM in use: GP, 2D/TDM, TA, 3D, CDM, SHG, RTU */
+#define RGXFWIF_DM_DEFAULT_MAX	(7)
+
+#if !defined(__KERNEL__)
 #if defined(RGX_FEATURE_RAY_TRACING)
 #define RGXFWIF_DM_MAX_MTS 8
 #else
@@ -110,7 +114,22 @@ typedef enum _RGXFWIF_DM_
 /* Maximum number of DM in use: GP, 2D/TDM, TA, 3D, CDM, SHG, RTU */
 #define RGXFWIF_DM_MAX			(7)
 #else
+/* Maximum number of DM in use: GP, 2D/TDM, TA, 3D, CDM*/
 #define RGXFWIF_DM_MAX			(5)
+#endif
+#else
+#if defined(RGX_FEATURE_RAY_TRACING)
+	#define RGXFWIF_DM_MIN_MTS_CNT (6)
+	#define RGXFWIF_RAY_TRACING_DM_MTS_CNT (2)
+	#define RGXFWIF_DM_MIN_CNT			(5)
+	#define RGXFWIF_RAY_TRACING_DM_CNT	(2)
+	#define RGXFWIF_DM_MAX	(RGXFWIF_DM_MIN_CNT + RGXFWIF_RAY_TRACING_DM_CNT)
+#else
+	#define RGXFWIF_DM_MIN_MTS_CNT (6)
+	#define RGXFWIF_DM_MIN_CNT			(5)
+    /* Maximum number of DM in use: GP, 2D/TDM, TA, 3D, CDM*/
+    #define RGXFWIF_DM_MAX			(5)
+#endif
 #endif
 
 /* Min/Max number of HW DMs (all but GP) */
