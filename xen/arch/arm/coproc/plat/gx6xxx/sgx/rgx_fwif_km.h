@@ -65,15 +65,15 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define RGXFWIF_GUEST_OFFSET_KCCBCTL        (RGXFW_SEGMMU_DATA_BASE_ADDRESS | \
                                              RGXFW_SEGMMU_DATA_META_UNCACHED | \
                                              RGXFW_SEGMMU_DATA_VIVT_SLC_UNCACHED | \
-                                             0x01C0U)
+											 0x0280U)
 #define RGXFWIF_GUEST_OFFSET_FWCCB          (RGXFW_SEGMMU_DATA_BASE_ADDRESS | \
                                              RGXFW_SEGMMU_DATA_META_UNCACHED | \
                                              RGXFW_SEGMMU_DATA_VIVT_SLC_UNCACHED | \
-                                             0x0240U)
+											 0x0300U)
 #define RGXFWIF_GUEST_OFFSET_FWCCBCTL       (RGXFW_SEGMMU_DATA_BASE_ADDRESS | \
                                              RGXFW_SEGMMU_DATA_META_UNCACHED | \
                                              RGXFW_SEGMMU_DATA_VIVT_SLC_UNCACHED | \
-                                             0x0200U)
+											 0x02C0U)
 #else
 /* In case of MIPS we will need to define proper values for these offsets */
 #define RGXFWIF_GUEST_OFFSET_KCCB           (0x0)
@@ -243,12 +243,13 @@ typedef struct _RGXFWIF_FWCOMMONCONTEXT_
 	IMG_UINT64        RGXFW_ALIGN           ui64WaitSignalAddress;        /*!< Device Virtual Address of the signal the context is waiting on */
 	RGXFWIF_DLLIST_NODE                     sWaitSignalNode;              /*!< List entry for the wait-signal list */
 #endif
-#if (RGX_FEATURE_CDM_CONTROL_STREAM_FORMAT == 2)
+#if (RGX_FEATURE_CDM_CONTROL_STREAM_FORMAT == 2) || defined(RGX_FEATURE_FASTRENDER_DM)
 	RGXFWIF_DLLIST_NODE		RGXFW_ALIGN  sBufStalledNode;		/*!< List entry for the buffer stalled list */
 	IMG_UINT64    		    RGXFW_ALIGN  ui64CBufQueueCtrlAddr;	/*!< Address of the circular buffer queue pointers */
 #if defined(RGX_FEATURE_SIGNAL_SNOOPING)
 	IMG_UINT64    		    RGXFW_ALIGN  ui64ResumeSignalAddr;	/*!< Address of the Services Signal for resuming the buffer */
 #endif
+	IMG_BOOL    		    bReadOffsetNeedsReset;				/*!< Following HWR circular buffer read-offset needs resetting */
 #endif
 } UNCACHED_ALIGN RGXFWIF_FWCOMMONCONTEXT;
 
@@ -267,7 +268,16 @@ typedef struct _RGXFWIF_FWRENDERCONTEXT_
 	 * the host will read valid values only after an SLC flush/inval.
 	 * This is only guaranteed to happen while destroying the render-context.
 	 */
-	IMG_UINT32			ui32TotalNumPartialRenders; /*!< Total number of partial renders */
+
+	/* The following variable has been reused to avoid breaking compatibility.
+	 *
+	 * It was previously:
+	 * IMG_UINT32 ui32TotalNumPartialRenders; Total number of partial renders
+	 *
+	 * And is changed to:
+	 */
+	IMG_UINT32			ui32WorkEstCCBSubmitted; /*!< Number of commands submitted to the WorkEst FW CCB */
+
 	IMG_UINT32			ui32TotalNumOutOfMemory;	/*!< Total number of OOMs */
 
 } UNCACHED_ALIGN RGXFWIF_FWRENDERCONTEXT;
@@ -366,10 +376,14 @@ typedef struct _RGXFWIF_CCB_CTL_
 #define RGXFWIF_MMUCACHEDATA_FLAGS_CTX_ALL (0x800) /* MMU_CTRL_INVAL_ALL_CONTEXTS_EN */
 #endif
 
+#define RGXFWIF_MMUCACHEDATA_FLAGS_SYNC_UPDATE (0x08000000) /* indicates FW should update the MMU cleanup sync */
+
 typedef struct _RGXFWIF_MMUCACHEDATA_
 {
 	PRGXFWIF_FWMEMCONTEXT		psMemoryContext;
 	IMG_UINT32					ui32Flags;
+	RGXFWIF_DEV_VIRTADDR		sMMUCacheSync;
+	IMG_UINT32					ui32MMUCacheSyncUpdateValue;
 } RGXFWIF_MMUCACHEDATA;
 
 typedef struct _RGXFWIF_SLCBPCTLDATA_
@@ -400,11 +414,10 @@ typedef struct _RGXFWIF_KCCB_CMD_KICK_DATA_
 {
 	PRGXFWIF_FWCOMMONCONTEXT	psContext;			/*!< address of the firmware context */
 	IMG_UINT32					ui32CWoffUpdate;	/*!< Client CCB woff update */
-	IMG_UINT32		ui32NumCleanupCtl;		/*!< number of CleanupCtl pointers attached */
-	PRGXFWIF_CLEANUP_CTL	apsCleanupCtl[RGXFWIF_KCCB_CMD_KICK_DATA_MAX_NUM_CLEANUP_CTLS]; /*!< CleanupCtl structures associated with command */
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
-	PRGXFWIF_WORKLOAD_DATA		sWorkloadDataFWAddress;
-#endif
+	IMG_UINT32					ui32NumCleanupCtl;		/*!< number of CleanupCtl pointers attached */
+	PRGXFWIF_CLEANUP_CTL		apsCleanupCtl[RGXFWIF_KCCB_CMD_KICK_DATA_MAX_NUM_CLEANUP_CTLS]; /*!< CleanupCtl structures associated with command */
+	PRGXFWIF_WORKLOAD_DATA		sWorkloadDataFWAddress;   /*!< deprecated, kept for compatibility. */
+	IMG_UINT32					ui32WorkEstCmdHeaderOffset; /*!< offset to the CmdHeader which houses the workload estimation kick data. */
 } RGXFWIF_KCCB_CMD_KICK_DATA;
 
 typedef struct _RGXFWIF_KCCB_CMD_FENCE_DATA_
@@ -566,8 +579,17 @@ typedef struct _RGXFWIF_WRITE_OFFSET_UPDATE_DATA_
 	PRGXFWIF_FWCOMMONCONTEXT  psContext; /*!< Context to that may need to be resumed following write offset update */
 } UNCACHED_ALIGN RGXFWIF_WRITE_OFFSET_UPDATE_DATA;
 
-#if defined(SUPPORT_PDVFS)
+typedef struct _RGXFWIF_WORKEST_FWCCB_CMD_
+{
+	IMG_UINT64 RGXFW_ALIGN ui64ReturnDataIndex; /*!< Index for return data array */
+	IMG_UINT64 RGXFW_ALIGN ui64CyclesTaken;     /*!< The cycles the workload took on the hardware */
+} RGXFWIF_WORKEST_FWCCB_CMD;
 
+
+/*!
+ ******************************************************************************
+ * Proactive DVFS Structures
+ *****************************************************************************/
 #define NUM_OPP_VALUES 16
 
 typedef struct _PDVFS_OPP_
@@ -579,7 +601,7 @@ typedef struct _PDVFS_OPP_
 typedef struct _RGXFWIF_PDVFS_OPP_
 {
 	PDVFS_OPP		asOPPValues[NUM_OPP_VALUES];
-	IMG_UINT32		ui32ThrottlePoint;
+	IMG_UINT32		ui32MaxOPPPoint;
 } UNCACHED_ALIGN RGXFWIF_PDVFS_OPP;
 
 typedef struct _RGXFWIF_PDVFS_OPP_DATA_
@@ -587,11 +609,10 @@ typedef struct _RGXFWIF_PDVFS_OPP_DATA_
 	RGXFWIF_PDVFS_OPP sPDFVSOppInfo;
 } UNCACHED_ALIGN RGXFWIF_PDVFS_OPP_DATA;
 
-typedef struct _RGXFWIF_PDVFS_THROTTLE_DATA_
+typedef struct _RGXFWIF_PDVFS_MAX_FREQ_DATA_
 {
-	IMG_UINT32 ui32ThrottlePoint;
-} UNCACHED_ALIGN RGXFWIF_PDVFS_THROTTLE_DATA;
-#endif
+	IMG_UINT32 ui32MaxOPPPoint;
+} UNCACHED_ALIGN RGXFWIF_PDVFS_MAX_FREQ_DATA;
 
 /*!
  ******************************************************************************
@@ -644,6 +665,11 @@ typedef struct
 	RGXFWIF_OS_STATE_CHANGE eNewOSState;
 } UNCACHED_ALIGN RGXFWIF_OS_STATE_CHANGE_DATA;
 
+typedef struct
+{
+	PRGXFWIF_INIT		sOSInit;
+}  RGXFW_ALIGN RGXFWIF_OS_CONFIG_DATA;
+
 typedef enum _RGXFWIF_KCCB_CMD_TYPE_
 {
 	RGXFWIF_KCCB_CMD_KICK						= 101,
@@ -668,15 +694,10 @@ typedef enum _RGXFWIF_KCCB_CMD_TYPE_
 	RGXFWIF_KCCB_CMD_HWPERF_SELECT_CUSTOM_CNTRS = 122, /*!< Configure the custom counters for HWPerf */
 	RGXFWIF_KCCB_CMD_HWPERF_CONFIG_ENABLE_BLKS_DIRECT	= 123, /*!< Configure, clear and enable multiple HWPerf blocks during the init process*/
 	RGXFWIF_KCCB_CMD_LOGTYPE_UPDATE             = 124, /*!< Ask the firmware to update its cached ui32LogType value from the (shared) tracebuf control structure */
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
 	RGXFWIF_KCCB_CMD_WORKEST_CLEAR_BUFFER		= 125,
-#endif
-#if defined(SUPPORT_PDVFS)
 	RGXFWIF_KCCB_CMD_PDVFS_PASS_OPP				= 126,
-	RGXFWIF_KCCB_CMD_PDVFS_THROTTLE				= 127,
+	RGXFWIF_KCCB_CMD_PDVFS_LIMIT_MAX_FREQ				= 127,
 	RGXFWIF_KCCB_CMD_PDVFS_REQUEST_REACTIVE_UPDATE	= 129,
-#endif
-
 #if defined(RGX_FEATURE_RAY_TRACING)
 	RGXFWIF_KCCB_CMD_DOPPLER_MEMORY_GROW		= 130,
 #endif
@@ -692,6 +713,7 @@ typedef enum _RGXFWIF_KCCB_CMD_TYPE_
 	RGXFWIF_KCCB_CMD_HCS_SET_DEADLINE           = 135, /*!< Set hard context switching deadline */
 	RGXFWIF_KCCB_CMD_OS_ISOLATION_GROUP_CHANGE  = 136, /*!< Changes the configuration of (or even disables) the OSid Isolation scheduling group. It can only be serviced for the Host DDK */
 	RGXFWIF_KCCB_CMD_OS_ONLINE_STATE_CONFIGURE  = 137, /*!< Informs the FW that a Guest OS has come online / offline. It can only be serviced for the Host DDK */
+	RGXFWIF_KCCB_CMD_OS_CFG_INIT                = 138, /*!< First kick of the DDK which initializes all OS specific data on the FW */
 } RGXFWIF_KCCB_CMD_TYPE;
 
 /* Kernel CCB command packet */
@@ -726,15 +748,14 @@ typedef struct _RGXFWIF_KCCB_CMD_
 #if (RGX_FEATURE_CDM_CONTROL_STREAM_FORMAT == 2)
 		RGXFWIF_WRITE_OFFSET_UPDATE_DATA    sWriteOffsetUpdateData; /*!< Data for informing the FW about the write offset update */
 #endif
-#if defined(SUPPORT_PDVFS)
 		RGXFWIF_PDVFS_OPP_DATA				sPDVFSOppData;
-		RGXFWIF_PDVFS_THROTTLE_DATA			sPDVFSThrottleData;
-#endif
+		RGXFWIF_PDVFS_MAX_FREQ_DATA			sPDVFSMaxFreqData;
 		RGXFWIF_OSID_PRIORITY_DATA			sCmdOSidPriorityData;	/*!< Data for updating an osid priority */
 		RGXFWIF_STATEFLAG_CTRL				sStateFlagCtrl;			/*!< Data for StateFlag control command */
 		RGXFWIF_HCS_CTL						sHCSCtrl;				/*!< Data for Hard Context Switching */
 		RGXFWIF_OSID_ISOLATION_GROUP_DATA   sCmdOSidIsolationData;  /*!< Data for updating the OSid isolation group */
 		RGXFWIF_OS_STATE_CHANGE_DATA        sCmdOSOnlineStateData;  /*!< Data for updating the Guest Online states */
+		RGXFWIF_OS_CONFIG_DATA              sCmdOSConfigData;       /*!< Data for the OS-specific initialization part of the FW */
 	} UNCACHED_ALIGN uCmdData;
 } UNCACHED_ALIGN RGXFWIF_KCCB_CMD;
 
@@ -783,13 +804,9 @@ typedef enum _RGXFWIF_FWCCB_CMD_TYPE_
 #if defined(RGX_FEATURE_RAY_TRACING)
 	RGXFWIF_FWCCB_CMD_DOPPLER_MEMORY_GROW			= 108, 	/*!< Requests an on-demand RPM freelist grow */
 #endif
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
 	RGXFWIF_FWCCB_CMD_WORKLOAD_FINISHED				= 109,	/*!< Supplies data for the workload matching algorithm */
-#endif
-#if defined(SUPPORT_PDVFS)
 	RGXFWIF_FWCCB_CMD_CORE_CLK_RATE_CHANGE			= 110,
 	RGXFWIF_FWCCB_CMD_PDVFS_FREEMEM					= 111,
-#endif
 } RGXFWIF_FWCCB_CMD_TYPE;
 
 typedef enum
@@ -811,15 +828,21 @@ typedef struct
     IMG_PID									pidOwner;					/*!< The pid of the process whose stats are being updated */
     IMG_INT32								i32AdjustmentValue;			/*!< Adjustment to be made to the statistic */
 } RGXFWIF_FWCCB_CMD_UPDATE_STATS_DATA;
+/*!
+ ******************************************************************************
+ * Workload Estimation Structures
+ *****************************************************************************/
 
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
 typedef struct
 {
 	IMG_UINT64 RGXFW_ALIGN /*uintptr_t DEVMEM_MEMDESC*/	ui64WorkloadDataMemdesc;
 } RGXFWIF_FWCCB_CMD_WORKLOAD_FINISHED_DATA;
-#endif
 
-#if defined(SUPPORT_PDVFS)
+/*!
+ ******************************************************************************
+ * Proactive DVFS Structures
+ *****************************************************************************/
+
 typedef struct _RGXFWIF_FWCCB_CMD_CORE_CLK_RATE_CHANGE_DATA_
 {
 	IMG_UINT32 ui32CoreClkRate;
@@ -829,7 +852,6 @@ typedef struct _RGXFWIF_FWCCB_CMD_PDVFS_FREEMEM_DATA_
 {
 	IMG_UINT64 RGXFW_ALIGN ui64MemDesc;
 } UNCACHED_ALIGN RGXFWIF_FWCCB_CMD_PDVFS_FREEMEM_DATA;
-#endif
 
 typedef struct _RGXFWIF_FWCCB_CMD_
 {
@@ -841,13 +863,9 @@ typedef struct _RGXFWIF_FWCCB_CMD_
 		RGXFWIF_FWCCB_CMD_FREELISTS_RECONSTRUCTION_DATA		sCmdFreeListsReconstruction;	/*!< Data for freelists reconstruction */
 		RGXFWIF_FWCCB_CMD_CONTEXT_RESET_DATA				sCmdContextResetNotification;	/*!< Data for context reset notification */
 		RGXFWIF_FWCCB_CMD_UPDATE_STATS_DATA                 sCmdUpdateStatsData;            /*!< Data for updating process stats */
-#if defined(SUPPORT_WORKLOAD_ESTIMATION)
 		RGXFWIF_FWCCB_CMD_WORKLOAD_FINISHED_DATA			sCmdWorkEstWorkloadFinished;			/*!< Data for workload matching */
-#endif
-#if defined(SUPPORT_PDVFS)
 		RGXFWIF_FWCCB_CMD_CORE_CLK_RATE_CHANGE_DATA			sCmdCoreClkRateChange;
 		RGXFWIF_FWCCB_CMD_PDVFS_FREEMEM_DATA				sCmdPDVFSFreeMem;
-#endif
 	} RGXFW_ALIGN uCmdData;
 } RGXFW_ALIGN RGXFWIF_FWCCB_CMD;
 
@@ -991,7 +1009,6 @@ typedef struct _RGXFWIF_INIT_
 
 	RGXFWIF_DEV_VIRTADDR    sT1Stack;
 
-#if defined(SUPPORT_PDVFS)
 	RGXFWIF_PDVFS_OPP       sPDVFSOPPInfo;
 
 	/**
@@ -1000,11 +1017,14 @@ typedef struct _RGXFWIF_INIT_
 	 * to communicate to host driver.
 	 */
 	PRGXFWIF_CORE_CLK_RATE  sCoreClockRate;
-#endif
 
 #if defined(PDUMP)
 	RGXFWIF_PID_FILTER      sPIDFilter;
 #endif
+
+	/* Workload Estimation Firmware CCB */
+	PRGXFWIF_CCB_CTL        psWorkEstFirmwareCCBCtl;
+	PRGXFWIF_CCB            psWorkEstFirmwareCCB;
 
 } UNCACHED_ALIGN RGXFWIF_INIT;
 

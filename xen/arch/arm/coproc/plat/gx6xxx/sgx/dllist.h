@@ -221,6 +221,42 @@ void dllist_remove_node(PDLLIST_NODE psListNode)
 
 
 /*************************************************************************/ /*!
+@Function       dllist_swap_node
+
+@Description    Removes psOldNode from the list and inserts psNewNode instead.
+                Handy for moving the list to another head.
+
+@Input          psOldNode 		List node to be replaced
+@Input          psNewNode		List node to insert
+
+*/
+/*****************************************************************************/
+static INLINE
+void dllist_swap_node(PDLLIST_NODE psOldNode, PDLLIST_NODE psNewNode)
+{
+	if (dllist_is_empty(psOldNode))
+	{
+		psNewNode->psNextNode = psNewNode;
+		psNewNode->psPrevNode = psNewNode;
+	}
+	else
+	{
+		/* Change the neighbouring nodes */
+		psOldNode->psNextNode->psPrevNode = psNewNode;
+		psOldNode->psPrevNode->psNextNode = psNewNode;
+
+		/* Copy the old data to the new node */
+		psNewNode->psNextNode = psOldNode->psNextNode;
+		psNewNode->psPrevNode = psOldNode->psPrevNode;
+
+		/* Clear the node to show it's not on a list */
+		psOldNode->psPrevNode = 0;
+		psOldNode->psNextNode = 0;
+	}
+
+}
+
+/*************************************************************************/ /*!
 @Function       dllist_foreach_node
 
 @Description    Walk through all the nodes on the list
