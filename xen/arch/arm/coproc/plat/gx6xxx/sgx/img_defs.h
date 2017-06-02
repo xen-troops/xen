@@ -219,7 +219,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 		 */
 		#define	IMG_IMPORT	IMG_EXPORT 
 		#ifndef USE_CODE
-		/* Define IMG_ABORT() in the same way as WEA7 (WinEC7). */
 		#define IMG_ABORT()	printf("IMG_ABORT was called.\n")
 
 		#endif
@@ -374,8 +373,36 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define IMG_STRINGIFY(x) _STRINGIFY(x)
 
 #if defined(INTEGRITY_OS)
-/* Definitions not present in INTEGRITY. */
-#define PATH_MAX	200
+	/* Definitions not present in INTEGRITY. */
+	#define PATH_MAX	200
+#endif
+
+#if defined (__clang__) || defined (__GNUC__)
+	/* __SIZEOF_POINTER__ is defined already by these compilers */
+#elif defined (INTEGRITY_OS)
+	#if defined (__Ptr_Is_64)
+		#define __SIZEOF_POINTER__ 8
+	#else
+		#define __SIZEOF_POINTER__ 4
+	#endif
+#else
+	#warning Unknown OS - using default method to determine whether CPU arch is 64-bit.
+	#define __SIZEOF_POINTER__ sizeof(char *)
+#endif
+
+/* RDI8567: clang/llvm load/store optimisations cause issues with device
+ * memory allocations. Some pointers are made 'volatile' to prevent
+ * this optimisations being applied to writes through that particular pointer.
+ */
+#if defined(__clang__) && defined(__aarch64__)
+#define NOLDSTOPT volatile
+/* after applying 'volatile' to a pointer, we may need to cast it to 'void *'
+ * to keep it compatible with its existing uses
+ */
+#define NOLDSTOPT_VOID (void *)
+#else
+#define NOLDSTOPT
+#define NOLDSTOPT_VOID
 #endif
 
 #endif /* #if !defined (__IMG_DEFS_H__) */
