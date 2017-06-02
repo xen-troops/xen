@@ -1,5 +1,5 @@
 /*************************************************************************/ /*!
-@Title          RGX Config BVNC 4.V.2.58
+@Title          RGX Config BVNC 4.V.6.62
 @Copyright      Copyright (c) Imagination Technologies Ltd. All Rights Reserved
 @License        Dual MIT/GPLv2
 
@@ -39,27 +39,28 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */ /**************************************************************************/
 
-#ifndef _RGXCONFIG_KM_4_V_2_58_H_
-#define _RGXCONFIG_KM_4_V_2_58_H_
+#ifndef _RGXCONFIG_KM_4_V_6_62_H_
+#define _RGXCONFIG_KM_4_V_6_62_H_
 
 /***** Automatically generated file (22/02/2016 07:00:34): Do not edit manually ********************/
 /***** Timestamp:  (22/02/2016 07:00:34)************************************************************/
 
 #define RGX_BNC_KM_B 4
-#define RGX_BNC_KM_N 2
-#define RGX_BNC_KM_C 58
+#define RGX_BNC_KM_N 6
+#define RGX_BNC_KM_C 62
 
 /******************************************************************************
  * DDK Defines
  *****************************************************************************/
-#define RGX_FEATURE_NUM_CLUSTERS (2)
 #define RGX_FEATURE_SLC_SIZE_IN_BYTES (128*1024)
 #define RGX_FEATURE_PHYS_BUS_WIDTH (40)
+#define RGX_FEATURE_NUM_CLUSTERS (6)
 #define RGX_FEATURE_PERFBUS 
 #define RGX_FEATURE_AXI_ACELITE 
 #define RGX_FEATURE_CLUSTER_GROUPING 
 #define RGX_FEATURE_SLC_CACHE_LINE_SIZE_BITS (512)
 #define RGX_FEATURE_DYNAMIC_DUST_POWER 
+#define RGX_FEATURE_SLC_BANKS (4)
 #define RGX_FEATURE_VIRTUAL_ADDRESS_SPACE_BITS (40)
 #define RGX_FEATURE_TLA 
 #define RGX_FEATURE_GS_RTA_SUPPORT 
@@ -76,4 +77,4 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define RGX_FEATURE_COMPUTE_OVERLAP 
 
 
-#endif /* _RGXCONFIG_4_V_2_58_H_ */
+#endif /* _RGXCONFIG_4_V_6_62_H_ */
