@@ -471,8 +471,10 @@ static s_time_t gx6xxx_save_reg_ctx(struct vcoproc_instance *vcoproc)
     for (i = 0, offset = 0; i < vinfo->reg_ctx.count;
          i++, offset += sizeof(*vinfo->reg_ctx.regs))
     {
-        vinfo->reg_ctx.regs[i].val = gx6xxx_read64(vcoproc->coproc, offset);
-        gx6xxx_write64(vcoproc->coproc, offset, 0);
+        //vinfo->reg_ctx.regs[i].val = gx6xxx_read64(vcoproc->coproc, offset);
+        //gx6xxx_write64(vcoproc->coproc, offset, 0);
+        vinfo->reg_ctx.regs[i].val = readq((char *)vcoproc->coproc->mmios[0].base + offset);
+        writeq(0, (char *)vcoproc->coproc->mmios[0].base + offset);
     }
     return 0;
 }
@@ -485,8 +487,9 @@ static void gx6xxx_restore_reg_ctx(struct vcoproc_instance *vcoproc,
 
     for (i = 0, offset = 0; i < vinfo->reg_ctx.count;
          i++, offset += sizeof(*vinfo->reg_ctx.regs))
-        gx6xxx_write64(vcoproc->coproc, offset,
-                       vinfo->reg_ctx.regs[i].val);
+        //gx6xxx_write64(vcoproc->coproc, offset,
+        //               vinfo->reg_ctx.regs[i].val);
+        writeq(vinfo->reg_ctx.regs[i].val, (char *)vcoproc->coproc->mmios[0].base + offset);
     COPROC_VERBOSE(NULL, "restored %d registers\n",
                    vinfo->reg_ctx.count);
     /* force all clocks on */
