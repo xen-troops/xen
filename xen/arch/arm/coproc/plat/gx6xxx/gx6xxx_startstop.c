@@ -887,7 +887,7 @@ static const char *power_state_to_str(RGXFWIF_POW_STATE state)
 
 #define RGX_CR_SOFT_RESET_ALL   (RGX_CR_SOFT_RESET_MASKFULL)
 
-static s_time_t gx6xxx_slc_flush_inval(struct vcoproc_instance *vcoproc)
+static __maybe_unused s_time_t gx6xxx_slc_flush_inval(struct vcoproc_instance *vcoproc)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
     RGXFWIF_KCCB_CMD flush_cmd;
@@ -912,7 +912,7 @@ static s_time_t gx6xxx_slc_flush_inval(struct vcoproc_instance *vcoproc)
     return 0;
 }
 
-static s_time_t gx6xxx_mmu_flush_inval(struct vcoproc_instance *vcoproc)
+static __maybe_unused s_time_t gx6xxx_mmu_flush_inval(struct vcoproc_instance *vcoproc)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
     RGXFWIF_KCCB_CMD flush_cmd;
@@ -990,12 +990,14 @@ int gx6xxx_ctx_gpu_start(struct vcoproc_instance *vcoproc,
         return ret;
 #endif
     }
+#if 0 /* FIXME: With new version of pvr_km these commands are not functional. */
     gx6xxx_slc_flush_inval(vcoproc);
     gx6xxx_wait_kccb(vcoproc);
 //    gx6xxx_wait_psync(vcoproc);
     gx6xxx_mmu_flush_inval(vcoproc);
     gx6xxx_wait_kccb(vcoproc);
 //    gx6xxx_wait_psync(vcoproc);
+#endif
     /* flush scheduled work */
     if ( likely(vinfo->reg_cr_mts_schedule_lo_wait_cnt) )
     {
