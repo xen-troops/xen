@@ -23,7 +23,7 @@
 
 #include "coproc.h"
 
-static s_time_t rr_slice = MILLISECS(6);
+static s_time_t rr_slice = MILLISECS(200);
 
 /* system-wide private data */
 struct rr_private {
