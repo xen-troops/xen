@@ -19,12 +19,12 @@ void gx6xxx_1_to_1_mapping_chk(struct vcoproc_instance *vcoproc,
 {
 #ifdef GX6XXX_DEBUG
     struct domain *d = vcoproc->domain;
-    mfn_t mfn;
-    pfn_t i;
+    unsigned long mfn;
+    unsigned long i;
 
     for (i = paddr_to_pfn(start); i < paddr_to_pfn(end + 1); i++)
     {
-        mfn = p2m_lookup(d, _gfn(i), NULL);
+        mfn = mfn_x(gfn_to_mfn(d, _gfn(i)));
         if ( i != mfn )
         {
             printk("mfn %lx != pfn %lx\n", mfn, i);
