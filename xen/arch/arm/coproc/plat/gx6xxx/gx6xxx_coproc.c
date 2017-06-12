@@ -227,7 +227,16 @@ static int gx6xxx_mmio_read(struct vcpu *v, mmio_info_t *info,
             *r = 0;
             goto out;
         }
-        BUG();
+        else
+        {
+            /*
+             * FIXME: as it turned out actual reads may occur during
+             * initialization sequence, e.g. for BVNC acquisition. So,
+             * allow to read everything in this state for now.
+             */
+            *r = gx6xxx_read32(ctx.coproc, ctx.offset);
+            goto out;
+        }
     }
 out:
     spin_unlock_irqrestore(&ctx.coproc->vcoprocs_lock, flags);
@@ -329,6 +338,15 @@ static void gx6xxx_irq_handler(int irq, void *dev,
     struct vcoproc_instance *vcoproc;
     struct vgx6xxx_info *vinfo;
     uint32_t irq_status;
+
+    /*
+     * There might be a tricky situation when mmio handlers don't trap anything
+     * but interrupts occur. These all mean that corresponding mmio ranges
+     * weren't configured properly in the device tree or there is another device
+     * with the same mmio ranges. In such case the scheduler isn't involved in
+     * and as the result the "curr" pointer is always NULL.
+     */
+    BUG_ON(!info->curr);
 
     spin_lock(&coproc->vcoprocs_lock);
     COPROC_DEBUG(NULL, "%s dom %d\n", __FUNCTION__,
