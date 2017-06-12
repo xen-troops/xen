@@ -203,12 +203,12 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     if ( unlikely(!pg64) )
     {
         COPROC_ERROR(vcoproc->coproc->dev,
-                     "failed to map page directory MFN %lx\n", vinfo->mfn_pd);
+                     "failed to map page directory MFN %lx\n", mfn_x(vinfo->mfn_pd));
         return INVALID_MFN;
     }
     clean_and_invalidate_dcache_va_range(pg64, PAGE_SIZE);
     COPROC_DEBUG(vcoproc->coproc->dev,
-                 "page directory MFN %lx\n", vinfo->mfn_pd);
+                 "page directory MFN %lx\n", mfn_x(vinfo->mfn_pd));
 #if 0
     gx6xxx_dump((uint32_t *)pg64, PAGE_SIZE);
 #endif
@@ -225,7 +225,7 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     BUG_ON(order != 0);
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
     COPROC_DEBUG(vcoproc->coproc->dev, "page table IPA %lx MFN %lx\n",
-                 ipa, mfn);
+                 ipa, mfn_x(mfn));
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         COPROC_ERROR(vcoproc->coproc->dev, "failed to lookup page table\n");
@@ -238,7 +238,7 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     if ( unlikely(!pg64) )
     {
         COPROC_ERROR(vcoproc->coproc->dev,
-                     "failed to map page table MFN %lx\n", mfn);
+                     "failed to map page table MFN %lx\n", mfn_x(mfn));
         return INVALID_MFN;
     }
     clean_and_invalidate_dcache_va_range(pg64, PAGE_SIZE);
@@ -258,7 +258,7 @@ static mfn_t gx6xxx_fw_mmu_devaddr_to_mfn(struct vcoproc_instance *vcoproc,
     }
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
     COPROC_DEBUG(vcoproc->coproc->dev, "page table entry IPA %lx MFN %lx\n",
-                 ipa, mfn);
+                 ipa, mfn_x(mfn));
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         COPROC_ERROR(vcoproc->coproc->dev,
@@ -278,8 +278,8 @@ static inline void *gx6xxx_fw_mmu_map(struct vcoproc_instance *vcoproc,
                                       struct vgx6xxx_info *vinfo,
                                       uint32_t meta_addr, size_t size)
 {
-    /* FIXME: up to 3 pages can be mapped */
-    mfn_t mfn[3];
+    /* FIXME: up to 7 pages can be mapped */
+    mfn_t mfn[7];
     unsigned char *vaddr;
     uint32_t offset;
     uint64_t fw_meta_dev_vaddr;
@@ -300,7 +300,7 @@ static inline void *gx6xxx_fw_mmu_map(struct vcoproc_instance *vcoproc,
         /* this mapping fits into a single page */
         mfn[i] = gx6xxx_fw_mmu_devaddr_to_mfn(vcoproc, vinfo,
                                               fw_meta_dev_vaddr);
-        if ( unlikely(mfn[i] == INVALID_MFN) )
+        if ( unlikely(mfn_x(mfn[i]) == mfn_x(INVALID_MFN)) )
         {
             COPROC_ERROR(vcoproc->coproc->dev,
                          "failed to find MFN for dev address %lx\n",
@@ -369,7 +369,7 @@ static int gx6xxx_fw_mmu_init(struct vcoproc_instance *vcoproc,
     ipa = vinfo->reg_val_cr_bif_cat_base0.val;
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
     COPROC_DEBUG(vcoproc->coproc->dev, "page catalog IPA %lx MFN %lx\n",
-                 ipa, mfn);
+                 ipa, mfn_x(mfn));
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         COPROC_ERROR(vcoproc->coproc->dev, "failed to lookup page catalog\n");
@@ -382,7 +382,7 @@ static int gx6xxx_fw_mmu_init(struct vcoproc_instance *vcoproc,
     if ( unlikely(!pgc) )
     {
         COPROC_ERROR(vcoproc->coproc->dev,
-                     "failed to map page catalog, MFN %lx\n", mfn);
+                     "failed to map page catalog, MFN %lx\n", mfn_x(mfn));
         return -EINVAL;
     }
     clean_and_invalidate_dcache_va_range(pgc, PAGE_SIZE);
@@ -402,7 +402,7 @@ static int gx6xxx_fw_mmu_init(struct vcoproc_instance *vcoproc,
     /* we have page catalog entry, so we can read page directory */
     mfn = p2m_lookup(vcoproc->domain, _gfn(paddr_to_pfn(ipa)), NULL);
     COPROC_DEBUG(vcoproc->coproc->dev, "page directory IPA %lx MFN %lx\n",
-                 ipa, mfn);
+                 ipa, mfn_x(mfn));
     if ( unlikely(mfn_eq(mfn, INVALID_MFN)) )
     {
         COPROC_ERROR(vcoproc->coproc->dev, "failed to lookup page directory\n");
@@ -592,7 +592,7 @@ void gx6xxx_fw_dump_kccb(struct vcoproc_instance *vcoproc,
 
         if ( read_ofs > wrap_mask || write_ofs > wrap_mask )
         {
-            dev_err(vcoproc->coproc->dev,"stalled messages???\n");
+            COPROC_ERROR(vcoproc->coproc->dev,"stalled messages???\n");
             return;
         }
 
@@ -629,9 +629,10 @@ void gx6xxx_fw_dump_kccb(struct vcoproc_instance *vcoproc,
             COPROC_ERROR(vcoproc->coproc->dev,
                          "unknown KCCB command %d at ui32ReadOffset %d\n",
                          cmd->eCmdType, read_ofs);
-            BUG();
+            cmd_name = "RGXFWIF_KCCB_CMD_UKNOWN";
+            break;
         }
-        dev_dbg_gx6xx(vcoproc->coproc->dev, "KCCB cmd: %s (%d)\n",
+        COPROC_DEBUG(vcoproc->coproc->dev, "KCCB cmd: %s (%d)\n",
                       cmd_name, cmd->eCmdType);
         read_ofs = (read_ofs + 1) & wrap_mask;
     }
