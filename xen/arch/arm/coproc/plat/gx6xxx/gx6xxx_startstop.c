@@ -5,7 +5,7 @@
 #include "gx6xxx_startstop.h"
 
 /* these are the registers we must save during context switch */
-static uint32_t gx6xxx_ctx_reg_offsets[] =
+static __maybe_unused uint32_t gx6xxx_ctx_reg_offsets[] =
 {
     RGX_CR_PBE_INDIRECT,
     RGX_CR_PBE_PERF_INDIRECT,
@@ -465,13 +465,14 @@ static inline int gx6xxx_wait_fw_started(struct vcoproc_instance *vcoproc,
 static s_time_t gx6xxx_save_reg_ctx(struct vcoproc_instance *vcoproc)
 {
     struct vgx6xxx_info *vinfo = (struct vgx6xxx_info *)vcoproc->priv;
+    uint32_t offset;
     int i;
 
-    for (i = 0; i < vinfo->reg_ctx.count; i++)
+    for (i = 0, offset = 0; i < vinfo->reg_ctx.count;
+         i++, offset += sizeof(*vinfo->reg_ctx.regs))
     {
-        vinfo->reg_ctx.regs[i].val = gx6xxx_read64(vcoproc->coproc,
-                                                   gx6xxx_ctx_reg_offsets[i]);
-        gx6xxx_write64(vcoproc->coproc, gx6xxx_ctx_reg_offsets[i], 0);
+        vinfo->reg_ctx.regs[i].val = gx6xxx_read64(vcoproc->coproc, offset);
+        gx6xxx_write64(vcoproc->coproc, offset, 0);
     }
     return 0;
 }
@@ -479,10 +480,12 @@ static s_time_t gx6xxx_save_reg_ctx(struct vcoproc_instance *vcoproc)
 static void gx6xxx_restore_reg_ctx(struct vcoproc_instance *vcoproc,
                                    struct vgx6xxx_info *vinfo)
 {
+    uint32_t offset;
     int i;
 
-    for (i = 0; i < vinfo->reg_ctx.count; i++)
-        gx6xxx_write64(vcoproc->coproc, gx6xxx_ctx_reg_offsets[i],
+    for (i = 0, offset = 0; i < vinfo->reg_ctx.count;
+         i++, offset += sizeof(*vinfo->reg_ctx.regs))
+        gx6xxx_write64(vcoproc->coproc, offset,
                        vinfo->reg_ctx.regs[i].val);
     COPROC_VERBOSE(NULL, "restored %d registers\n",
                    vinfo->reg_ctx.count);
@@ -1109,9 +1112,10 @@ int gx6xxx_ctx_gpu_stop(struct vcoproc_instance *vcoproc,
 int gx6xxx_ctx_init(struct vcoproc_instance *vcoproc,
                         struct vgx6xxx_info *vinfo)
 {
+    struct mmio *mmio = &vcoproc->coproc->mmios[0];
     int ret;
 
-    vinfo->reg_ctx.count = ARRAY_SIZE(gx6xxx_ctx_reg_offsets);
+    vinfo->reg_ctx.count = DIV_ROUND_UP(mmio->size, sizeof(*vinfo->reg_ctx.regs));
     COPROC_DEBUG(vcoproc->coproc->dev,
                  "allocating register context for %d registers\n",
                  vinfo->reg_ctx.count);
