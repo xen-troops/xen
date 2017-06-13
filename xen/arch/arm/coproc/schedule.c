@@ -228,11 +228,21 @@ static inline void schedule_trace(struct vcoproc_instance *curr,
     }
 }
 
+static const char *coproc_dummy_path[] = {
+    "/soc/gsx0@fd000000",
+    "/soc/gsx1@fd000000",
+    "/soc/gsx2@fd000000",
+    "/soc/gsx3@fd000000",
+    NULL
+};
+
 static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
                                                 struct vcoproc_instance *next)
 {
     struct coproc_device *coproc;
+    struct dt_device_node *np;
     int ret;
+    int i;
 
     if ( unlikely(curr == next) )
         return 0;
@@ -250,6 +260,21 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
 
         if ( wait_time == 0 )
         {
+            i = 0;
+            while ( coproc_dummy_path[i] )
+            {
+                np = dt_find_node_by_path(coproc_dummy_path[i]);
+                if ( !np )
+                    panic("Failed to locate %s\n", coproc_dummy_path[i]);
+
+                ret = iommu_deassign_dt_device(curr->domain, np);
+                if ( ret )
+                    panic("Failed to deassign %s from domain %u\n",
+                          coproc_dummy_path[i], curr->domain->domain_id);
+
+                i++;
+            }
+
             if (curr->state == VCOPROC_RUNNING)
                 curr->state = VCOPROC_WAITING;
             else
@@ -267,6 +292,21 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
     if ( likely(next) )
     {
         ASSERT(next->state == VCOPROC_WAITING);
+
+        i = 0;
+        while ( coproc_dummy_path[i] )
+        {
+            np = dt_find_node_by_path(coproc_dummy_path[i]);
+            if ( !np )
+                panic("Failed to locate %s\n", coproc_dummy_path[i]);
+
+            ret = iommu_assign_dt_device(next->domain, np);
+            if ( ret )
+                panic("Failed to assign %s to domain %u\n",
+                      coproc_dummy_path[i], next->domain->domain_id);
+
+            i++;
+        }
 
         /* TODO What to do if we failed to switch to "next"? */
         ret = vcoproc_context_switch_to(next);
