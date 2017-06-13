@@ -34,11 +34,7 @@
 #define LPAE_SHIFT 9
 
 #define PFN_4K_SHIFT  (0)
-#define PFN_1M_SHIFT  (PFN_4K_SHIFT + 8)
 #define PFN_2M_SHIFT  (PFN_4K_SHIFT+LPAE_SHIFT)
-#define PFN_128M_SHIFT  (PFN_2M_SHIFT + 6)
-#define PFN_256M_SHIFT  (PFN_128M_SHIFT + 1)
-#define PFN_512M_SHIFT  (PFN_256M_SHIFT + 1)
 #define PFN_1G_SHIFT  (PFN_2M_SHIFT+LPAE_SHIFT)
 #define PFN_512G_SHIFT (PFN_1G_SHIFT+LPAE_SHIFT)
 
@@ -346,27 +342,7 @@ static int populate_guest_memory(struct xc_dom_image *dom,
         if ( rc < 0 ) break;
         if ( rc > 0 ) continue;
 
-        rc = populate_one_size(dom, PFN_512M_SHIFT,
-                               base_pfn + pfn, &allocsz, extents);
-        if ( rc < 0 ) break;
-        if ( rc > 0 ) continue;
-
-        rc = populate_one_size(dom, PFN_256M_SHIFT,
-                               base_pfn + pfn, &allocsz, extents);
-        if ( rc < 0 ) break;
-        if ( rc > 0 ) continue;
-
-        rc = populate_one_size(dom, PFN_128M_SHIFT,
-                               base_pfn + pfn, &allocsz, extents);
-        if ( rc < 0 ) break;
-        if ( rc > 0 ) continue;
-
         rc = populate_one_size(dom, PFN_2M_SHIFT,
-                               base_pfn + pfn, &allocsz, extents);
-        if ( rc < 0 ) break;
-        if ( rc > 0 ) continue;
-
-        rc = populate_one_size(dom, PFN_1M_SHIFT,
                                base_pfn + pfn, &allocsz, extents);
         if ( rc < 0 ) break;
         if ( rc > 0 ) continue;
