@@ -107,7 +107,8 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
 
     /* TODO Are these assumptions enough to make decision about using IOMMU? */
     if ((d_config->num_dtdevs && d_config->dtdevs) ||
-        (d_config->num_pcidevs && d_config->pcidevs))
+        (d_config->num_pcidevs && d_config->pcidevs) ||
+        (d_config->b_info.num_coprocs && d_config->b_info.coprocs) )
         xc_config->use_iommu = 1;
     else
         xc_config->use_iommu = 0;
