@@ -230,11 +230,61 @@ static inline void schedule_trace(struct vcoproc_instance *curr,
 
 static const char *coproc_dummy_path = "/soc/gsx0@fd000000";
 
+static void vcoproc_scheduler_vcoproc_deassign(struct vcoproc_instance *curr)
+{
+    struct dt_device_node *np;
+    int ret;
+
+    if ( !iommu_enabled )
+        return;
+
+    np = dt_find_node_by_path(coproc_dummy_path);
+    if ( !np )
+        panic("Failed to locate %s\n", coproc_dummy_path);
+
+    if ( iommu_dt_device_is_assigned(np) )
+    {
+        ret = iommu_deassign_dt_device(curr->domain, np);
+        if ( ret )
+            panic("Failed to deassign %s from domain %u\n",
+                coproc_dummy_path, curr->domain->domain_id);
+    }
+}
+
+static void vcoproc_scheduler_vcoproc_assign(struct vcoproc_instance *next)
+{
+    struct dt_device_node *np;
+    int ret;
+
+    if ( !iommu_enabled )
+        return;
+
+    np = dt_find_node_by_path(coproc_dummy_path);
+    if ( !np )
+        panic("Failed to locate %s\n", coproc_dummy_path);
+
+    /*
+     * If device is already assigned that it most likely was assigned
+     * to the hardware domain.
+     */
+    if ( iommu_dt_device_is_assigned(np) )
+    {
+        ret = iommu_deassign_dt_device(hardware_domain, np);
+        if ( ret )
+            panic("Failed to deassign %s from domain %u\n",
+                coproc_dummy_path, hardware_domain->domain_id);
+    }
+
+    ret = iommu_assign_dt_device(next->domain, np);
+    if ( ret )
+        panic("Failed to assign %s to domain %u\n",
+            coproc_dummy_path, next->domain->domain_id);
+}
+
 static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
                                                 struct vcoproc_instance *next)
 {
     struct coproc_device *coproc;
-    struct dt_device_node *np;
     int ret;
 
     if ( unlikely(curr == next) )
@@ -253,17 +303,7 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
 
         if ( wait_time == 0 )
         {
-            np = dt_find_node_by_path(coproc_dummy_path);
-            if ( !np )
-                panic("Failed to locate %s\n", coproc_dummy_path);
-
-            if ( iommu_dt_device_is_assigned(np) )
-            {
-                ret = iommu_deassign_dt_device(curr->domain, np);
-                if ( ret )
-                    panic("Failed to deassign %s from domain %u\n",
-                        coproc_dummy_path, curr->domain->domain_id);
-            }
+            vcoproc_scheduler_vcoproc_deassign(curr);
 
             if (curr->state == VCOPROC_RUNNING)
                 curr->state = VCOPROC_WAITING;
@@ -283,26 +323,7 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
     {
         ASSERT(next->state == VCOPROC_WAITING);
 
-        np = dt_find_node_by_path(coproc_dummy_path);
-        if ( !np )
-            panic("Failed to locate %s\n", coproc_dummy_path);
-
-        /*
-         * If device is already assigned that it most likely was assigned
-         * to the hardware domain.
-         */
-        if ( iommu_dt_device_is_assigned(np) )
-        {
-            ret = iommu_deassign_dt_device(hardware_domain, np);
-            if ( ret )
-                panic("Failed to deassign %s from domain %u\n",
-                    coproc_dummy_path, hardware_domain->domain_id);
-        }
-
-        ret = iommu_assign_dt_device(next->domain, np);
-        if ( ret )
-            panic("Failed to assign %s to domain %u\n",
-                coproc_dummy_path, next->domain->domain_id);
+        vcoproc_scheduler_vcoproc_assign(next);
 
         /* TODO What to do if we failed to switch to "next"? */
         ret = vcoproc_context_switch_to(next);
