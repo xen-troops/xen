@@ -228,8 +228,6 @@ static inline void schedule_trace(struct vcoproc_instance *curr,
     }
 }
 
-static const char *coproc_dummy_path = "/soc/gsx0@fd000000";
-
 static void vcoproc_scheduler_vcoproc_deassign(struct vcoproc_instance *curr)
 {
     struct dt_device_node *np;
@@ -238,16 +236,16 @@ static void vcoproc_scheduler_vcoproc_deassign(struct vcoproc_instance *curr)
     if ( !iommu_enabled )
         return;
 
-    np = dt_find_node_by_path(coproc_dummy_path);
-    if ( !np )
-        panic("Failed to locate %s\n", coproc_dummy_path);
+    ASSERT(curr->coproc->dev);
+
+    np = dev_to_dt(curr->coproc->dev);
 
     if ( iommu_dt_device_is_assigned(np) )
     {
         ret = iommu_deassign_dt_device(curr->domain, np);
         if ( ret )
             panic("Failed to deassign %s from domain %u\n",
-                coproc_dummy_path, curr->domain->domain_id);
+                dev_path(curr->coproc->dev), curr->domain->domain_id);
     }
 }
 
@@ -259,9 +257,9 @@ static void vcoproc_scheduler_vcoproc_assign(struct vcoproc_instance *next)
     if ( !iommu_enabled )
         return;
 
-    np = dt_find_node_by_path(coproc_dummy_path);
-    if ( !np )
-        panic("Failed to locate %s\n", coproc_dummy_path);
+    ASSERT(next->coproc->dev);
+
+    np = dev_to_dt(next->coproc->dev);
 
     /*
      * If device is already assigned that it most likely was assigned
@@ -272,13 +270,13 @@ static void vcoproc_scheduler_vcoproc_assign(struct vcoproc_instance *next)
         ret = iommu_deassign_dt_device(hardware_domain, np);
         if ( ret )
             panic("Failed to deassign %s from domain %u\n",
-                coproc_dummy_path, hardware_domain->domain_id);
+                dev_path(next->coproc->dev), hardware_domain->domain_id);
     }
 
     ret = iommu_assign_dt_device(next->domain, np);
     if ( ret )
         panic("Failed to assign %s to domain %u\n",
-            coproc_dummy_path, next->domain->domain_id);
+            dev_path(next->coproc->dev), next->domain->domain_id);
 }
 
 static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
