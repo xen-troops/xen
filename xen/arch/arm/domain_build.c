@@ -956,6 +956,10 @@ static int make_coproc_node(const struct domain *d, void *fdt,
         if ( dt_property_name_is_equal(prop, "xen,coproc") )
             continue;
 
+        /* Don't expose the property "iommus" to the guest */
+        if ( dt_property_name_is_equal(prop, "iommus") )
+            continue;
+
         res = fdt_property(fdt, prop->name, prop_data, prop_len);
         if ( res )
             return res;
