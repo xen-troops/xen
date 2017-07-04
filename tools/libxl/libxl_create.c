@@ -1332,7 +1332,7 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
     {
         libxl__device_console console;
         libxl__device device;
-        libxl_device_vkb vkb;
+        libxl_device_vkbd vkbd;
 
         init_console_info(gc, &console, 0);
         console.backend_domid = state->console_domid;
@@ -1345,9 +1345,9 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
             return;
         }
 
-        libxl_device_vkb_init(&vkb);
-        libxl__device_vkb_add(gc, domid, &vkb);
-        libxl_device_vkb_dispose(&vkb);
+        libxl_device_vkbd_init(&vkbd);
+        libxl__device_vkbd_add(gc, domid, &vkbd);
+        libxl_device_vkbd_dispose(&vkbd);
 
         dcs->sdss.dm.guest_domid = domid;
         if (libxl_defbool_val(d_config->b_info.device_model_stubdomain))
@@ -1372,7 +1372,7 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
 
         for (i = 0; i < d_config->num_vfbs; i++) {
             libxl__device_vfb_add(gc, domid, &d_config->vfbs[i]);
-            libxl__device_vkb_add(gc, domid, &d_config->vkbs[i]);
+            libxl__device_vkbd_add(gc, domid, &d_config->vkbds[i]);
         }
 
         init_console_info(gc, &console, 0);

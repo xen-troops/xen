@@ -14,36 +14,37 @@
 
 #include "libxl_internal.h"
 
-int libxl__device_vkb_setdefault(libxl__gc *gc, libxl_device_vkb *vkb)
+int libxl__device_vkbd_setdefault(libxl__gc *gc, libxl_device_vkbd *vkbd)
 {
     int rc;
-    rc = libxl__resolve_domid(gc, vkb->backend_domname, &vkb->backend_domid);
+    rc = libxl__resolve_domid(gc, vkbd->backend_domname, &vkbd->backend_domid);
     return rc;
 }
 
-static int libxl__device_from_vkb(libxl__gc *gc, uint32_t domid,
-                                  libxl_device_vkb *vkb,
-                                  libxl__device *device)
+static int libxl__device_from_vkbd(libxl__gc *gc, uint32_t domid,
+                                   libxl_device_vkbd *vkbd,
+                                   libxl__device *device)
 {
-    device->backend_devid = vkb->devid;
-    device->backend_domid = vkb->backend_domid;
+    device->backend_devid = vkbd->devid;
+    device->backend_domid = vkbd->backend_domid;
     device->backend_kind = LIBXL__DEVICE_KIND_VKBD;
-    device->devid = vkb->devid;
+    device->devid = vkbd->devid;
     device->domid = domid;
     device->kind = LIBXL__DEVICE_KIND_VKBD;
 
     return 0;
 }
 
-int libxl_device_vkb_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vkb *vkb,
-                         const libxl_asyncop_how *ao_how)
+int libxl_device_vkbd_add(libxl_ctx *ctx, uint32_t domid,
+                          libxl_device_vkbd *vkbd,
+                          const libxl_asyncop_how *ao_how)
 {
     AO_CREATE(ctx, domid, ao_how);
     int rc;
 
-    rc = libxl__device_vkb_add(gc, domid, vkb);
+    rc = libxl__device_vkbd_add(gc, domid, vkbd);
     if (rc) {
-        LOGD(ERROR, domid, "Unable to add vkb device");
+        LOGD(ERROR, domid, "Unable to add vkbd device");
         goto out;
     }
 
@@ -52,28 +53,28 @@ out:
     return AO_INPROGRESS;
 }
 
-int libxl__device_vkb_add(libxl__gc *gc, uint32_t domid,
-                          libxl_device_vkb *vkb)
+int libxl__device_vkbd_add(libxl__gc *gc, uint32_t domid,
+                           libxl_device_vkbd *vkbd)
 {
     flexarray_t *front;
     flexarray_t *back;
     libxl__device device;
     int rc;
 
-    rc = libxl__device_vkb_setdefault(gc, vkb);
+    rc = libxl__device_vkbd_setdefault(gc, vkbd);
     if (rc) goto out;
 
     front = flexarray_make(gc, 16, 1);
     back = flexarray_make(gc, 16, 1);
 
-    if (vkb->devid == -1) {
-        if ((vkb->devid = libxl__device_nextid(gc, domid, "vkb")) < 0) {
+    if (vkbd->devid == -1) {
+        if ((vkbd->devid = libxl__device_nextid(gc, domid, "vkbd")) < 0) {
             rc = ERROR_FAIL;
             goto out;
         }
     }
 
-    rc = libxl__device_from_vkb(gc, domid, vkb, &device);
+    rc = libxl__device_from_vkbd(gc, domid, vkbd, &device);
     if (rc != 0) goto out;
 
     flexarray_append(back, "frontend-id");
@@ -84,7 +85,7 @@ int libxl__device_vkb_add(libxl__gc *gc, uint32_t domid,
     flexarray_append(back, GCSPRINTF("%d", XenbusStateInitialising));
 
     flexarray_append(front, "backend-id");
-    flexarray_append(front, GCSPRINTF("%d", vkb->backend_domid));
+    flexarray_append(front, GCSPRINTF("%d", vkbd->backend_domid));
     flexarray_append(front, "state");
     flexarray_append(front, GCSPRINTF("%d", XenbusStateInitialising));
 
@@ -97,4 +98,4 @@ out:
     return rc;
 }
 
-LIBXL_DEFINE_DEVICE_REMOVE(vkb)
+LIBXL_DEFINE_DEVICE_REMOVE(vkbd)

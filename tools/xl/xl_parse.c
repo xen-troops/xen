@@ -1646,14 +1646,14 @@ skip_nic:
     }
 
     d_config->num_vfbs = 0;
-    d_config->num_vkbs = 0;
+    d_config->num_vkbds = 0;
     d_config->vfbs = NULL;
-    d_config->vkbs = NULL;
+    d_config->vkbds = NULL;
 
     if (!xlu_cfg_get_list (config, "vfb", &cvfbs, 0, 0)) {
         while ((buf = xlu_cfg_get_listitem (cvfbs, d_config->num_vfbs)) != NULL) {
             libxl_device_vfb *vfb;
-            libxl_device_vkb *vkb;
+            libxl_device_vkbd *vkbd;
 
             char *buf2 = strdup(buf);
             char *p, *p2;
@@ -1661,8 +1661,8 @@ skip_nic:
             vfb = ARRAY_EXTEND_INIT(d_config->vfbs, d_config->num_vfbs,
                                     libxl_device_vfb_init);
 
-            vkb = ARRAY_EXTEND_INIT(d_config->vkbs, d_config->num_vkbs,
-                                    libxl_device_vkb_init);
+            vkbd = ARRAY_EXTEND_INIT(d_config->vkbds, d_config->num_vkbds,
+                                     libxl_device_vkbd_init);
 
             p = strtok(buf2, ",");
             if (!p)
@@ -2005,13 +2005,13 @@ skip_usbdev:
 
         if (vnc_enabled) {
             libxl_device_vfb *vfb;
-            libxl_device_vkb *vkb;
+            libxl_device_vkbd *vkbd;
 
             vfb = ARRAY_EXTEND_INIT(d_config->vfbs, d_config->num_vfbs,
                                     libxl_device_vfb_init);
 
-            vkb = ARRAY_EXTEND_INIT(d_config->vkbs, d_config->num_vkbs,
-                                    libxl_device_vkb_init);
+            vkbd = ARRAY_EXTEND_INIT(d_config->vkbds, d_config->num_vkbds,
+                                     libxl_device_vkbd_init);
 
             parse_top_level_vnc_options(config, &vfb->vnc);
             parse_top_level_sdl_options(config, &vfb->sdl);

@@ -1249,7 +1249,8 @@ _hidden int libxl__device_disk_setdefault(libxl__gc *gc,
 _hidden int libxl__device_nic_setdefault(libxl__gc *gc, libxl_device_nic *nic,
                                          uint32_t domid, bool hotplug);
 _hidden int libxl__device_vfb_setdefault(libxl__gc *gc, libxl_device_vfb *vfb);
-_hidden int libxl__device_vkb_setdefault(libxl__gc *gc, libxl_device_vkb *vkb);
+_hidden int libxl__device_vkbd_setdefault(libxl__gc *gc,
+                                          libxl_device_vkbd *vkbd);
 _hidden int libxl__device_pci_setdefault(libxl__gc *gc, libxl_device_pci *pci);
 _hidden void libxl__rdm_setdefault(libxl__gc *gc,
                                    libxl_domain_build_info *b_info);
@@ -2661,9 +2662,9 @@ struct libxl__multidev {
  * it's a valid state.
  */
 
-/* Internal function to connect a vkb device */
-_hidden int libxl__device_vkb_add(libxl__gc *gc, uint32_t domid,
-                                  libxl_device_vkb *vkb);
+/* Internal function to connect a vkbd device */
+_hidden int libxl__device_vkbd_add(libxl__gc *gc, uint32_t domid,
+                                   libxl_device_vkbd *vkbd);
 
 /* Internal function to connect a vfb device */
 _hidden int libxl__device_vfb_add(libxl__gc *gc, uint32_t domid,

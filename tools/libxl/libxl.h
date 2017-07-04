@@ -1873,17 +1873,18 @@ int libxl_device_vdispl_getinfo(libxl_ctx *ctx, uint32_t domid,
                                 libxl_vdisplinfo *vdisplinfo);
 
 /* Keyboard */
-int libxl_device_vkb_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vkb *vkb,
-                         const libxl_asyncop_how *ao_how)
-                         LIBXL_EXTERNAL_CALLERS_ONLY;
-int libxl_device_vkb_remove(libxl_ctx *ctx, uint32_t domid,
-                            libxl_device_vkb *vkb,
-                            const libxl_asyncop_how *ao_how)
-                            LIBXL_EXTERNAL_CALLERS_ONLY;
-int libxl_device_vkb_destroy(libxl_ctx *ctx, uint32_t domid,
-                             libxl_device_vkb *vkb,
+int libxl_device_vkbd_add(libxl_ctx *ctx, uint32_t domid,
+                          libxl_device_vkbd *vkbd,
+                          const libxl_asyncop_how *ao_how)
+                          LIBXL_EXTERNAL_CALLERS_ONLY;
+int libxl_device_vkbd_remove(libxl_ctx *ctx, uint32_t domid,
+                             libxl_device_vkbd *vkbd,
                              const libxl_asyncop_how *ao_how)
-                            LIBXL_EXTERNAL_CALLERS_ONLY;
+                             LIBXL_EXTERNAL_CALLERS_ONLY;
+int libxl_device_vkbd_destroy(libxl_ctx *ctx, uint32_t domid,
+                              libxl_device_vkbd *vkbd,
+                              const libxl_asyncop_how *ao_how)
+                              LIBXL_EXTERNAL_CALLERS_ONLY;
 
 /* Framebuffer */
 int libxl_device_vfb_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vfb *vfb,

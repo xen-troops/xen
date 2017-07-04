@@ -1707,10 +1707,10 @@ static void libxl__dm_vifs_from_hvm_guest_config(libxl__gc *gc,
     dm_config->num_nics = nr;
 }
 
-static int libxl__vfb_and_vkb_from_hvm_guest_config(libxl__gc *gc,
+static int libxl__vfb_and_vkbd_from_hvm_guest_config(libxl__gc *gc,
                                         const libxl_domain_config *guest_config,
                                         libxl_device_vfb *vfb,
-                                        libxl_device_vkb *vkb)
+                                        libxl_device_vkbd *vkbd)
 {
     const libxl_domain_build_info *b_info = &guest_config->b_info;
 
@@ -1718,7 +1718,7 @@ static int libxl__vfb_and_vkb_from_hvm_guest_config(libxl__gc *gc,
         return ERROR_INVAL;
 
     libxl_device_vfb_init(vfb);
-    libxl_device_vkb_init(vkb);
+    libxl_device_vkbd_init(vkbd);
 
     vfb->backend_domid = 0;
     vfb->devid = 0;
@@ -1726,8 +1726,8 @@ static int libxl__vfb_and_vkb_from_hvm_guest_config(libxl__gc *gc,
     vfb->keymap = b_info->u.hvm.keymap;
     vfb->sdl = b_info->u.hvm.sdl;
 
-    vkb->backend_domid = 0;
-    vkb->devid = 0;
+    vkbd->backend_domid = 0;
+    vkbd->devid = 0;
     return 0;
 }
 
@@ -1805,7 +1805,7 @@ void libxl__spawn_stub_dm(libxl__egc *egc, libxl__stub_dm_spawn_state *sdss)
     libxl_ctx *ctx = libxl__gc_owner(gc);
     int ret;
     libxl_device_vfb *vfb;
-    libxl_device_vkb *vkb;
+    libxl_device_vkbd *vkbd;
     char **args;
     struct xs_permissions perm[2];
     xs_transaction_t t;
@@ -1869,12 +1869,12 @@ void libxl__spawn_stub_dm(libxl__egc *egc, libxl__stub_dm_spawn_state *sdss)
     if (ret) goto out;
 
     GCNEW(vfb);
-    GCNEW(vkb);
-    libxl__vfb_and_vkb_from_hvm_guest_config(gc, guest_config, vfb, vkb);
+    GCNEW(vkbd);
+    libxl__vfb_and_vkbd_from_hvm_guest_config(gc, guest_config, vfb, vkbd);
     dm_config->vfbs = vfb;
     dm_config->num_vfbs = 1;
-    dm_config->vkbs = vkb;
-    dm_config->num_vkbs = 1;
+    dm_config->vkbds = vkbd;
+    dm_config->num_vkbds = 1;
 
     stubdom_state->pv_kernel.path
         = libxl__abs_path(gc, "ioemu-stubdom.gz", libxl__xenfirmwaredir_path());
@@ -1978,7 +1978,7 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
     ret = libxl__device_vfb_add(gc, dm_domid, &dm_config->vfbs[0]);
     if (ret)
         goto out;
-    ret = libxl__device_vkb_add(gc, dm_domid, &dm_config->vkbs[0]);
+    ret = libxl__device_vkbd_add(gc, dm_domid, &dm_config->vkbds[0]);
     if (ret)
         goto out;
 

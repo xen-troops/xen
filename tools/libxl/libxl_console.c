@@ -695,8 +695,6 @@ out:
 }
 
 /* The following functions are defined:
- * libxl_device_vkb_remove
- * libxl_device_vkb_destroy
  * libxl_device_vfb_remove
  * libxl_device_vfb_destroy
  */
