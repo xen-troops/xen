@@ -74,6 +74,15 @@ static int libxl__set_xenstore_vkbd(libxl__gc *gc, uint32_t domid,
     flexarray_append(front, "handle");
     flexarray_append(front, GCSPRINTF("%d", vkbd->devid));
 
+    if (vkbd->touch_enabled) {
+        flexarray_append(front, "multi-touch-width");
+        flexarray_append(front, GCSPRINTF("%d", vkbd->touch_width));
+        flexarray_append(front, "multi-touch-height");
+        flexarray_append(front, GCSPRINTF("%d", vkbd->touch_height));
+        flexarray_append(front, "multi-touch-num-contacts");
+        flexarray_append(front, GCSPRINTF("%d", vkbd->touch_contacts));
+    }
+
     libxl__device *device;
     xs_transaction_t t = XBT_NULL;
     int rc;
