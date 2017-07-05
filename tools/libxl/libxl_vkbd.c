@@ -14,10 +14,17 @@
 
 #include "libxl_internal.h"
 
-int libxl__device_vkbd_setdefault(libxl__gc *gc, libxl_device_vkbd *vkbd)
+static int libxl__device_vkbd_setdefault(libxl__gc *gc, uint32_t domid,
+                                         libxl_device_vkbd *vkbd)
 {
     int rc;
+
     rc = libxl__resolve_domid(gc, vkbd->backend_domname, &vkbd->backend_domid);
+
+    if (vkbd->devid == -1) {
+        vkbd->devid = libxl__device_nextid(gc, domid, "vkbd");
+    }
+
     return rc;
 }
 
@@ -35,47 +42,21 @@ static int libxl__device_from_vkbd(libxl__gc *gc, uint32_t domid,
     return 0;
 }
 
-int libxl_device_vkbd_add(libxl_ctx *ctx, uint32_t domid,
-                          libxl_device_vkbd *vkbd,
-                          const libxl_asyncop_how *ao_how)
+static void libxl__device_vkbd_add(libxl__egc *egc, uint32_t domid,
+                                   libxl_device_vkbd *vkbd,
+                                   libxl__ao_device *aodev)
 {
-    AO_CREATE(ctx, domid, ao_how);
-    int rc;
-
-    rc = libxl__device_vkbd_add(gc, domid, vkbd);
-    if (rc) {
-        LOGD(ERROR, domid, "Unable to add vkbd device");
-        goto out;
-    }
-
-out:
-    libxl__ao_complete(egc, ao, rc);
-    return AO_INPROGRESS;
+    libxl__device_add_async(egc, domid, &libxl__vkbd_devtype, vkbd, aodev);
 }
 
-int libxl__device_vkbd_add(libxl__gc *gc, uint32_t domid,
-                           libxl_device_vkbd *vkbd)
+static int libxl__set_xenstore_vkbd(libxl__gc *gc, uint32_t domid,
+                                      libxl_device_vkbd *vkbd)
 {
     flexarray_t *front;
     flexarray_t *back;
-    libxl__device device;
-    int rc;
-
-    rc = libxl__device_vkbd_setdefault(gc, vkbd);
-    if (rc) goto out;
 
     front = flexarray_make(gc, 16, 1);
     back = flexarray_make(gc, 16, 1);
-
-    if (vkbd->devid == -1) {
-        if ((vkbd->devid = libxl__device_nextid(gc, domid, "vkbd")) < 0) {
-            rc = ERROR_FAIL;
-            goto out;
-        }
-    }
-
-    rc = libxl__device_from_vkbd(gc, domid, vkbd, &device);
-    if (rc != 0) goto out;
 
     flexarray_append(back, "frontend-id");
     flexarray_append(back, GCSPRINTF("%d", domid));
@@ -83,19 +64,63 @@ int libxl__device_vkbd_add(libxl__gc *gc, uint32_t domid,
     flexarray_append(back, "1");
     flexarray_append(back, "state");
     flexarray_append(back, GCSPRINTF("%d", XenbusStateInitialising));
+    flexarray_append(back, "handle");
+    flexarray_append(back, GCSPRINTF("%d", vkbd->devid));
 
     flexarray_append(front, "backend-id");
     flexarray_append(front, GCSPRINTF("%d", vkbd->backend_domid));
     flexarray_append(front, "state");
     flexarray_append(front, GCSPRINTF("%d", XenbusStateInitialising));
+    flexarray_append(front, "handle");
+    flexarray_append(front, GCSPRINTF("%d", vkbd->devid));
 
-    libxl__device_generic_add(gc, XBT_NULL, &device,
-                              libxl__xs_kvs_of_flexarray(gc, back),
-                              libxl__xs_kvs_of_flexarray(gc, front),
-                              NULL);
+    libxl__device *device;
+    xs_transaction_t t = XBT_NULL;
+    int rc;
+
+    GCNEW(device);
+
+    rc = libxl__device_from_vkbd(gc, domid, vkbd, device);
+    if (rc) goto out;
+
+    for (;;) {
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        rc = libxl__device_generic_add(gc, t, device,
+                                       libxl__xs_kvs_of_flexarray(gc, back),
+                                       libxl__xs_kvs_of_flexarray(gc, front),
+                                       NULL);
+        if (rc) goto out;
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
     rc = 0;
+
 out:
+    libxl__xs_transaction_abort(gc, &t);
     return rc;
 }
 
+static int libxl_device_vkbd_dm_needed(void *e, unsigned domid)
+{
+    return 1;
+}
+
+LIBXL_DEFINE_DEVICE_ADD(vkbd)
 LIBXL_DEFINE_DEVICE_REMOVE(vkbd)
+
+#define libxl__add_vkbds NULL
+#define libxl_device_vkbd_list NULL
+#define libxl_device_vkbd_compare NULL
+
+DEFINE_DEVICE_TYPE_STRUCT(vkbd,
+    .set_xenstore_config = (int (*)(libxl__gc *, uint32_t, void *))
+                           libxl__set_xenstore_vkbd,
+    .dm_needed   = libxl_device_vkbd_dm_needed,
+    .skip_attach = 1
+);
+
