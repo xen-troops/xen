@@ -868,11 +868,11 @@ int parse_vkbd_config(libxl_device_vkbd *vkbd, char *token)
             goto out;
         }
         vkbd->backend_type = backend_type;
-    } else if (MATCH_OPTION("touch_width", token, oparg)) {
+    } else if (MATCH_OPTION("multi_touch_width", token, oparg)) {
         vkbd->touch_width = strtoul(oparg, NULL, 0);
-    } else if (MATCH_OPTION("touch_height", token, oparg)) {
+    } else if (MATCH_OPTION("multi_touch_height", token, oparg)) {
         vkbd->touch_height = strtoul(oparg, NULL, 0);
-    } else if (MATCH_OPTION("touch_contacts", token, oparg)) {
+    } else if (MATCH_OPTION("multi_touch_contacts", token, oparg)) {
         vkbd->touch_contacts = strtoul(oparg, NULL, 0);
     } else {
         fprintf(stderr, "Unknown string \"%s\" in vkbd spec\n", token);
