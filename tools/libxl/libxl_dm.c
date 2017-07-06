@@ -1728,6 +1728,7 @@ static int libxl__vfb_and_vkbd_from_hvm_guest_config(libxl__gc *gc,
 
     vkbd->backend_domid = 0;
     vkbd->devid = 0;
+    vkbd->backend_type = LIBXL_VKBD_BACKEND_QEMU;
     return 0;
 }
 

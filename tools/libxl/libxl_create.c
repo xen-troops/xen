@@ -1346,6 +1346,7 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         }
 
         libxl_device_vkbd_init(&vkbd);
+        vkbd.backend_type = LIBXL_VKBD_BACKEND_QEMU;
         libxl__device_add(gc, domid, &libxl__vkbd_devtype, &vkbd);
         libxl_device_vkbd_dispose(&vkbd);
 

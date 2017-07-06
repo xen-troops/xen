@@ -50,7 +50,7 @@ static void libxl__device_vkbd_add(libxl__egc *egc, uint32_t domid,
 }
 
 static int libxl__set_xenstore_vkbd(libxl__gc *gc, uint32_t domid,
-                                      libxl_device_vkbd *vkbd)
+                                    libxl_device_vkbd *vkbd)
 {
     flexarray_t *front;
     flexarray_t *back;
@@ -73,6 +73,12 @@ static int libxl__set_xenstore_vkbd(libxl__gc *gc, uint32_t domid,
     flexarray_append(front, GCSPRINTF("%d", XenbusStateInitialising));
     flexarray_append(front, "handle");
     flexarray_append(front, GCSPRINTF("%d", vkbd->devid));
+
+    if (vkbd->backend_type != LIBXL_VKBD_BACKEND_UNKNOWN) {
+        flexarray_append(front, "type");
+        flexarray_append(front,
+                (char*)libxl_vkbd_backend_to_string(vkbd->backend_type));
+    }
 
     if (vkbd->touch_enabled) {
         flexarray_append(front, "multi-touch-width");
@@ -114,9 +120,11 @@ out:
     return rc;
 }
 
-static int libxl_device_vkbd_dm_needed(void *e, unsigned domid)
+static int libxl_device_vkbd_dm_needed(libxl_device_vkbd *vkbd, uint32_t domid)
 {
-    return 1;
+    if (vkbd->backend_type == LIBXL_VKBD_BACKEND_QEMU)
+        return 1;
+    return 0;
 }
 
 LIBXL_DEFINE_DEVICE_ADD(vkbd)
@@ -129,7 +137,8 @@ LIBXL_DEFINE_DEVICE_REMOVE(vkbd)
 DEFINE_DEVICE_TYPE_STRUCT(vkbd,
     .set_xenstore_config = (int (*)(libxl__gc *, uint32_t, void *))
                            libxl__set_xenstore_vkbd,
-    .dm_needed   = libxl_device_vkbd_dm_needed,
+    .dm_needed   = (int (*)(void *, unsigned))
+                   libxl_device_vkbd_dm_needed,
     .skip_attach = 1
 );
 

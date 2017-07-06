@@ -240,6 +240,12 @@ libxl_checkpointed_stream = Enumeration("checkpointed_stream", [
     (2, "COLO"),
     ])
 
+libxl_vkbd_backend = Enumeration("vkbd_backend", [
+    (0, "UNKNOWN"),
+    (1, "QEMU"),
+    (2, "LINUX")
+    ])
+
 #
 # Complex libxl types
 #
@@ -607,6 +613,7 @@ libxl_device_vkbd = Struct("device_vkbd", [
     ("backend_domid", libxl_domid),
     ("backend_domname", string),
     ("devid", libxl_devid),
+    ("backend_type", libxl_vkbd_backend),
     ("touch_enabled", bool),
     ("touch_width", uint32),
     ("touch_height", uint32),
