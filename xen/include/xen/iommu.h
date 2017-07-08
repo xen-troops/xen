@@ -130,6 +130,17 @@ int iommu_do_dt_domctl(struct xen_domctl *, struct domain *,
 
 #endif /* HAS_DEVICE_TREE */
 
+#ifdef CONFIG_HAS_COPROC
+/* Assign a coproc device "dev" to IOMMU context in domain "d" */
+int iommu_assign_coproc(struct domain *d, device_t *dev);
+/* Deassign a coproc device "dev" from IOMMU context in domain "d" */
+int iommu_deassign_coproc(struct domain *d, device_t *dev);
+/* Disable IOMMU context in domain "d" for a coproc device "dev" */
+int iommu_disable_coproc(struct domain *d, device_t *dev);
+/* Enable IOMMU context in domain "d" for a coproc device "dev" */
+int iommu_enable_coproc(struct domain *d, device_t *dev);
+#endif /* HAS_COPROC */
+
 struct page_info;
 
 /*
@@ -179,6 +190,12 @@ struct iommu_ops {
     int __must_check (*iotlb_flush_all)(struct domain *d);
     int (*get_reserved_device_memory)(iommu_grdm_t *, void *);
     void (*dump_p2m_table)(struct domain *d);
+#ifdef CONFIG_HAS_COPROC
+    int (*assign_coproc)(struct domain *d, device_t *dev);
+    int (*deassign_coproc)(struct domain *d, device_t *dev);
+    int (*disable_coproc)(struct domain *d, device_t *dev);
+    int (*enable_coproc)(struct domain *d, device_t *dev);
+#endif /* HAS_COPROC */
 };
 
 int __must_check iommu_suspend(void);
