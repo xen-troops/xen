@@ -183,9 +183,19 @@ static int coproc_attach_to_domain(struct domain *d,
         goto out;
     }
 
+    ret = iommu_assign_coproc(d, dev_to_dt(coproc->dev));
+    if ( ret )
+    {
+        printk("Failed to assign coproc \"%s\" to IOMMU context in domain %u (%d)\n",
+               dev_path(coproc->dev), d->domain_id, ret);
+        coproc_deinit_vcoproc(vcoproc);
+        goto out;
+    }
+
     ret = vcoproc_scheduler_vcoproc_init(coproc->sched, vcoproc);
     if ( ret )
     {
+        iommu_deassign_coproc(d, dev_to_dt(coproc->dev));
         coproc_deinit_vcoproc(vcoproc);
         goto out;
     }
@@ -235,6 +245,11 @@ static int coproc_detach_from_domain(struct domain *d,
             ret = -ERESTART;
         goto out;
     }
+
+    ret = iommu_deassign_coproc(d, dev_to_dt(coproc->dev));
+    if ( ret )
+        printk("Failed to deassign coproc \"%s\" from IOMMU context in domain %u (%d)\n",
+               dev_path(coproc->dev), d->domain_id, ret);
 
     BUG_ON(!vcoproc_d->num_instances);
     list_del_init(&vcoproc->instance_elem);

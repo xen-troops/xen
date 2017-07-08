@@ -228,78 +228,6 @@ static inline void schedule_trace(struct vcoproc_instance *curr,
     }
 }
 
-static int vcoproc_scheduler_vcoproc_deassign(struct vcoproc_instance *curr)
-{
-    struct dt_device_node *np;
-    int ret = 0;
-
-    if ( !iommu_enabled )
-        return 0;
-
-    ASSERT(curr->coproc->dev);
-
-    np = dev_to_dt(curr->coproc->dev);
-
-    if ( iommu_dt_device_is_assigned(np) )
-    {
-        ret = iommu_deassign_dt_device(curr->domain, np);
-        if ( ret )
-            printk("Failed to deassign %s from domain %u\n",
-                dev_path(curr->coproc->dev), curr->domain->domain_id);
-    }
-
-    return ret;
-}
-
-static int vcoproc_scheduler_vcoproc_assign(struct vcoproc_instance *next)
-{
-    struct dt_device_node *np;
-    int ret;
-
-    if ( !iommu_enabled )
-        return 0;
-
-    ASSERT(next->coproc->dev);
-
-    np = dev_to_dt(next->coproc->dev);
-
-    /*
-     * Normally the device shouldn't have been assigned to any domain
-     * at this point, but if an assignment have already cropped up then try
-     * to figure out to what domain. If it is a domain the device is going to be
-     * assigned to then just return, if it isn't then try to deassign it and
-     * assign to the required domain.
-     */
-    if ( iommu_dt_device_is_assigned(np) )
-    {
-        domid_t id = dt_device_used_by(np);
-        struct domain *d;
-
-        if ( next->domain->domain_id == id)
-            return 0;
-
-        if ( (d = rcu_lock_domain_by_id(id)) == NULL )
-            return -ESRCH;
-
-        ret = iommu_deassign_dt_device(d, np);
-        if ( ret )
-            printk("Failed to deassign %s from domain %u\n",
-                dev_path(next->coproc->dev), d->domain_id);
-
-        rcu_unlock_domain(d);
-
-        if ( ret )
-            return ret;
-    }
-
-    ret = iommu_assign_dt_device(next->domain, np);
-    if ( ret )
-        printk("Failed to assign %s to domain %u\n",
-            dev_path(next->coproc->dev), next->domain->domain_id);
-
-    return ret;
-}
-
 static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
                                                 struct vcoproc_instance *next)
 {
@@ -322,10 +250,10 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
 
         if ( wait_time == 0 )
         {
-            ret = vcoproc_scheduler_vcoproc_deassign(curr);
+            ret = iommu_disable_coproc(curr->domain, dev_to_dt(coproc->dev));
             if ( unlikely(ret) )
-                panic("Failed to detach vcoproc \"%s\" from IOMMU (%d)\n",
-                    dev_path(coproc->dev), ret);
+                panic("Failed to disable IOMMU context for coproc \"%s\" in domain %u (%d)\n",
+                      dev_path(coproc->dev), curr->domain->domain_id, ret);
 
             if (curr->state == VCOPROC_RUNNING)
                 curr->state = VCOPROC_WAITING;
@@ -345,10 +273,10 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
     {
         ASSERT(next->state == VCOPROC_WAITING);
 
-        ret = vcoproc_scheduler_vcoproc_assign(next);
+        ret = iommu_enable_coproc(next->domain, dev_to_dt(coproc->dev));
         if ( unlikely(ret) )
-            panic("Failed to attach vcoproc \"%s\" to IOMMU (%d)\n",
-                dev_path(coproc->dev), ret);
+            panic("Failed to enable IOMMU context for coproc \"%s\" in domain %u (%d)\n",
+                  dev_path(coproc->dev), next->domain->domain_id, ret);
 
         /* TODO What to do if we failed to switch to "next"? */
         ret = vcoproc_context_switch_to(next);
