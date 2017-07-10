@@ -1978,7 +1978,8 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
     ret = libxl__device_vfb_add(gc, dm_domid, &dm_config->vfbs[0]);
     if (ret)
         goto out;
-    ret = libxl__device_vkb_add(gc, dm_domid, &dm_config->vkbs[0]);
+    ret = libxl__device_add(gc, dm_domid, &libxl__vkb_devtype,
+                            &dm_config->vkbs[0]);
     if (ret)
         goto out;
 
