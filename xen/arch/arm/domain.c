@@ -864,6 +864,16 @@ int domain_relinquish_resources(struct domain *d)
         if ( ret )
             return ret;
 
+#ifdef CONFIG_HAS_COPROC
+        d->arch.relmem = RELMEM_coproc;
+        /* Fallthrough */
+
+    case RELMEM_coproc:
+        ret = coproc_release_vcoprocs(d);
+        if ( ret )
+            return ret;
+#endif
+
         d->arch.relmem = RELMEM_xen;
         /* Fallthrough */
 
@@ -887,16 +897,6 @@ int domain_relinquish_resources(struct domain *d)
         ret = relinquish_p2m_mapping(d);
         if ( ret )
             return ret;
-
-#ifdef CONFIG_HAS_COPROC
-        d->arch.relmem = RELMEM_coproc;
-        /* Fallthrough */
-
-    case RELMEM_coproc:
-        ret = coproc_release_vcoprocs(d);
-        if ( ret )
-            return ret;
-#endif
 
         d->arch.relmem = RELMEM_done;
         /* Fallthrough */
