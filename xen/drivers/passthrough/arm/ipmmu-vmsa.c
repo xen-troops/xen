@@ -208,6 +208,10 @@ struct ipmmu_vmsa_xen_domain {
 struct ipmmu_vmsa_xen_device {
 	struct iommu_domain *domains[IPMMU_CTX_MAX];
 	struct ipmmu_vmsa_archdata *archdata;
+#ifdef CONFIG_HAS_COPROC
+	/* Is a device expected to be shared? */
+	bool is_coproc;
+#endif
 };
 
 #define dev_iommu(dev) ((struct ipmmu_vmsa_xen_device *)dev->archdata.iommu)
@@ -1167,6 +1171,16 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 	if (ret < 0)
 		return ret;
 
+#ifdef CONFIG_HAS_COPROC
+	/*
+	 * Don't allow to even touch uTLBs when assigning coproc device. Because it
+	 * may be running in other domain at the moment. Only coproc's scheduler
+	 * is allowed to decide when it is time to switch IOMMU context.
+	 */
+	if (dev_iommu(dev)->is_coproc)
+		return 0;
+#endif
+
 	for (i = 0; i < archdata->num_utlbs; ++i)
 		ipmmu_utlb_enable(domain->context_id, &archdata->utlbs[i]);
 
@@ -1178,6 +1192,16 @@ static void ipmmu_detach_device(struct iommu_domain *io_domain,
 {
 	struct ipmmu_vmsa_archdata *archdata = to_archdata(dev);
 	unsigned int i;
+
+#ifdef CONFIG_HAS_COPROC
+	/*
+	 * Don't allow to even touch uTLBs when deassigning coproc device. Because it
+	 * may be running in other domain at the moment. Only coproc's scheduler
+	 * is allowed to decide when it is time to switch IOMMU context.
+	 */
+	if (dev_iommu(dev)->is_coproc)
+		return;
+#endif
 
 	for (i = 0; i < archdata->num_utlbs; ++i)
 		ipmmu_utlb_disable(&archdata->utlbs[i]);
@@ -2323,6 +2347,10 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 		dev->archdata.iommu = xzalloc(struct ipmmu_vmsa_xen_device);
 		if (!dev->archdata.iommu)
 			return -ENOMEM;
+
+#ifdef CONFIG_HAS_COPROC
+		dev_iommu(dev)->is_coproc = dt_device_for_coproc(dev_to_dt(dev));
+#endif
 	}
 
 	if (!to_archdata(dev)) {
@@ -2588,6 +2616,60 @@ static void ipmmu_vmsa_dump_p2m_table(struct domain *d)
 	/* TODO: This platform callback should be implemented. */
 }
 
+#ifdef CONFIG_HAS_COPROC
+static inline int ipmmu_vmsa_assign_coproc(struct domain *d, struct device *dev)
+{
+	return ipmmu_vmsa_assign_dev(d, 0, dev, 0);
+}
+
+static inline int ipmmu_vmsa_deassign_coproc(struct domain *d, struct device *dev)
+{
+	return ipmmu_vmsa_deassign_dev(d, dev);
+}
+
+static int ipmmu_vmsa_disable_coproc(struct domain *d, struct device *dev)
+{
+	struct ipmmu_vmsa_archdata *archdata;
+	unsigned int i;
+
+	if (!dev_iommu(dev) || !dev_iommu(dev)->is_coproc)
+		return -EINVAL;
+
+	archdata = to_archdata(dev);
+	ASSERT(archdata);
+
+	/* TODO: Is locking needed ? */
+	for (i = 0; i < archdata->num_utlbs; i++)
+		ipmmu_utlb_disable(&archdata->utlbs[i]);
+
+	return 0;
+}
+
+static int ipmmu_vmsa_enable_coproc(struct domain *d, struct device *dev)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain;
+	struct ipmmu_vmsa_archdata *archdata;
+	unsigned int context_id;
+	unsigned int i;
+
+	if (!dev_iommu(dev) || !dev_iommu(dev)->is_coproc)
+		return -EINVAL;
+
+	archdata = to_archdata(dev);
+	ASSERT(archdata);
+
+	/* All what we need to know is a context id */
+	xen_domain = dom_iommu(d)->arch.priv;
+	context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
+
+	/* TODO: Is locking needed ? */
+	for (i = 0; i < archdata->num_utlbs; i++)
+		ipmmu_utlb_enable(context_id, &archdata->utlbs[i]);
+
+	return 0;
+}
+#endif
+
 static const struct iommu_ops ipmmu_vmsa_iommu_ops = {
 	.init = ipmmu_vmsa_domain_init,
 	.hwdom_init = ipmmu_vmsa_hwdom_init,
@@ -2600,6 +2682,12 @@ static const struct iommu_ops ipmmu_vmsa_iommu_ops = {
 	.map_pages = ipmmu_vmsa_map_pages,
 	.unmap_pages = ipmmu_vmsa_unmap_pages,
 	.dump_p2m_table = ipmmu_vmsa_dump_p2m_table,
+#ifdef CONFIG_HAS_COPROC
+	.assign_coproc = ipmmu_vmsa_assign_coproc,
+	.deassign_coproc = ipmmu_vmsa_deassign_coproc,
+	.disable_coproc = ipmmu_vmsa_disable_coproc,
+	.enable_coproc = ipmmu_vmsa_enable_coproc,
+#endif
 };
 
 static __init const struct ipmmu_vmsa_device *find_ipmmu(const struct device *dev)
