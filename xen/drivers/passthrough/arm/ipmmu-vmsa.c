@@ -702,7 +702,7 @@ static void ipmmu_tlb_invalidate(struct ipmmu_vmsa_domain *domain)
 /*
  * Enable MMU translation for the microTLB.
  */
-static void ipmmu_utlb_enable(struct ipmmu_vmsa_domain *domain,
+static void ipmmu_utlb_enable(unsigned int context_id,
 		struct ipmmu_vmsa_utlb *utlb_p)
 {
 	struct ipmmu_vmsa_device *mmu = utlb_p->mmu;
@@ -721,15 +721,14 @@ static void ipmmu_utlb_enable(struct ipmmu_vmsa_domain *domain,
 	/* TODO: Do we need to flush the microTLB ? */
 	offset = (utlb < 32) ? IMUCTR(utlb) : IMUCTR2(utlb - 32);
 	ipmmu_write(mmu, offset,
-		    IMUCTR_TTSEL_MMU(domain->context_id) | IMUCTR_FLUSH |
+		    IMUCTR_TTSEL_MMU(context_id) | IMUCTR_FLUSH |
 		    IMUCTR_MMUEN);
 }
 
 /*
  * Disable MMU translation for the microTLB.
  */
-static void ipmmu_utlb_disable(struct ipmmu_vmsa_domain *domain,
-		struct ipmmu_vmsa_utlb *utlb_p)
+static void ipmmu_utlb_disable(struct ipmmu_vmsa_utlb *utlb_p)
 {
 	struct ipmmu_vmsa_device *mmu = utlb_p->mmu;
 	unsigned int utlb = utlb_p->utlb;
@@ -1169,7 +1168,7 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 		return ret;
 
 	for (i = 0; i < archdata->num_utlbs; ++i)
-		ipmmu_utlb_enable(domain, &archdata->utlbs[i]);
+		ipmmu_utlb_enable(domain->context_id, &archdata->utlbs[i]);
 
 	return 0;
 }
@@ -1178,11 +1177,10 @@ static void ipmmu_detach_device(struct iommu_domain *io_domain,
 				struct device *dev)
 {
 	struct ipmmu_vmsa_archdata *archdata = to_archdata(dev);
-	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
 	unsigned int i;
 
 	for (i = 0; i < archdata->num_utlbs; ++i)
-		ipmmu_utlb_disable(domain, &archdata->utlbs[i]);
+		ipmmu_utlb_disable(&archdata->utlbs[i]);
 
 	/*
 	 * TODO: Optimize by disabling the context when no device is attached.
