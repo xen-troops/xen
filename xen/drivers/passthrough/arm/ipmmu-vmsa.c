@@ -41,6 +41,9 @@
  *
  */
 
+#define IPMMU_CTX_MAX		8
+#define IPMMU_PER_DEV_MAX	4
+
 /***** Start of Xen specific code *****/
 
 #define IOMMU_READ	(1 << 0)
@@ -203,19 +206,17 @@ struct ipmmu_vmsa_xen_domain {
  * but, on Xen, we also have to store the iommu domain.
  */
 struct ipmmu_vmsa_xen_device {
-	struct iommu_domain *domain;
+	struct iommu_domain *domains[IPMMU_CTX_MAX];
 	struct ipmmu_vmsa_archdata *archdata;
+#ifdef CONFIG_HAS_COPROC
+	/* Is a device expected to be shared? */
+	bool is_coproc;
+#endif
 };
 
 #define dev_iommu(dev) ((struct ipmmu_vmsa_xen_device *)dev->archdata.iommu)
-#define dev_iommu_domain(dev) (dev_iommu(dev)->domain)
-#define dev_iommu_archdata(dev) (dev_iommu(dev)->archdata)
 
 /***** Start of Linux IPMMU code *****/
-
-#define IPMMU_CTX_MAX 8
-
-#define IPMMU_PER_DEV_MAX 4
 
 struct ipmmu_features {
 	bool use_ns_alias_offset;
@@ -304,6 +305,22 @@ static struct ipmmu_vmsa_domain *to_vmsa_domain(struct iommu_domain *dom)
 	return container_of(dom, struct ipmmu_vmsa_domain, io_domain);
 }
 
+static struct iommu_domain *to_iommu_domain(struct device *dev,
+		unsigned int context_id)
+{
+	ASSERT(context_id < IPMMU_CTX_MAX);
+
+	return dev_iommu(dev)->domains[context_id];
+}
+
+static void set_iommu_domain(struct device *dev, unsigned int context_id,
+		struct iommu_domain *domain)
+{
+	ASSERT(context_id < IPMMU_CTX_MAX);
+
+	dev_iommu(dev)->domains[context_id] = domain;
+}
+
 /*
  * Xen: Rewrite Linux helpers to manipulate with archdata on Xen.
  */
@@ -329,11 +346,11 @@ static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 #else
 static struct ipmmu_vmsa_archdata *to_archdata(struct device *dev)
 {
-	return dev_iommu_archdata(dev);
+	return dev_iommu(dev)->archdata;
 }
 static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 {
-	dev_iommu_archdata(dev) = p;
+	dev_iommu(dev)->archdata = p;
 }
 #endif
 
@@ -689,7 +706,7 @@ static void ipmmu_tlb_invalidate(struct ipmmu_vmsa_domain *domain)
 /*
  * Enable MMU translation for the microTLB.
  */
-static void ipmmu_utlb_enable(struct ipmmu_vmsa_domain *domain,
+static void ipmmu_utlb_enable(unsigned int context_id,
 		struct ipmmu_vmsa_utlb *utlb_p)
 {
 	struct ipmmu_vmsa_device *mmu = utlb_p->mmu;
@@ -708,15 +725,14 @@ static void ipmmu_utlb_enable(struct ipmmu_vmsa_domain *domain,
 	/* TODO: Do we need to flush the microTLB ? */
 	offset = (utlb < 32) ? IMUCTR(utlb) : IMUCTR2(utlb - 32);
 	ipmmu_write(mmu, offset,
-		    IMUCTR_TTSEL_MMU(domain->context_id) | IMUCTR_FLUSH |
+		    IMUCTR_TTSEL_MMU(context_id) | IMUCTR_FLUSH |
 		    IMUCTR_MMUEN);
 }
 
 /*
  * Disable MMU translation for the microTLB.
  */
-static void ipmmu_utlb_disable(struct ipmmu_vmsa_domain *domain,
-		struct ipmmu_vmsa_utlb *utlb_p)
+static void ipmmu_utlb_disable(struct ipmmu_vmsa_utlb *utlb_p)
 {
 	struct ipmmu_vmsa_device *mmu = utlb_p->mmu;
 	unsigned int utlb = utlb_p->utlb;
@@ -1155,8 +1171,18 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 	if (ret < 0)
 		return ret;
 
+#ifdef CONFIG_HAS_COPROC
+	/*
+	 * Don't allow to even touch uTLBs when assigning coproc device. Because it
+	 * may be running in other domain at the moment. Only coproc's scheduler
+	 * is allowed to decide when it is time to switch IOMMU context.
+	 */
+	if (dev_iommu(dev)->is_coproc)
+		return 0;
+#endif
+
 	for (i = 0; i < archdata->num_utlbs; ++i)
-		ipmmu_utlb_enable(domain, &archdata->utlbs[i]);
+		ipmmu_utlb_enable(domain->context_id, &archdata->utlbs[i]);
 
 	return 0;
 }
@@ -1165,11 +1191,20 @@ static void ipmmu_detach_device(struct iommu_domain *io_domain,
 				struct device *dev)
 {
 	struct ipmmu_vmsa_archdata *archdata = to_archdata(dev);
-	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
 	unsigned int i;
 
+#ifdef CONFIG_HAS_COPROC
+	/*
+	 * Don't allow to even touch uTLBs when deassigning coproc device. Because it
+	 * may be running in other domain at the moment. Only coproc's scheduler
+	 * is allowed to decide when it is time to switch IOMMU context.
+	 */
+	if (dev_iommu(dev)->is_coproc)
+		return;
+#endif
+
 	for (i = 0; i < archdata->num_utlbs; ++i)
-		ipmmu_utlb_disable(domain, &archdata->utlbs[i]);
+		ipmmu_utlb_disable(&archdata->utlbs[i]);
 
 	/*
 	 * TODO: Optimize by disabling the context when no device is attached.
@@ -2302,14 +2337,20 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 	struct iommu_domain *io_domain;
 	struct ipmmu_vmsa_domain *domain;
 	struct ipmmu_vmsa_xen_domain *xen_domain;
+	unsigned int context_id;
 	int ret = 0;
 
 	xen_domain = dom_iommu(d)->arch.priv;
+	context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
 
 	if (!dev->archdata.iommu) {
 		dev->archdata.iommu = xzalloc(struct ipmmu_vmsa_xen_device);
 		if (!dev->archdata.iommu)
 			return -ENOMEM;
+
+#ifdef CONFIG_HAS_COPROC
+		dev_iommu(dev)->is_coproc = dt_device_for_coproc(dev_to_dt(dev));
+#endif
 	}
 
 	if (!to_archdata(dev)) {
@@ -2320,7 +2361,7 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 
 	spin_lock(&xen_domain->lock);
 
-	if (dev_iommu_domain(dev)) {
+	if (to_iommu_domain(dev, context_id)) {
 		dev_err(dev, "already attached to IPMMU domain\n");
 		ret = -EEXIST;
 		goto out;
@@ -2340,7 +2381,7 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 		spin_lock_init(&domain->lock);
 
 		domain->d = d;
-		domain->context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
+		domain->context_id = context_id;
 		io_domain = &domain->io_domain;
 
 		/* Chain the new context to the Xen domain */
@@ -2353,7 +2394,7 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 			ipmmu_vmsa_destroy_domain(io_domain);
 	} else {
 		atomic_inc(&io_domain->ref);
-		dev_iommu_domain(dev) = io_domain;
+		set_iommu_domain(dev, context_id, io_domain);
 	}
 
 out:
@@ -2364,10 +2405,13 @@ out:
 
 static int ipmmu_vmsa_deassign_dev(struct domain *d, struct device *dev)
 {
-	struct iommu_domain *io_domain = dev_iommu_domain(dev);
+	struct iommu_domain *io_domain;
 	struct ipmmu_vmsa_xen_domain *xen_domain;
+	unsigned int context_id;
 
 	xen_domain = dom_iommu(d)->arch.priv;
+	context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
+	io_domain = to_iommu_domain(dev, context_id);
 
 	if (!io_domain || to_vmsa_domain(io_domain)->d != d) {
 		dev_err(dev, " not attached to domain %d\n", d->domain_id);
@@ -2377,7 +2421,7 @@ static int ipmmu_vmsa_deassign_dev(struct domain *d, struct device *dev)
 	spin_lock(&xen_domain->lock);
 
 	ipmmu_detach_device(io_domain, dev);
-	dev_iommu_domain(dev) = NULL;
+	set_iommu_domain(dev, context_id, NULL);
 	atomic_dec(&io_domain->ref);
 
 	if (io_domain->ref.counter == 0)
@@ -2572,6 +2616,60 @@ static void ipmmu_vmsa_dump_p2m_table(struct domain *d)
 	/* TODO: This platform callback should be implemented. */
 }
 
+#ifdef CONFIG_HAS_COPROC
+static inline int ipmmu_vmsa_assign_coproc(struct domain *d, struct device *dev)
+{
+	return ipmmu_vmsa_assign_dev(d, 0, dev, 0);
+}
+
+static inline int ipmmu_vmsa_deassign_coproc(struct domain *d, struct device *dev)
+{
+	return ipmmu_vmsa_deassign_dev(d, dev);
+}
+
+static int ipmmu_vmsa_disable_coproc(struct domain *d, struct device *dev)
+{
+	struct ipmmu_vmsa_archdata *archdata;
+	unsigned int i;
+
+	if (!dev_iommu(dev) || !dev_iommu(dev)->is_coproc)
+		return -EINVAL;
+
+	archdata = to_archdata(dev);
+	ASSERT(archdata);
+
+	/* TODO: Is locking needed ? */
+	for (i = 0; i < archdata->num_utlbs; i++)
+		ipmmu_utlb_disable(&archdata->utlbs[i]);
+
+	return 0;
+}
+
+static int ipmmu_vmsa_enable_coproc(struct domain *d, struct device *dev)
+{
+	struct ipmmu_vmsa_xen_domain *xen_domain;
+	struct ipmmu_vmsa_archdata *archdata;
+	unsigned int context_id;
+	unsigned int i;
+
+	if (!dev_iommu(dev) || !dev_iommu(dev)->is_coproc)
+		return -EINVAL;
+
+	archdata = to_archdata(dev);
+	ASSERT(archdata);
+
+	/* All what we need to know is a context id */
+	xen_domain = dom_iommu(d)->arch.priv;
+	context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
+
+	/* TODO: Is locking needed ? */
+	for (i = 0; i < archdata->num_utlbs; i++)
+		ipmmu_utlb_enable(context_id, &archdata->utlbs[i]);
+
+	return 0;
+}
+#endif
+
 static const struct iommu_ops ipmmu_vmsa_iommu_ops = {
 	.init = ipmmu_vmsa_domain_init,
 	.hwdom_init = ipmmu_vmsa_hwdom_init,
@@ -2584,6 +2682,12 @@ static const struct iommu_ops ipmmu_vmsa_iommu_ops = {
 	.map_pages = ipmmu_vmsa_map_pages,
 	.unmap_pages = ipmmu_vmsa_unmap_pages,
 	.dump_p2m_table = ipmmu_vmsa_dump_p2m_table,
+#ifdef CONFIG_HAS_COPROC
+	.assign_coproc = ipmmu_vmsa_assign_coproc,
+	.deassign_coproc = ipmmu_vmsa_deassign_coproc,
+	.disable_coproc = ipmmu_vmsa_disable_coproc,
+	.enable_coproc = ipmmu_vmsa_enable_coproc,
+#endif
 };
 
 static __init const struct ipmmu_vmsa_device *find_ipmmu(const struct device *dev)
