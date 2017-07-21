@@ -2737,8 +2737,8 @@ static void arm_smmu_iommu_domain_teardown(struct domain *d)
 	xfree(xen_domain);
 }
 
-static int __must_check arm_smmu_map_page(struct domain *d, unsigned long gfn,
-			unsigned long mfn, unsigned int flags)
+static int __must_check arm_smmu_map_pages(struct domain *d, unsigned long gfn,
+			unsigned long mfn, unsigned int order, unsigned int flags)
 {
 	p2m_type_t t;
 
@@ -2763,10 +2763,11 @@ static int __must_check arm_smmu_map_page(struct domain *d, unsigned long gfn,
 	 * The function guest_physmap_add_entry replaces the current mapping
 	 * if there is already one...
 	 */
-	return guest_physmap_add_entry(d, _gfn(gfn), _mfn(mfn), 0, t);
+	return guest_physmap_add_entry(d, _gfn(gfn), _mfn(mfn), order, t);
 }
 
-static int __must_check arm_smmu_unmap_page(struct domain *d, unsigned long gfn)
+static int __must_check arm_smmu_unmap_pages(struct domain *d,
+			unsigned long gfn, unsigned int order)
 {
 	/*
 	 * This function should only be used by gnttab code when the domain
@@ -2775,45 +2776,7 @@ static int __must_check arm_smmu_unmap_page(struct domain *d, unsigned long gfn)
 	if ( !is_domain_direct_mapped(d) )
 		return -EINVAL;
 
-	return guest_physmap_remove_page(d, _gfn(gfn), _mfn(gfn), 0);
-}
-
-/* TODO: Optimize by squashing map_pages/unmap_pages with map_page/unmap_page */
-static int __must_check arm_smmu_map_pages(struct domain *d, unsigned long gfn,
-		unsigned long mfn, unsigned int order, unsigned int flags)
-{
-	unsigned long i;
-	int rc = 0;
-
-	for (i = 0; i < (1UL << order); i++) {
-		rc = arm_smmu_map_page(d, gfn + i, mfn + i, flags);
-		if (unlikely(rc)) {
-			while (i--)
-				/* If statement to satisfy __must_check. */
-				if (arm_smmu_unmap_page(d, gfn + i))
-					continue;
-
-			break;
-		}
-	}
-
-	return rc;
-}
-
-static int __must_check arm_smmu_unmap_pages(struct domain *d,
-		unsigned long gfn, unsigned int order)
-{
-	unsigned long i;
-	int rc = 0;
-
-	for (i = 0; i < (1UL << order); i++) {
-		int ret = arm_smmu_unmap_page(d, gfn + i);
-
-		if (!rc)
-			rc = ret;
-	}
-
-	return rc;
+	return guest_physmap_remove_page(d, _gfn(gfn), _mfn(gfn), order);
 }
 
 static const struct iommu_ops arm_smmu_iommu_ops = {
