@@ -144,7 +144,7 @@ struct io_pgtable_ops *alloc_io_pgtable_ops(enum io_pgtable_fmt fmt,
  *
  * @ops: The ops returned from alloc_io_pgtable_ops.
  */
-void free_io_pgtable_ops(struct io_pgtable_ops *ops);
+void free_io_pgtable_ops(struct io_pgtable_ops *ops, struct page_info *page);
 
 
 /*
@@ -201,7 +201,7 @@ static inline void io_pgtable_tlb_sync(struct io_pgtable *iop)
  */
 struct io_pgtable_init_fns {
 	struct io_pgtable *(*alloc)(struct io_pgtable_cfg *cfg, void *cookie);
-	void (*free)(struct io_pgtable *iop);
+	void (*free)(struct io_pgtable *iop, struct page_info *page);
 };
 
 extern struct io_pgtable_init_fns io_pgtable_arm_32_lpae_s1_init_fns;
