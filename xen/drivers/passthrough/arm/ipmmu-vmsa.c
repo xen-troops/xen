@@ -708,8 +708,8 @@ static void ipmmu_tlb_flush_all(void *cookie)
 {
 	struct ipmmu_vmsa_domain *domain = cookie;
 
-	/* Xen: Just return if context_id has non-existent value */
-	if (domain->context_id >= domain->root->num_ctx)
+	/* Xen: Just return if context is absent or context_id has non-existent value */
+	if (!domain || domain->context_id >= domain->root->num_ctx)
 		return;
 
 	ipmmu_tlb_invalidate(domain);
@@ -796,7 +796,9 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	 */
 	ret = ipmmu_domain_allocate_context(domain->root, domain);
 	if (ret < 0) {
-		free_io_pgtable_ops(domain->iop);
+		/* Pass root page table for this domain as an argument. */
+		free_io_pgtable_ops(domain->iop,
+				maddr_to_page(domain->cfg.arm_lpae_s1_cfg.ttbr[0]));
 		return ret;
 	}
 
@@ -2193,7 +2195,12 @@ static void ipmmu_vmsa_destroy_domain(struct iommu_domain *io_domain)
 		 * been detached.
 		 */
 		ipmmu_domain_destroy_context(domain);
-		free_io_pgtable_ops(domain->iop);
+		/*
+		 * Pass root page table for this domain as an argument.
+		 * This call will lead to start deallocation sequence.
+		 */
+		free_io_pgtable_ops(domain->iop,
+				maddr_to_page(domain->cfg.arm_lpae_s1_cfg.ttbr[0]));
 	}
 
 	kfree(domain);
@@ -2382,6 +2389,17 @@ static int ipmmu_vmsa_domain_init(struct domain *d, bool use_iommu)
 	return 0;
 }
 
+/*
+ * Seems, there is one more page we need to process. So, retrieve
+ * the pointer and go on deallocation sequence.
+ */
+static void ipmmu_vmsa_free_page_table(struct page_info *page)
+{
+	struct io_pgtable_ops *ops = (struct io_pgtable_ops *)page->pad;
+
+	free_io_pgtable_ops(ops, page);
+}
+
 static void __hwdom_init ipmmu_vmsa_hwdom_init(struct domain *d)
 {
 }
@@ -2403,6 +2421,12 @@ static void ipmmu_vmsa_domain_teardown(struct domain *d)
 	ASSERT(list_empty(&xen_domain->contexts));
 	xfree(xen_domain);
 	dom_iommu(d)->arch.priv = NULL;
+	/*
+	 * After this point we have all domain resources deallocated, except
+	 * page table which we will deallocate asynchronously. The IOMMU code
+	 * provides us with iommu_pt_cleanup_list and free_page_table platform
+	 * callback what we actually going to use.
+	 */
 }
 
 static int __must_check ipmmu_vmsa_map_pages(struct domain *d,
@@ -2461,6 +2485,7 @@ static void ipmmu_vmsa_dump_p2m_table(struct domain *d)
 static const struct iommu_ops ipmmu_vmsa_iommu_ops = {
 	.init = ipmmu_vmsa_domain_init,
 	.hwdom_init = ipmmu_vmsa_hwdom_init,
+	.free_page_table = ipmmu_vmsa_free_page_table,
 	.teardown = ipmmu_vmsa_domain_teardown,
 	.iotlb_flush = ipmmu_vmsa_iotlb_flush,
 	.assign_device = ipmmu_vmsa_assign_dev,
