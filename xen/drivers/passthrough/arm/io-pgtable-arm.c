@@ -254,6 +254,10 @@ struct arm_lpae_io_pgtable {
 
 	/* Xen: We deal with domain pages. */
 	struct page_info	*pgd;
+	/* Xen: To indicate that deallocation sequence is in progress. */
+	bool_t				cleanup;
+	/* Xen: To count allocated domain pages. */
+	unsigned int		page_count;
 };
 
 typedef u64 arm_lpae_iopte;
@@ -329,7 +333,7 @@ static void __arm_lpae_set_pte(arm_lpae_iopte *ptep, arm_lpae_iopte pte,
 #endif
 
 static struct page_info *__arm_lpae_alloc_pages(size_t size, gfp_t gfp,
-				    struct io_pgtable_cfg *cfg)
+				    struct arm_lpae_io_pgtable *data)
 {
 	struct page_info *pages;
 	unsigned int order = get_order_from_bytes(size);
@@ -342,15 +346,21 @@ static struct page_info *__arm_lpae_alloc_pages(size_t size, gfp_t gfp,
 	for (i = 0; i < (1 << order); i ++)
 		clear_and_clean_page(pages + i);
 
+	data->page_count += (1<<order);
+
 	return pages;
 }
 
 static void __arm_lpae_free_pages(struct page_info *pages, size_t size,
-				  struct io_pgtable_cfg *cfg)
+				  struct arm_lpae_io_pgtable *data)
 {
 	unsigned int order = get_order_from_bytes(size);
 
+	BUG_ON((int)data->page_count <= 0);
+
 	free_domheap_pages(pages, order);
+
+	data->page_count -= (1<<order);
 }
 
 static void __arm_lpae_set_pte(arm_lpae_iopte *ptep, arm_lpae_iopte pte,
@@ -434,7 +444,7 @@ static int __arm_lpae_map(struct arm_lpae_io_pgtable *data, unsigned long iova,
 	pte = *ptep;
 	if (!pte) {
 		page = __arm_lpae_alloc_pages(ARM_LPAE_GRANULE(data),
-					       GFP_ATOMIC, cfg);
+					       GFP_ATOMIC, data);
 		if (!page)
 			return -ENOMEM;
 
@@ -526,6 +536,46 @@ static int arm_lpae_map(struct io_pgtable_ops *ops, unsigned long iova,
 	return ret;
 }
 
+static void __arm_lpae_free_pgtable(struct arm_lpae_io_pgtable *data, int lvl,
+				    struct page_info *page);
+
+/*
+ * TODO: We have reused unused at the moment "page->pad" variable for
+ * storing "data" pointer we need during deallocation sequence. The current
+ * free_page_table platform callback carries the only one "page" argument.
+ * To perform required calculations with the current (generic) allocator
+ * implementation we are highly interested in the following fields:
+ * - data->levels
+ * - data->pg_shift
+ * - data->pgd_size
+ * But, this necessity might be avoided if we integrate allocator code with
+ * IPMMU-VMSA driver. And these variables will turn into the
+ * corresponding #define-s.
+ */
+static void __arm_lpae_free_next_pgtable(struct arm_lpae_io_pgtable *data,
+				    int lvl, struct page_info *page)
+{
+	if (!data->cleanup) {
+		/*
+		 * We are here during normal page table maintenance. Just call
+		 * __arm_lpae_free_pgtable(), what we actually had to call.
+		 */
+		__arm_lpae_free_pgtable(data, lvl, page);
+	} else {
+		/*
+		 * The page table deallocation sequence is in progress. Use some fields
+		 * in struct page_info to pass arguments we will need during handling
+		 * this page back. Queue page to list.
+		 */
+		PFN_ORDER(page) = lvl;
+		page->pad = (u64)&data->iop.ops;
+
+		spin_lock(&iommu_pt_cleanup_lock);
+		page_list_add_tail(page, &iommu_pt_cleanup_list);
+		spin_unlock(&iommu_pt_cleanup_lock);
+	}
+}
+
 /* Xen: We deal with domain pages. */
 static void __arm_lpae_free_pgtable(struct arm_lpae_io_pgtable *data, int lvl,
 				    struct page_info *page)
@@ -553,19 +603,41 @@ static void __arm_lpae_free_pgtable(struct arm_lpae_io_pgtable *data, int lvl,
 		if (!pte || iopte_leaf(pte, lvl))
 			continue;
 
-		__arm_lpae_free_pgtable(data, lvl + 1, iopte_deref(pte, data));
+		__arm_lpae_free_next_pgtable(data, lvl + 1, iopte_deref(pte, data));
 	}
 
 	unmap_domain_page(start);
-	__arm_lpae_free_pages(page, table_size, &data->iop.cfg);
+	__arm_lpae_free_pages(page, table_size, data);
 }
 
-static void arm_lpae_free_pgtable(struct io_pgtable *iop)
+/*
+ * We added extra "page" argument since we want to know what page is processed
+ * at the moment and should be freed.
+ * */
+static void arm_lpae_free_pgtable(struct io_pgtable *iop, struct page_info *page)
 {
 	struct arm_lpae_io_pgtable *data = io_pgtable_to_data(iop);
+	int lvl;
 
-	__arm_lpae_free_pgtable(data, ARM_LPAE_START_LVL(data), data->pgd);
-	kfree(data);
+	if (!data->cleanup) {
+		/* Start page table deallocation sequence from the first level. */
+		data->cleanup = true;
+		lvl = ARM_LPAE_START_LVL(data);
+	} else {
+		/* Retrieve the level to continue deallocation sequence from. */
+		lvl = PFN_ORDER(page);
+		PFN_ORDER(page) = 0;
+		page->pad = 0;
+	}
+
+	__arm_lpae_free_pgtable(data, lvl, page);
+
+	/*
+	 * Seems, we have already deallocated all pages, so it is time
+	 * to release unfreed resource.
+	 */
+	if (!data->page_count)
+		kfree(data);
 }
 
 /* Xen: We deal with domain pages. */
@@ -889,8 +961,12 @@ arm_64_lpae_alloc_pgtable_s1(struct io_pgtable_cfg *cfg, void *cookie)
 	cfg->arm_lpae_s1_cfg.mair[0] = reg;
 	cfg->arm_lpae_s1_cfg.mair[1] = 0;
 
+	/* Just to be sure */
+	data->cleanup = false;
+	data->page_count = 0;
+
 	/* Looking good; allocate a pgd */
-	data->pgd = __arm_lpae_alloc_pages(data->pgd_size, GFP_KERNEL, cfg);
+	data->pgd = __arm_lpae_alloc_pages(data->pgd_size, GFP_KERNEL, data);
 	if (!data->pgd)
 		goto out_free_data;
 

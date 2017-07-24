@@ -77,7 +77,7 @@ struct io_pgtable_ops *alloc_io_pgtable_ops(enum io_pgtable_fmt fmt,
  * It is the IOMMU driver's responsibility to ensure that the page table
  * is no longer accessible to the walker by this point.
  */
-void free_io_pgtable_ops(struct io_pgtable_ops *ops)
+void free_io_pgtable_ops(struct io_pgtable_ops *ops, struct page_info *page)
 {
 	struct io_pgtable *iop;
 
@@ -86,5 +86,6 @@ void free_io_pgtable_ops(struct io_pgtable_ops *ops)
 
 	iop = container_of(ops, struct io_pgtable, ops);
 	io_pgtable_tlb_flush_all(iop);
-	io_pgtable_init_table[iop->fmt]->free(iop);
+	iop->cookie = NULL;
+	io_pgtable_init_table[iop->fmt]->free(iop, page);
 }
