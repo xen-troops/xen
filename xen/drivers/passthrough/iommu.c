@@ -52,7 +52,7 @@ custom_param("iommu", parse_iommu_param);
 bool_t __initdata iommu_enable = 1;
 bool_t __read_mostly iommu_enabled;
 bool_t __read_mostly force_iommu;
-bool_t __hwdom_initdata iommu_dom0_strict;
+bool_t __read_mostly iommu_dom0_strict;
 bool_t __read_mostly iommu_verbose;
 bool_t __read_mostly iommu_workaround_bios_bug;
 bool_t __read_mostly iommu_igfx = 1;
@@ -147,6 +147,15 @@ int iommu_domain_init(struct domain *d, bool use_iommu)
     if ( !iommu_enabled )
         return 0;
 
+    /*
+     * Hardware domain requires IOMMU to be used in the most cases
+     * and these cases mostly depend on 'iommu' parameters. So, don't rely on
+     * passed value, just make a decision about using IOMMU right here.
+     */
+    if ( is_hardware_domain(d) )
+        use_iommu = (paging_mode_translate(d) && !iommu_passthrough) ||
+                     iommu_dom0_strict;
+
     hd->platform_ops = iommu_get_ops();
     ret = hd->platform_ops->init(d, use_iommu);
     if ( ret )
@@ -167,8 +176,6 @@ static void __hwdom_init check_hwdom_reqs(struct domain *d)
     if ( iommu_passthrough )
         panic("Dom0 uses paging translated mode, dom0-passthrough must not be "
               "enabled\n");
-
-    iommu_dom0_strict = 1;
 }
 
 void __hwdom_init iommu_hwdom_init(struct domain *d)
@@ -181,37 +188,6 @@ void __hwdom_init iommu_hwdom_init(struct domain *d)
         return;
 
     register_keyhandler('o', &iommu_dump_p2m_table, "dump iommu p2m table", 0);
-    d->need_iommu = !!iommu_dom0_strict;
-    if ( need_iommu(d) && !iommu_use_hap_pt(d) )
-    {
-        struct page_info *page;
-        unsigned int i = 0;
-        int rc = 0;
-
-        page_list_for_each ( page, &d->page_list )
-        {
-            unsigned long mfn = mfn_x(page_to_mfn(page));
-            unsigned long gfn = mfn_to_gmfn(d, mfn);
-            unsigned int mapping = IOMMUF_readable;
-            int ret;
-
-            if ( ((page->u.inuse.type_info & PGT_count_mask) == 0) ||
-                 ((page->u.inuse.type_info & PGT_type_mask)
-                  == PGT_writable_page) )
-                mapping |= IOMMUF_writable;
-
-            ret = hd->platform_ops->map_pages(d, gfn, mfn, 0, mapping);
-            if ( !rc )
-                rc = ret;
-
-            if ( !(i++ & 0xfffff) )
-                process_pending_softirqs();
-        }
-
-        if ( rc )
-            printk(XENLOG_WARNING "d%d: IOMMU mapping failed: %d\n",
-                   d->domain_id, rc);
-    }
 
     return hd->platform_ops->hwdom_init(d);
 }
