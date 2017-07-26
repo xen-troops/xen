@@ -267,6 +267,23 @@ bool_t coproc_is_attached_to_domain(struct domain *d, const char *path)
     return is_created;
 }
 
+/*
+ * To check if this device has been marked as protected by IOMMU and
+ * as the result can be assigned to the IOMMU context.
+ * As we only have device-tree support for now treat potential coproc device
+ * as a device-tree device.
+ */
+bool_t coproc_is_protected(device_t *dev)
+{
+    if ( !dt_device_for_coproc(dev_to_dt(dev)) )
+        return false;
+
+    if ( !dt_device_is_protected(dev_to_dt(dev)) )
+        return false;
+
+    return true;
+}
+
 struct coproc_device *coproc_alloc(struct dt_device_node *np,
                                    const struct coproc_ops *ops)
 {
