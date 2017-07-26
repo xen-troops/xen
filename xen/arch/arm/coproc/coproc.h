@@ -188,6 +188,7 @@ int coproc_do_domctl(struct xen_domctl *, struct domain *,
 bool_t coproc_is_attached_to_domain(struct domain *, const char *);
 void vcoproc_continue_running(struct vcoproc_instance *);
 int coproc_release_vcoprocs(struct domain *);
+bool_t coproc_is_protected(device_t *);
 
 #define dev_path(dev) dt_node_full_name(dev_to_dt(dev))
 
