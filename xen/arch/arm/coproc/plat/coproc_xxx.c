@@ -140,6 +140,9 @@ static int coproc_xxx_dt_probe(struct dt_device_node *np)
     if ( IS_ERR_OR_NULL(coproc_xxx) )
         return PTR_ERR(coproc_xxx);
 
+    /* Just to be sure */
+    coproc_xxx->need_iommu = false;
+
     for ( i = 0; i < coproc_xxx->num_irqs; ++i )
     {
         ret = request_irq(coproc_xxx->irqs[i],
