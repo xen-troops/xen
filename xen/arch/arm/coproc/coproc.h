@@ -52,6 +52,9 @@ struct coproc_device {
     /* the array of irqs for this coproc */
     unsigned int *irqs;
 
+    /* the IOMMU is needed for this coproc */
+    bool need_iommu;
+
     /*
      * this list is used to append this coproc
      * to the "framework's" global coprocs list
