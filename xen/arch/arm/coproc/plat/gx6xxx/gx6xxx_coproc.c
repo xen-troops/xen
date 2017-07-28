@@ -594,6 +594,14 @@ static int gx6xxx_dt_probe(struct dt_device_node *np)
     info->reg_vaddr_irq_status = (uint32_t *)(reg_base + RGXFW_CR_IRQ_STATUS);
     info->reg_vaddr_irq_clear = (uint32_t *)(reg_base + RGXFW_CR_IRQ_CLEAR);
 
+    /*
+     * If a coproc device has reference to the IOMMU that it most likely
+     * requires it to be handled.
+     */
+    if ( dt_count_phandle_with_args(dev->of_node, "iommus",
+         "#iommu-cells") > 0 )
+        coproc->need_iommu = true;
+
     ret = request_irq(coproc->irqs[0], IRQF_SHARED,
                       gx6xxx_irq_handler, "GPU GX6xxx irq", coproc);
     if ( ret )
