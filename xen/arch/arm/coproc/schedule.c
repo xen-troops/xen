@@ -250,10 +250,13 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
 
         if ( wait_time == 0 )
         {
-            ret = iommu_disable_coproc(curr->domain, coproc->dev);
-            if ( unlikely(ret) )
-                panic("Failed to disable IOMMU context for coproc \"%s\" in domain %u (%d)\n",
-                      dev_path(coproc->dev), curr->domain->domain_id, ret);
+            if ( coproc->need_iommu )
+            {
+                ret = iommu_disable_coproc(curr->domain, coproc->dev);
+                if ( unlikely(ret) )
+                    panic("Failed to disable IOMMU context for coproc \"%s\" in domain %u (%d)\n",
+                          dev_path(coproc->dev), curr->domain->domain_id, ret);
+            }
 
             if (curr->state == VCOPROC_RUNNING)
                 curr->state = VCOPROC_WAITING;
@@ -273,10 +276,13 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
     {
         ASSERT(next->state == VCOPROC_WAITING);
 
-        ret = iommu_enable_coproc(next->domain, coproc->dev);
-        if ( unlikely(ret) )
-            panic("Failed to enable IOMMU context for coproc \"%s\" in domain %u (%d)\n",
-                  dev_path(coproc->dev), next->domain->domain_id, ret);
+        if ( coproc->need_iommu )
+        {
+            ret = iommu_enable_coproc(next->domain, coproc->dev);
+            if ( unlikely(ret) )
+                panic("Failed to enable IOMMU context for coproc \"%s\" in domain %u (%d)\n",
+                      dev_path(coproc->dev), next->domain->domain_id, ret);
+        }
 
         /* TODO What to do if we failed to switch to "next"? */
         ret = vcoproc_context_switch_to(next);
