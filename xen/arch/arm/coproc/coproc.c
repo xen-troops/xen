@@ -538,6 +538,10 @@ int coproc_release_vcoprocs(struct domain *d)
     struct vcoproc_instance *vcoproc, *temp;
     int ret;
 
+    /* Is there anything to release? */
+    if ( !vcoproc_d->num_instances )
+        return 0;
+
     list_for_each_entry_safe( vcoproc, temp, &vcoproc_d->instances,
                               instance_elem )
     {
