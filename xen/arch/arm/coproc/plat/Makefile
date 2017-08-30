@@ -1,2 +1,2 @@
-subdir-y += gx6xxx
+subdir-y +=
 obj-y += coproc_xxx.o
