@@ -54,6 +54,7 @@ config HAS_COPROC
 	bool "Remote processors framework (EXPERIMENTAL)"
 	default y
 	depends on ARM
+	source "arch/arm/coproc/Kconfig"
 
 endmenu
 
