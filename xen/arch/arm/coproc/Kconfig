@@ -1,0 +1,15 @@
+choice
+	prompt "GPU virtualization"
+	default COPROC_GSX6XX
+	depends on HAS_COPROC
+
+	config COPROC_GSX6XX
+		bool "Power on/off based"
+	config COPROC_GSX_IMG
+		bool "Imagination based"
+endchoice
+
+config COPROC_XXX
+	bool "Reference coproc driver support aka XXX"
+	default y
+	depends on HAS_COPROC
