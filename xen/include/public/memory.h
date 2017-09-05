@@ -712,7 +712,25 @@ struct xen_vnuma_topology_info {
 typedef struct xen_vnuma_topology_info xen_vnuma_topology_info_t;
 DEFINE_XEN_GUEST_HANDLE(xen_vnuma_topology_info_t);
 
-/* Next available subop number is 29 */
+/*
+ * XENMEM_p2m_lookup used by guest to translate array of IPAs to
+ * MAs.
+ */
+#define XENMEM_p2m_lookup                   29
+
+struct xen_p2m_lookup {
+    /* IN */
+    domid_t domid;
+    uint16_t num_frames;
+    XEN_GUEST_HANDLE(xen_pfn_t) pa;
+    /* OUT */
+    XEN_GUEST_HANDLE(xen_pfn_t) ma;
+};
+
+typedef struct xen_p2m_lookup xen_p2m_lookup_t;
+DEFINE_XEN_GUEST_HANDLE(xen_p2m_lookup_t);
+
+/* Next available subop number is 30 */
 
 #endif /* __XEN_PUBLIC_MEMORY_H__ */
 
