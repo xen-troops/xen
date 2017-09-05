@@ -1510,6 +1510,30 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_get_sharing_freed_pages:
         return 0;
 
+    case XENMEM_pcie_legacy_irq:
+    {
+        struct xen_pcie_legacy_irq req;
+        struct domain *d;
+        int i = 255;
+
+        if ( copy_from_guest(&req, arg, 1) )
+            return -EFAULT;
+
+        /* Find DomU with vPCI. */
+        while ( i )
+        {
+            d = get_domain_by_id(i--);
+            if ( d == NULL )
+                continue;
+            if ( has_vpci(d) )
+            {
+                vgic_inject_irq(d, NULL, req.virq, true);
+                return 0;
+            }
+        }
+
+        return 0;
+    }
     default:
         return -ENOSYS;
     }

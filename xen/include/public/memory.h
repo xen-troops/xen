@@ -720,6 +720,17 @@ struct xen_vnuma_topology_info {
 typedef struct xen_vnuma_topology_info xen_vnuma_topology_info_t;
 DEFINE_XEN_GUEST_HANDLE(xen_vnuma_topology_info_t);
 
+/* Just nail it here for existing implementation re-use. */
+#define XENMEM_pcie_legacy_irq                   62
+
+struct xen_pcie_legacy_irq {
+    /* IN */
+    uint16_t virq;
+};
+
+typedef struct xen_pcie_legacy_irq xen_pcie_legacy_irq_t;
+DEFINE_XEN_GUEST_HANDLE(xen_pcie_legacy_irq_t);
+
 /* Next available subop number is 29 */
 
 #endif /* __XEN_PUBLIC_MEMORY_H__ */
