@@ -1308,6 +1308,43 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_get_sharing_freed_pages:
         return 0;
 
+    case XENMEM_p2m_lookup:
+    {
+        struct xen_p2m_lookup req;
+        struct domain *d;
+        int i;
+
+        if ( copy_from_guest(&req, arg, 1) )
+            return -EFAULT;
+
+        if ( guest_handle_is_null(req.pa) || guest_handle_is_null(req.ma))
+            return -EINVAL;
+
+        d = rcu_lock_domain_by_any_id(req.domid);
+        if ( d == NULL )
+            return -ESRCH;
+
+        for ( i = 0; i < req.num_frames; i++ )
+        {
+            xen_pfn_t pa, ma;
+
+            if ( unlikely(copy_from_guest_offset(&pa, req.pa, i, 1)) )
+            {
+                rcu_unlock_domain(d);
+                return -EFAULT;
+            }
+
+            ma = mfn_to_maddr(p2m_lookup(d, gaddr_to_gfn(pa), NULL));
+
+            if ( unlikely(copy_to_guest_offset(req.ma, i, &ma, 1)) )
+            {
+                rcu_unlock_domain(d);
+                return -EFAULT;
+            }
+        }
+        rcu_unlock_domain(d);
+        return 0;
+    }
     default:
         return -ENOSYS;
     }
