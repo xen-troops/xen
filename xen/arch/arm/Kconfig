@@ -23,6 +23,8 @@ config ARM
 	select HAS_PASSTHROUGH
 	select HAS_PDX
 	select VIDEO
+	select HAS_CPUFREQ
+	select HAS_PM
 
 config ARCH_DEFCONFIG
 	string
