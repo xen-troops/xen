@@ -25,6 +25,7 @@ config X86
 	select HAS_UBSAN
 	select NUMA
 	select VGA
+	select HAS_PM
 
 config ARCH_DEFCONFIG
 	string
