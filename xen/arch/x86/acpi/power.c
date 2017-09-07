@@ -29,7 +29,7 @@
 #include <asm/apic.h>
 #include <asm/io_apic.h>
 #include <asm/spec_ctrl.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 
 uint32_t system_reset_counter = 1;
 

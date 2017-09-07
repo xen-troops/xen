@@ -41,7 +41,7 @@
 #include <asm/percpu.h>
 #include <asm/cpufeature.h>
 #include <acpi/acpi.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 
 enum {
     UNDEFINED_CAPABLE = 0,

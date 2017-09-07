@@ -28,7 +28,7 @@
 #include <xen/sched.h>
 #include <xen/timer.h>
 #include <xen/trace.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 #include <public/sysctl.h>
 
 struct cpufreq_driver __read_mostly cpufreq_driver;
