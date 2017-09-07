@@ -38,7 +38,7 @@
 #include <xen/acpi.h>
 
 #include <public/sysctl.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 #include <xen/pmstat.h>
 
 DEFINE_PER_CPU_READ_MOSTLY(struct pm_px *, cpufreq_statistic_data);
