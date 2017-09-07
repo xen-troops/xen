@@ -21,7 +21,7 @@
 #include <xen/errno.h>
 #include <xen/cpumask.h>
 
-#include <acpi/cpufreq/processor_perf.h>
+#include <xen/processor_perf.h>
 
 DECLARE_PER_CPU(spinlock_t, cpufreq_statistic_lock);
 
