@@ -16,9 +16,12 @@
 
 #include <xen/types.h>
 #include <xen/list.h>
+#include <xen/percpu.h>
+#include <xen/spinlock.h>
+#include <xen/errno.h>
 #include <xen/cpumask.h>
 
-#include "processor_perf.h"
+#include <acpi/cpufreq/processor_perf.h>
 
 DECLARE_PER_CPU(spinlock_t, cpufreq_statistic_lock);
 
