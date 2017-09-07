@@ -25,7 +25,7 @@
 #include <xen/symbols.h>
 #include <asm/current.h>
 #include <public/platform.h>
-#include <acpi/cpufreq/processor_perf.h>
+#include <xen/processor_perf.h>
 #include <asm/edd.h>
 #include <asm/mtrr.h>
 #include <asm/io_apic.h>
