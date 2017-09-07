@@ -300,6 +300,7 @@ F:	xen/arch/x86/acpi/
 X:	xen/arch/x86/acpi/boot.c
 X:	xen/arch/x86/acpi/lib.c
 F:	xen/drivers/cpufreq/
+F:	xen/drivers/pm/
 F:	xen/include/xen/cpufreq.h
 F:	xen/include/xen/processor_perf.h
 
