@@ -5,3 +5,4 @@ subdir-$(CONFIG_HAS_VPCI) += vpci
 subdir-$(CONFIG_HAS_PASSTHROUGH) += passthrough
 subdir-$(CONFIG_ACPI) += acpi
 subdir-$(CONFIG_VIDEO) += video
+subdir-$(CONFIG_HAS_PM) += pm
