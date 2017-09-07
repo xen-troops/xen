@@ -19,6 +19,8 @@ config ARM
 	select HAS_DEVICE_TREE
 	select HAS_PASSTHROUGH
 	select HAS_PDX
+	select HAS_CPUFREQ
+	select HAS_PM
 
 config ARCH_DEFCONFIG
 	string
