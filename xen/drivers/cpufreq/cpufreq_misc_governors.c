@@ -18,7 +18,7 @@
 #include <xen/init.h>
 #include <xen/percpu.h>
 #include <xen/sched.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 
 /*
  * cpufreq userspace governor
