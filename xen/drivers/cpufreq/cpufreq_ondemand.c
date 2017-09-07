@@ -1,5 +1,5 @@
 /*
- *  xen/arch/x86/acpi/cpufreq/cpufreq_ondemand.c
+ *  xen/drivers/cpufreq/cpufreq_ondemand.c
  *
  *  Copyright (C)  2001 Russell King
  *            (C)  2003 Venkatesh Pallipadi <venkatesh.pallipadi@intel.com>.
@@ -18,7 +18,7 @@
 #include <xen/types.h>
 #include <xen/sched.h>
 #include <xen/timer.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 
 #define DEF_FREQUENCY_UP_THRESHOLD              (80)
 #define MIN_FREQUENCY_UP_THRESHOLD              (11)

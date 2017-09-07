@@ -35,7 +35,7 @@
 #include <asm/percpu.h>
 #include <asm/cpufeature.h>
 #include <acpi/acpi.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 
 #define CPUID_FREQ_VOLT_CAPABILITIES    0x80000007
 #define CPB_CAPABLE             0x00000200
