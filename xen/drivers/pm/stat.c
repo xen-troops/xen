@@ -290,7 +290,11 @@ static int get_cpufreq_para(struct xen_sysctl_pm_op *op)
             &op->u.get_para.u.ondemand.sampling_rate,
             &op->u.get_para.u.ondemand.up_threshold);
     }
+#ifdef CONFIG_HAS_CPU_TURBO
     op->u.get_para.turbo_enabled = cpufreq_get_turbo_status(op->cpuid);
+#else
+    op->u.get_para.turbo_enabled = 0;
+#endif
 
     return ret;
 }
@@ -473,6 +477,7 @@ int do_pm_op(struct xen_sysctl_pm_op *op)
         break;
     }
 
+#ifdef CONFIG_HAS_CPU_TURBO
     case XEN_SYSCTL_pm_op_enable_turbo:
     {
         ret = cpufreq_update_turbo(op->cpuid, CPUFREQ_TURBO_ENABLED);
@@ -484,6 +489,7 @@ int do_pm_op(struct xen_sysctl_pm_op *op)
         ret = cpufreq_update_turbo(op->cpuid, CPUFREQ_TURBO_DISABLED);
         break;
     }
+#endif /* CONFIG_HAS_CPU_TURBO */
 
     default:
         printk("not defined sub-hypercall @ do_pm_op\n");

@@ -39,7 +39,9 @@ extern struct acpi_cpufreq_data *cpufreq_drv_data[NR_CPUS];
 
 struct cpufreq_cpuinfo {
     unsigned int        max_freq;
+#ifdef CONFIG_HAS_CPU_TURBO
     unsigned int        second_max_freq;    /* P1 if Turbo Mode is on */
+#endif
     unsigned int        min_freq;
     unsigned int        transition_latency; /* in 10^(-9) s = nanoseconds */
 };
@@ -72,9 +74,11 @@ struct cpufreq_policy {
 
     bool_t              resume; /* flag for cpufreq 1st run
                                  * S3 wakeup, hotplug cpu, etc */
+#ifdef CONFIG_HAS_CPU_TURBO
     s8                  turbo;  /* tristate flag: 0 for unsupported
                                  * -1 for disable, 1 for enabled
                                  * See CPUFREQ_TURBO_* below for defines */
+#endif
     bool_t              aperf_mperf; /* CPU has APERF/MPERF MSRs */
 };
 DECLARE_PER_CPU(struct cpufreq_policy *, cpufreq_cpu_policy);
@@ -138,8 +142,10 @@ extern int cpufreq_driver_getavg(unsigned int cpu, unsigned int flag);
 #define CPUFREQ_TURBO_UNSUPPORTED   0
 #define CPUFREQ_TURBO_ENABLED       1
 
+#ifdef CONFIG_HAS_CPU_TURBO
 extern int cpufreq_update_turbo(int cpuid, int new_state);
 extern int cpufreq_get_turbo_status(int cpuid);
+#endif
 
 static __inline__ int 
 __cpufreq_governor(struct cpufreq_policy *policy, unsigned int event)
