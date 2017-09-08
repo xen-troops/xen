@@ -209,7 +209,9 @@ int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy,
 {
     unsigned int min_freq = ~0;
     unsigned int max_freq = 0;
+#ifdef CONFIG_HAS_CPU_TURBO
     unsigned int second_max_freq = 0;
+#endif
     unsigned int i;
 
     for (i=0; (table[i].frequency != CPUFREQ_TABLE_END); i++) {
@@ -221,6 +223,7 @@ int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy,
         if (freq > max_freq)
             max_freq = freq;
     }
+#ifdef CONFIG_HAS_CPU_TURBO
     for (i=0; (table[i].frequency != CPUFREQ_TABLE_END); i++) {
         unsigned int freq = table[i].frequency;
         if (freq == CPUFREQ_ENTRY_INVALID || freq == max_freq)
@@ -234,9 +237,13 @@ int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy,
         printk("max_freq: %u    second_max_freq: %u\n",
                max_freq, second_max_freq);
 
+    policy->cpuinfo.second_max_freq = second_max_freq;
+#else /* !CONFIG_HAS_CPU_TURBO */
+    if (cpufreq_verbose)
+        printk("max_freq: %u\n", max_freq);
+#endif /* CONFIG_HAS_CPU_TURBO */
     policy->min = policy->cpuinfo.min_freq = min_freq;
     policy->max = policy->cpuinfo.max_freq = max_freq;
-    policy->cpuinfo.second_max_freq = second_max_freq;
 
     if (policy->min == ~0)
         return -EINVAL;
@@ -390,6 +397,7 @@ int cpufreq_driver_getavg(unsigned int cpu, unsigned int flag)
     return policy->cur;
 }
 
+#ifdef CONFIG_HAS_CPU_TURBO
 int cpufreq_update_turbo(int cpuid, int new_state)
 {
     struct cpufreq_policy *policy;
@@ -430,6 +438,7 @@ int cpufreq_get_turbo_status(int cpuid)
     policy = per_cpu(cpufreq_cpu_policy, cpuid);
     return policy && policy->turbo == CPUFREQ_TURBO_ENABLED;
 }
+#endif /* CONFIG_HAS_CPU_TURBO */
 
 /*********************************************************************
  *                 POLICY                                            *
