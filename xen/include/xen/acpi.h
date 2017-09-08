@@ -123,7 +123,11 @@ static inline int acpi_boot_table_init(void)
 
 #endif 	/*!CONFIG_ACPI*/
 
+#ifdef CONFIG_ACPI
 int get_cpu_id(u32 acpi_id);
+#else
+static inline int get_cpu_id(u32 acpi_id) { return acpi_id; }
+#endif
 
 unsigned int acpi_register_gsi (u32 gsi, int edge_level, int active_high_low);
 int acpi_gsi_to_irq (u32 gsi, unsigned int *irq);
