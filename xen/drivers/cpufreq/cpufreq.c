@@ -42,7 +42,6 @@
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/percpu.h>
-#include <acpi/acpi.h>
 #include <xen/cpufreq.h>
 
 static unsigned int __read_mostly usr_min_freq;
@@ -206,6 +205,7 @@ int cpufreq_add_cpu(unsigned int cpu)
     } else {
         /* domain sanity check under whatever coordination type */
         firstcpu = cpumask_first(cpufreq_dom->map);
+#ifdef CONFIG_ACPI
         if ((perf->domain_info.coord_type !=
             processor_pminfo[firstcpu]->perf.domain_info.coord_type) ||
             (perf->domain_info.num_processors !=
@@ -221,6 +221,19 @@ int cpufreq_add_cpu(unsigned int cpu)
                 );
             return -EINVAL;
         }
+#else /* !CONFIG_ACPI */
+        if ((perf->domain_info.num_processors !=
+            processor_pminfo[firstcpu]->perf.domain_info.num_processors)) {
+
+            printk(KERN_WARNING "cpufreq fail to add CPU%d:"
+                   "incorrect num processors (%"PRIu64"), "
+                   "expect(%"PRIu64")\n",
+                   cpu, perf->domain_info.num_processors,
+                   processor_pminfo[firstcpu]->perf.domain_info.num_processors
+                );
+            return -EINVAL;
+        }
+#endif /* CONFIG_ACPI */
     }
 
     if (!domexist || hw_all) {
@@ -380,6 +393,7 @@ int cpufreq_del_cpu(unsigned int cpu)
     return 0;
 }
 
+#ifdef CONFIG_ACPI
 static void print_PCT(struct xen_pct_register *ptr)
 {
     printk("\t_PCT: descriptor=%d, length=%d, space_id=%d, "
@@ -387,12 +401,14 @@ static void print_PCT(struct xen_pct_register *ptr)
            ptr->descriptor, ptr->length, ptr->space_id, ptr->bit_width,
            ptr->bit_offset, ptr->reserved, ptr->address);
 }
+#endif /* CONFIG_ACPI */
 
 static void print_PSS(struct xen_processor_px *ptr, int count)
 {
     int i;
     printk("\t_PSS: state_count=%d\n", count);
     for (i=0; i<count; i++){
+#ifdef CONFIG_ACPI
         printk("\tState%d: %"PRId64"MHz %"PRId64"mW %"PRId64"us "
                "%"PRId64"us %#"PRIx64" %#"PRIx64"\n",
                i,
@@ -402,20 +418,67 @@ static void print_PSS(struct xen_processor_px *ptr, int count)
                ptr[i].bus_master_latency,
                ptr[i].control,
                ptr[i].status);
+#else /* !CONFIG_ACPI */
+        printk("\tState%d: %"PRId64"MHz %"PRId64"us\n",
+               i,
+               ptr[i].core_frequency,
+               ptr[i].transition_latency);
+#endif /* CONFIG_ACPI */
     }
 }
 
 static void print_PSD( struct xen_psd_package *ptr)
 {
+#ifdef CONFIG_ACPI
     printk("\t_PSD: num_entries=%"PRId64" rev=%"PRId64
            " domain=%"PRId64" coord_type=%"PRId64" num_processors=%"PRId64"\n",
            ptr->num_entries, ptr->revision, ptr->domain, ptr->coord_type,
            ptr->num_processors);
+#else /* !CONFIG_ACPI */
+    printk("\t_PSD:  domain=%"PRId64" num_processors=%"PRId64"\n",
+           ptr->domain, ptr->num_processors);
+#endif /* CONFIG_ACPI */
 }
 
 static void print_PPC(unsigned int platform_limit)
 {
     printk("\t_PPC: %d\n", platform_limit);
+}
+
+static inline bool is_pss_data(struct xen_processor_performance *px)
+{
+#ifdef CONFIG_ACPI
+    return px->flags & XEN_PX_PSS;
+#else
+    return px->flags == XEN_PX_DATA;
+#endif
+}
+
+static inline bool is_psd_data(struct xen_processor_performance *px)
+{
+#ifdef CONFIG_ACPI
+    return px->flags & XEN_PX_PSD;
+#else
+    return px->flags == XEN_PX_DATA;
+#endif
+}
+
+static inline bool is_ppc_data(struct xen_processor_performance *px)
+{
+#ifdef CONFIG_ACPI
+    return px->flags & XEN_PX_PPC;
+#else
+    return px->flags == XEN_PX_DATA;
+#endif
+}
+
+static inline bool is_all_data(struct xen_processor_performance *px)
+{
+#ifdef CONFIG_ACPI
+    return px->flags == ( XEN_PX_PCT | XEN_PX_PSS | XEN_PX_PSD | XEN_PX_PPC );
+#else
+    return px->flags == XEN_PX_DATA;
+#endif
 }
 
 int set_px_pminfo(uint32_t acpi_id, struct xen_processor_performance *dom0_px_info)
@@ -424,7 +487,11 @@ int set_px_pminfo(uint32_t acpi_id, struct xen_processor_performance *dom0_px_in
     struct processor_pminfo *pmpt;
     struct processor_performance *pxpt;
 
+#ifdef CONFIG_ACPI
     cpuid = get_cpu_id(acpi_id);
+#else
+    cpuid = acpi_id;
+#endif
     if ( cpuid < 0 || !dom0_px_info)
     {
         ret = -EINVAL;
@@ -446,6 +513,8 @@ int set_px_pminfo(uint32_t acpi_id, struct xen_processor_performance *dom0_px_in
         processor_pminfo[cpuid] = pmpt;
     }
     pxpt = &pmpt->perf;
+
+#ifdef CONFIG_ACPI
     pmpt->acpi_id = acpi_id;
     pmpt->id = cpuid;
 
@@ -472,8 +541,9 @@ int set_px_pminfo(uint32_t acpi_id, struct xen_processor_performance *dom0_px_in
             print_PCT(&pxpt->status_register);
         }
     }
+#endif /* CONFIG_ACPI */
 
-    if ( dom0_px_info->flags & XEN_PX_PSS ) 
+    if ( is_pss_data(dom0_px_info) )
     {
         /* capability check */
         if (dom0_px_info->state_count <= 1)
@@ -500,7 +570,7 @@ int set_px_pminfo(uint32_t acpi_id, struct xen_processor_performance *dom0_px_in
             print_PSS(pxpt->states,pxpt->state_count);
     }
 
-    if ( dom0_px_info->flags & XEN_PX_PSD )
+    if ( is_psd_data(dom0_px_info) )
     {
         /* check domain coordination */
         if (dom0_px_info->shared_type != CPUFREQ_SHARED_TYPE_ALL &&
@@ -520,7 +590,7 @@ int set_px_pminfo(uint32_t acpi_id, struct xen_processor_performance *dom0_px_in
             print_PSD(&pxpt->domain_info);
     }
 
-    if ( dom0_px_info->flags & XEN_PX_PPC )
+    if ( is_ppc_data(dom0_px_info) )
     {
         pxpt->platform_limit = dom0_px_info->platform_limit;
 
@@ -534,8 +604,7 @@ int set_px_pminfo(uint32_t acpi_id, struct xen_processor_performance *dom0_px_in
         }
     }
 
-    if ( dom0_px_info->flags == ( XEN_PX_PCT | XEN_PX_PSS |
-                XEN_PX_PSD | XEN_PX_PPC ) )
+    if ( is_all_data(dom0_px_info) )
     {
         pxpt->init = XEN_PX_INIT;
 
