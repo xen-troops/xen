@@ -183,7 +183,7 @@ static int coproc_attach_to_domain(struct domain *d,
         goto out;
     }
 
-    if ( coproc->need_iommu )
+    if ( coproc->driver_features & COPROC_DRIVER_NEED_IOMMU )
     {
         ret = iommu_assign_coproc(d, coproc->dev);
         if ( ret )
@@ -198,7 +198,7 @@ static int coproc_attach_to_domain(struct domain *d,
     ret = vcoproc_scheduler_vcoproc_init(coproc->sched, vcoproc);
     if ( ret )
     {
-        if ( coproc->need_iommu )
+        if ( coproc->driver_features & COPROC_DRIVER_NEED_IOMMU )
             iommu_deassign_coproc(d, coproc->dev);
         coproc_deinit_vcoproc(vcoproc);
         goto out;
@@ -250,7 +250,7 @@ static int coproc_detach_from_domain(struct domain *d,
         goto out;
     }
 
-    if ( coproc->need_iommu )
+    if ( coproc->driver_features & COPROC_DRIVER_NEED_IOMMU )
     {
         ret = iommu_deassign_coproc(d, coproc->dev);
         if ( ret )
@@ -307,7 +307,8 @@ bool_t coproc_is_protected(device_t *dev)
 }
 
 struct coproc_device *coproc_alloc(struct dt_device_node *np,
-                                   const struct coproc_ops *ops)
+                                   const struct coproc_ops *ops,
+                                   u32 driver_features)
 {
     struct coproc_device *coproc;
     struct device *dev = &np->dev;
@@ -322,7 +323,7 @@ struct coproc_device *coproc_alloc(struct dt_device_node *np,
         return ERR_PTR(-ENOMEM);
     }
     coproc->dev = dev;
-
+    coproc->driver_features = driver_features;
     num_mmios = dt_number_of_address(np);
 
     if ( !num_mmios )
@@ -612,7 +613,8 @@ int __init coproc_register(struct coproc_device *coproc)
     spin_unlock(&coprocs_lock);
 
     printk("Registered new coproc \"%s\" (IOMMU %s needed)\n",
-           dev_path(coproc->dev), coproc->need_iommu ? "is" : "isn't");
+           dev_path(coproc->dev),
+           coproc->driver_features & COPROC_DRIVER_NEED_IOMMU ? "is" : "isn't");
 
     return 0;
 }

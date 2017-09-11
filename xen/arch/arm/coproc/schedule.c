@@ -250,7 +250,7 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
 
         if ( wait_time == 0 )
         {
-            if ( coproc->need_iommu )
+            if ( coproc->driver_features & COPROC_DRIVER_NEED_IOMMU )
             {
                 ret = iommu_disable_coproc(curr->domain, coproc->dev);
                 if ( unlikely(ret) )
@@ -276,7 +276,7 @@ static s_time_t vcoproc_scheduler_context_switch(struct vcoproc_instance *curr,
     {
         ASSERT(next->state == VCOPROC_WAITING);
 
-        if ( coproc->need_iommu )
+        if ( coproc->driver_features & COPROC_DRIVER_NEED_IOMMU )
         {
             ret = iommu_enable_coproc(next->domain, coproc->dev);
             if ( unlikely(ret) )
