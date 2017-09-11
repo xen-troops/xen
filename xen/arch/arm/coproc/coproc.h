@@ -95,6 +95,17 @@ struct coproc_ops {
     s_time_t (*ctx_switch_from)(struct vcoproc_instance *);
     /* callback to perform context switch to the waiting vcoproc instance */
     int (*ctx_switch_to)(struct vcoproc_instance *);
+    /* callback to control MMIO range mapping: check if MMIO range needs to
+     * be mapped to the domain given (range_addr and range_size define
+     * the MMIO range):
+     *  - if not, then return false
+     *  - if yes, then return true and set map_addr and map_size
+     *    to the range required. If multiple subranges are required to
+     *    be mapped, then return the first one in the range, so the framework
+     *    calls us again with updated range_addr and range_size
+     */
+    bool_t (*need_map_range_to_domain)(struct vcoproc_instance *,
+                                       u64, u64, u64 *, u64 *);
 };
 
 /* vcoproc read/write operation context */
@@ -198,6 +209,8 @@ void vcoproc_domain_free(struct domain *);
 int coproc_do_domctl(struct xen_domctl *, struct domain *,
                      XEN_GUEST_HANDLE_PARAM(xen_domctl_t));
 bool_t coproc_is_attached_to_domain(struct domain *, const char *);
+bool_t coproc_need_map_range_to_domain(struct domain *, const char *,
+                                       u64 , u64, u64 *, u64 *);
 void vcoproc_continue_running(struct vcoproc_instance *);
 int coproc_release_vcoprocs(struct domain *);
 bool_t coproc_is_protected(device_t *);
