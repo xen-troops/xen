@@ -31,6 +31,8 @@
 
 /* the IOMMU is needed for this coproc */
 #define COPROC_DRIVER_NEED_IOMMU	0x1
+/* no scheduler instance is needed for this coproc */
+#define COPROC_DRIVER_NO_SCHEDULER	0x2
 
 /* coproc memory range */
 struct mmio {
