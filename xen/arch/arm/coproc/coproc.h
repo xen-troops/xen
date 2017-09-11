@@ -29,6 +29,9 @@
 
 #include "schedule.h"
 
+/* the IOMMU is needed for this coproc */
+#define COPROC_DRIVER_NEED_IOMMU	0x1
+
 /* coproc memory range */
 struct mmio {
     u64 addr;
@@ -52,8 +55,8 @@ struct coproc_device {
     /* the array of irqs for this coproc */
     unsigned int *irqs;
 
-    /* the IOMMU is needed for this coproc */
-    bool need_iommu;
+    /* driver capabilities and requirements mask */
+    u32 driver_features;
 
     /*
      * this list is used to append this coproc
@@ -179,7 +182,7 @@ enum COPROC_DBG_LEVEL
 
 void coproc_init(void);
 struct coproc_device * coproc_alloc(struct dt_device_node *,
-                                    const struct coproc_ops *);
+                                    const struct coproc_ops *, u32);
 int coproc_register(struct coproc_device *);
 void coproc_release(struct coproc_device *);
 struct vcoproc_instance *coproc_get_vcoproc(struct domain *,
