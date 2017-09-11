@@ -571,7 +571,7 @@ static int gx6xxx_dt_probe(struct dt_device_node *np)
     char *reg_base;
     int ret;
 
-    coproc = coproc_alloc(np, &gx6xxx_vcoproc_ops);
+    coproc = coproc_alloc(np, &gx6xxx_vcoproc_ops, 0);
     if ( IS_ERR_OR_NULL(coproc) )
         return PTR_ERR(coproc);
 
@@ -600,7 +600,7 @@ static int gx6xxx_dt_probe(struct dt_device_node *np)
      */
     if ( dt_count_phandle_with_args(dev->of_node, "iommus",
          "#iommu-cells") > 0 )
-        coproc->need_iommu = true;
+        coproc->driver_features |= COPROC_DRIVER_NEED_IOMMU;
 
     ret = request_irq(coproc->irqs[0], IRQF_SHARED,
                       gx6xxx_irq_handler, "GPU GX6xxx irq", coproc);
