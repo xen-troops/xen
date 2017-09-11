@@ -136,12 +136,9 @@ static int coproc_xxx_dt_probe(struct dt_device_node *np)
     struct device *dev = &np->dev;
     int i, ret;
 
-    coproc_xxx = coproc_alloc(np, &vcoproc_xxx_vcoproc_ops);
+    coproc_xxx = coproc_alloc(np, &vcoproc_xxx_vcoproc_ops, 0);
     if ( IS_ERR_OR_NULL(coproc_xxx) )
         return PTR_ERR(coproc_xxx);
-
-    /* Just to be sure */
-    coproc_xxx->need_iommu = false;
 
     for ( i = 0; i < coproc_xxx->num_irqs; ++i )
     {
