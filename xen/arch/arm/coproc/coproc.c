@@ -296,6 +296,38 @@ bool_t coproc_is_attached_to_domain(struct domain *d, const char *path)
 }
 
 /*
+ * Check if MMIO range needs to be mapped to the domain given
+ * (range_addr and range_size define the MMIO range):
+ *  - if not, then return false
+ *  - if yes, then return true and set map_addr and map_size
+ *    to the range required. If multiple subranges are required to
+ *    be mapped, then return the first one in the range, so the framework
+ *    calls us again with updated range_addr and range_size
+ */
+bool_t coproc_need_map_range_to_domain(struct domain *d, const char *path,
+                                       u64 range_addr, u64 range_size,
+                                       u64 *map_addr, u64 *map_size)
+{
+    struct coproc_device *coproc;
+    int ret = false;
+
+    *map_addr = range_addr;
+    *map_size = range_size;
+
+    coproc = coproc_find_by_path(path);
+    if ( !coproc )
+	return false;
+
+    spin_lock(&coprocs_lock);
+    if ( coproc->ops->need_map_range_to_domain )
+        ret = coproc->ops->need_map_range_to_domain(coproc_get_vcoproc(d, coproc),
+                                                    range_addr, range_size,
+                                                    map_addr, map_size);
+    spin_unlock(&coprocs_lock);
+    return ret;
+}
+
+/*
  * To check if this device has been marked as protected by IOMMU and
  * as the result can be assigned to the IOMMU context.
  * As we only have device-tree support for now treat potential coproc device
