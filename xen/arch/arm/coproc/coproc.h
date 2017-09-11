@@ -33,6 +33,8 @@
 #define COPROC_DRIVER_NEED_IOMMU	0x1
 /* no scheduler instance is needed for this coproc */
 #define COPROC_DRIVER_NO_SCHEDULER	0x2
+/* setup, but do not auto map MMIO ranges of the device if any */
+#define COPROC_DRIVER_NO_MMIO_MAP	0x4
 
 /* coproc memory range */
 struct mmio {

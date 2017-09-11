@@ -360,13 +360,16 @@ struct coproc_device *coproc_alloc(struct dt_device_node *np,
             goto out;
         }
 
-        mmio->base = ioremap_nocache(mmio->addr, mmio->size);
-        if ( !mmio->base )
+        if ( !(coproc->driver_features & COPROC_DRIVER_NO_MMIO_MAP) )
         {
-            printk("Failed to remap mmio index %d for \"%s\"\n",
-                   i, dev_path(coproc->dev));
-            ret = -ENOMEM;
-            goto out;
+            mmio->base = ioremap_nocache(mmio->addr, mmio->size);
+            if ( !mmio->base )
+            {
+                printk("Failed to remap mmio index %d for \"%s\"\n",
+                       i, dev_path(coproc->dev));
+                ret = -ENOMEM;
+                goto out;
+            }
         }
         mmio->coproc = coproc;
     }
@@ -424,11 +427,12 @@ void coproc_release(struct coproc_device *coproc)
     if ( IS_ERR_OR_NULL(coproc) )
         return;
     xfree(coproc->irqs);
-    for ( i = 0; i < coproc->num_mmios; i++ )
-    {
-        if ( !IS_ERR_OR_NULL(coproc->mmios[i].base) )
-            iounmap(coproc->mmios[i].base);
-    }
+    if ( !(coproc->driver_features & COPROC_DRIVER_NO_MMIO_MAP) )
+        for ( i = 0; i < coproc->num_mmios; i++ )
+        {
+            if ( !IS_ERR_OR_NULL(coproc->mmios[i].base) )
+                iounmap(coproc->mmios[i].base);
+        }
     xfree(coproc->mmios);
     xfree(coproc);
 }
