@@ -195,13 +195,16 @@ static int coproc_attach_to_domain(struct domain *d,
         }
     }
 
-    ret = vcoproc_scheduler_vcoproc_init(coproc->sched, vcoproc);
-    if ( ret )
+    if ( !(coproc->driver_features & COPROC_DRIVER_NO_SCHEDULER) )
     {
-        if ( coproc->driver_features & COPROC_DRIVER_NEED_IOMMU )
-            iommu_deassign_coproc(d, coproc->dev);
-        coproc_deinit_vcoproc(vcoproc);
-        goto out;
+        ret = vcoproc_scheduler_vcoproc_init(coproc->sched, vcoproc);
+        if ( ret )
+        {
+            if ( coproc->driver_features & COPROC_DRIVER_NEED_IOMMU )
+                iommu_deassign_coproc(d, coproc->dev);
+            coproc_deinit_vcoproc(vcoproc);
+            goto out;
+        }
     }
 
     BUG_ON(vcoproc_d->num_instances >= num_coprocs);
@@ -242,12 +245,15 @@ static int coproc_detach_from_domain(struct domain *d,
 
     coproc = vcoproc->coproc;
 
-    ret = vcoproc_scheduler_vcoproc_destroy(coproc->sched, vcoproc);
-    if ( ret )
+    if ( !(coproc->driver_features & COPROC_DRIVER_NO_SCHEDULER) )
     {
-        if ( ret == -EBUSY )
-            ret = -ERESTART;
-        goto out;
+        ret = vcoproc_scheduler_vcoproc_destroy(coproc->sched, vcoproc);
+        if ( ret )
+        {
+            if ( ret == -EBUSY )
+                ret = -ERESTART;
+            goto out;
+        }
     }
 
     if ( coproc->driver_features & COPROC_DRIVER_NEED_IOMMU )
@@ -603,9 +609,12 @@ int __init coproc_register(struct coproc_device *coproc)
     if ( coproc_find_by_path(dev_path(coproc->dev)) )
         return -EEXIST;
 
-    coproc->sched = vcoproc_scheduler_init(coproc);
-    if ( IS_ERR(coproc->sched) )
-        return PTR_ERR(coproc->sched);
+    if ( !(coproc->driver_features & COPROC_DRIVER_NO_SCHEDULER) )
+    {
+        coproc->sched = vcoproc_scheduler_init(coproc);
+        if ( IS_ERR(coproc->sched) )
+            return PTR_ERR(coproc->sched);
+    }
 
     spin_lock(&coprocs_lock);
     list_add_tail(&coproc->coproc_elem, &coprocs);
