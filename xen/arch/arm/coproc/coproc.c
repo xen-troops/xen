@@ -437,6 +437,36 @@ void coproc_release(struct coproc_device *coproc)
     xfree(coproc);
 }
 
+void *coproc_map_offset(struct coproc_device *coproc, u32 mmio_idx,
+                                u64 offset, u64 size)
+{
+    void *base;
+
+    if ( mmio_idx > coproc->num_mmios )
+        return ERR_PTR(-EINVAL);
+
+    if ( offset + size > coproc->mmios[mmio_idx].size )
+        return ERR_PTR(-EINVAL);
+
+    /* if offset is not on page boundary then align */
+    base = ioremap_nocache(coproc->mmios[mmio_idx].addr + (offset & PAGE_MASK),
+                           size);
+    if ( !base )
+    {
+        printk("Failed to remap mmio index %d offset %lx size %lu for \"%s\"\n",
+               mmio_idx, offset, size, dev_path(coproc->dev));
+        return NULL;
+    }
+
+    return base + (offset & ~PAGE_MASK);
+}
+
+void coproc_unmap(void *va)
+{
+    if ( !IS_ERR_OR_NULL(va) )
+        iounmap((void __iomem *)((u64)va & PAGE_MASK));
+}
+
 static int __init vcoproc_dom0_init(struct domain *d)
 {
     const char *curr, *next;
