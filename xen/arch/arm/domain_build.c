@@ -1106,9 +1106,11 @@ static int map_device_children(struct domain *d,
 
 #ifdef CONFIG_HAS_COPROC
 /* Just give permission to the guest to manage coproc IRQs for now */
-static int handle_coproc_node(struct domain *d, struct dt_device_node *dev)
+static int handle_coproc_node(struct domain *d, struct dt_device_node *dev,
+                              const char *path, p2m_type_t p2mt,
+                              bool_t need_mapping)
 {
-    unsigned int nirq, i;
+    unsigned int nirq, num_mmios, i;
     struct dt_raw_irq rirq;
     int res;
 
@@ -1154,6 +1156,44 @@ static int handle_coproc_node(struct domain *d, struct dt_device_node *dev)
         }
     }
 
+    if ( !need_mapping )
+        return 0;
+
+    /* Map MMIO ranges (which coproc doesn't want to trap) to domain */
+    num_mmios = dt_number_of_address(dev);
+    for ( i = 0; i < num_mmios; i++ )
+    {
+        struct map_range_data mr_data = { .d = d, .p2mt = p2mt };
+        u64 addr, size;
+        u64 map_addr, map_size;
+
+        res = dt_device_get_address(dev, i, &addr, &size);
+        if ( res )
+        {
+            printk(XENLOG_ERR "Unable to retrieve mmio %u for %s\n",
+                   i, dt_node_full_name(dev));
+            return res;
+        }
+
+        while ( coproc_need_map_range_to_domain(d, path, addr, size,
+                                             &map_addr, &map_size) )
+        {
+            /* check if the result is ok and map the chunk */
+            if ( (map_addr + map_size > addr + size) || (map_addr < addr) )
+            {
+                printk(XENLOG_ERR "Invalid mmio range mapping requested by coproc at %lx of size %lu for %s\n",
+                       map_addr, map_size, dt_node_full_name(dev));
+                return res;
+            }
+            res = map_range_to_domain(dev, map_addr, map_size, &mr_data);
+            if ( res )
+                return res;
+
+            /* advance counters to the new chunk */
+            addr = map_addr;
+            size -= map_size;
+        }
+    }
     return 0;
 }
 #endif
@@ -1321,11 +1361,13 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
 #ifdef CONFIG_HAS_COPROC
     if ( dt_device_for_coproc(node) )
     {
-        res = handle_coproc_node(d, node);
+        bool_t is_attached = coproc_is_attached_to_domain(d, path);
+
+        res = handle_coproc_node(d, node, path, p2mt, is_attached);
         if ( res)
             return res;
 
-        if ( coproc_is_attached_to_domain(d, path) )
+        if ( is_attached )
             return make_coproc_node(d, kinfo->fdt, node);
         else
         {
