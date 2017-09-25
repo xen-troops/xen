@@ -374,6 +374,26 @@ const struct dt_property *dt_find_property(const struct dt_device_node *np,
  */
 bool_t dt_property_read_u32(const struct dt_device_node *np,
                             const char *name, u32 *out_value);
+
+/**
+ * dt_property_read_u32_index - Find and read a u32 from a multi-value property.
+ *
+ * @np:        device node from which the property value is to be read.
+ * @propname:  name of the property to be searched.
+ * @index:     index of the u32 in the list of values
+ * @out_value: pointer to return value, modified only if no error.
+ *
+ * Search for a property in a device node and read nth 32-bit value from
+ * it. Returns 0 on success, -EINVAL if the property does not exist,
+ * -ENODATA if property does not have a value, and -EOVERFLOW if the
+ * property data isn't large enough.
+ *
+ * The out_value is modified only if a valid u32 value can be decoded.
+ */
+int dt_property_read_u32_index(const struct dt_device_node *np,
+                               const char *propname,
+                               u32 index, u32 *out_value);
+
 /**
  * dt_property_read_u64 - Helper to read a u64 property.
  * @np: node to get the value
