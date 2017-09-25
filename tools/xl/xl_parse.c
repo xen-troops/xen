@@ -851,6 +851,254 @@ out:
     return rc;
 }
 
+static int parse_vsnd_params(libxl_vsnd_params *params, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("sample-rates", token, oparg)) {
+        int i;
+        libxl_string_list rates = NULL;
+
+        split_string_into_string_list(oparg, ";", &rates);
+
+        params->num_sample_rates = libxl_string_list_length(&rates);
+        params->sample_rates = calloc(params->num_sample_rates,
+                                      sizeof(*params->sample_rates));
+
+        for (i = 0; i < params->num_sample_rates; i++) {
+            params->sample_rates[i] = strtoul(rates[i], NULL, 0);
+        }
+
+        libxl_string_list_dispose(&rates);
+    } else if (MATCH_OPTION("sample-formats", token, oparg)) {
+        int i;
+        libxl_string_list formats = NULL;
+
+        split_string_into_string_list(oparg, ";", &formats);
+
+        params->num_sample_formats = libxl_string_list_length(&formats);
+        params->sample_formats = calloc(params->num_sample_formats,
+                                        sizeof(*params->sample_formats));
+
+        for (i = 0; i < params->num_sample_formats; i++) {
+            libxl_vsnd_pcm_format format;
+
+            if (libxl_vsnd_pcm_format_from_string(formats[i], &format)) {
+                fprintf(stderr, "Invalid pcm format: %s\n", formats[i]);
+                exit(EXIT_FAILURE);
+            }
+
+            params->sample_formats[i] = format;
+        }
+
+        libxl_string_list_dispose(&formats);
+    } else if (MATCH_OPTION("channels-min", token, oparg)) {
+        params->channels_min = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("channels-max", token, oparg)) {
+        params->channels_max = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("buffer-size", token, oparg)) {
+        params->buffer_size = strtoul(oparg, NULL, 0);
+    } else {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_pcm_stream(libxl_device_vsnd *vsnd, char *param)
+{
+    if (vsnd->num_vsnd_pcms == 0) {
+        fprintf(stderr, "No vsnd pcm device\n");
+        return -1;
+    }
+
+    libxl_vsnd_pcm *pcm = &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+    if (pcm->num_vsnd_streams == 0) {
+        fprintf(stderr, "No vsnd stream\n");
+        return -1;
+    }
+
+    libxl_vsnd_stream *stream = &pcm->streams[pcm->num_vsnd_streams - 1];
+
+    if (parse_vsnd_params(&stream->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION("id", param, oparg)) {
+            stream->id = strtoul(oparg, NULL, 0);
+        } else if (MATCH_OPTION("type", param, oparg)) {
+
+            if (libxl_vsnd_stream_type_from_string(oparg, &stream->type)) {
+                fprintf(stderr, "Invalid stream type: %s\n", oparg);
+                return -1;
+            }
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_pcm_param(libxl_device_vsnd *vsnd, char *param)
+{
+    if (vsnd->num_vsnd_pcms == 0) {
+        fprintf(stderr, "No pcm device\n");
+        return -1;
+    }
+
+    libxl_vsnd_pcm *pcm = &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+    if (parse_vsnd_params(&pcm->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION("name", param, oparg)) {
+            pcm->name = strdup(oparg);
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_card_param(libxl_device_vsnd *vsnd, char *param)
+{
+    if (parse_vsnd_params(&vsnd->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION("backend", param, oparg)) {
+            vsnd->backend_domname = strdup(oparg);
+        } else if (MATCH_OPTION("short-name", param, oparg)) {
+            vsnd->short_name = strdup(oparg);
+        } else if (MATCH_OPTION("long-name", param, oparg)) {
+            vsnd->long_name = strdup(oparg);
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_create_item(libxl_device_vsnd *vsnd, const char *key)
+{
+    if (strcasecmp(key, "card") == 0) {
+
+    } else if (strcasecmp(key, "pcm") == 0) {
+        ARRAY_EXTEND_INIT_NODEVID(vsnd->pcms, vsnd->num_vsnd_pcms,
+                                  libxl_vsnd_pcm_init);
+    } else if (strcasecmp(key, "stream") == 0) {
+        if (vsnd->num_vsnd_pcms == 0) {
+            ARRAY_EXTEND_INIT_NODEVID(vsnd->pcms, vsnd->num_vsnd_pcms,
+                                      libxl_vsnd_pcm_init);
+        }
+
+        libxl_vsnd_pcm *pcm =  &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+        ARRAY_EXTEND_INIT_NODEVID(pcm->streams, pcm->num_vsnd_streams,
+                                  libxl_vsnd_stream_init);
+    } else {
+        fprintf(stderr, "Invalid key: %s\n", key);
+        return -1;
+    }
+
+    return 0;
+}
+
+int parse_vsnd_item(libxl_device_vsnd *vsnd, const char *spec)
+{
+    char *buf = strdup(spec);
+    char *token = strtok(buf, ",");
+    char *key = NULL;
+    int ret;
+
+    while(token) {
+        while (*token == ' ') token++;
+
+        if (!key) {
+            key = token;
+            ret = parse_vsnd_create_item(vsnd, key);
+            if (ret) goto out;
+        } else {
+            if (strcasecmp(key, "card") == 0) {
+                ret = parse_vsnd_card_param(vsnd, token);
+                if (ret) goto out;
+            } else if (strcasecmp(key, "pcm") == 0) {
+                ret = parse_vsnd_pcm_param(vsnd, token);
+                if (ret) goto out;
+            } else if (strcasecmp(key, "stream") == 0) {
+                ret = parse_vsnd_pcm_stream(vsnd, token);
+                if (ret) goto out;
+            }
+        }
+        token = strtok (NULL, ",");
+    }
+
+    ret = 0;
+
+out:
+    free(buf);
+    return ret;
+}
+
+static void parse_vsnd_card_config(const XLU_Config *config,
+                                   XLU_ConfigValue *card_value,
+                                   libxl_domain_config *d_config)
+{
+    int ret;
+
+    XLU_ConfigList *card_list;
+
+    // get card
+    ret = xlu_cfg_value_get_list(config, card_value,  &card_list, 0);
+
+    if (ret) {
+        fprintf(stderr, "Failed to get vsnd card list: %s\n", strerror(ret));
+        goto out;
+    }
+
+    libxl_device_vsnd *vsnd;
+
+    vsnd = ARRAY_EXTEND_INIT(d_config->vsnds,
+                             d_config->num_vsnds,
+                             libxl_device_vsnd_init);
+
+    const char *card_item;
+    int item = 0;
+
+    while ((card_item = xlu_cfg_get_listitem(card_list, item++)) != NULL) {
+        ret = parse_vsnd_item(vsnd, card_item);
+        if (ret) goto out;
+    }
+
+    ret = 0;
+
+out:
+    if (ret) exit(EXIT_FAILURE);
+}
+
+static void parse_vsnd_config(const XLU_Config *config,
+                              libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vsnds;
+
+    if (!xlu_cfg_get_list(config, "vsnd", &vsnds, 0, 0)) {
+        XLU_ConfigValue *card_value;
+
+        d_config->num_vsnds = 0;
+        d_config->vsnds = NULL;
+
+        while ((card_value = xlu_cfg_get_listitem2(vsnds, d_config->num_vsnds))
+               != NULL) {
+            parse_vsnd_card_config(config, card_value, d_config);
+        }
+    }
+}
+
 void parse_config_data(const char *config_source,
                        const char *config_data,
                        int config_len,
@@ -1679,6 +1927,8 @@ void parse_config_data(const char *config_source,
             }
         }
     }
+
+    parse_vsnd_config(config, d_config);
 
     if (!xlu_cfg_get_list (config, "channel", &channels, 0, 0)) {
         d_config->num_channels = 0;
