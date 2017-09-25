@@ -420,6 +420,27 @@ int dt_property_read_string(const struct dt_device_node *np,
                             const char *propname, const char **out_string);
 
 /**
+ * dt_property_for_each_string - Iterate over an array of strings within
+ * a property with a given name for a given node.
+ *
+ * Example:
+ *
+ * struct dt_property *prop;
+ * const char *s;
+ *
+ * dt_property_for_each_string(np, "propname", prop, s)
+ *     printk("String value: %s\n", s);
+ */
+const char *dt_property_next_string(const struct dt_property *prop,
+                                    const char *cur);
+
+#define dt_property_for_each_string(np, propname, prop, s)    \
+    for (prop = dt_find_property(np, propname, NULL),         \
+        s = dt_property_next_string(prop, NULL);              \
+        s;                                                    \
+        s = dt_property_next_string(prop, s))
+
+/**
  * Checks if the given "compat" string matches one of the strings in
  * the device's "compatible" property
  */
