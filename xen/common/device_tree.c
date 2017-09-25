@@ -208,6 +208,24 @@ int dt_property_read_string(const struct dt_device_node *np,
     return 0;
 }
 
+const char *dt_property_next_string(const struct dt_property *prop,
+                                    const char *cur)
+{
+    const void *curv = cur;
+
+    if ( !prop )
+        return NULL;
+
+    if ( !cur )
+        return prop->value;
+
+    curv += strlen(cur) + 1;
+    if ( curv >= prop->value + prop->length )
+        return NULL;
+
+    return curv;
+}
+
 bool_t dt_device_is_compatible(const struct dt_device_node *device,
                                const char *compat)
 {
