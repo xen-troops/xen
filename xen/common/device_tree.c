@@ -176,6 +176,58 @@ bool_t dt_property_read_u32(const struct dt_device_node *np,
     return 1;
 }
 
+/**
+ * dt_find_property_value_of_size
+ *
+ * @np:       device node from which the property value is to be read.
+ * @propname: name of the property to be searched.
+ * @min:      minimum allowed length of property value
+ * @max:      maximum allowed length of property value (0 means unlimited)
+ * @len:      if !=NULL, actual length is written to here
+ *
+ * Search for a property in a device node and valid the requested size.
+ * Returns the property value on success, -EINVAL if the property does not
+ * exist, -ENODATA if property does not have a value, and -EOVERFLOW if the
+ * property data is too small or too large.
+ */
+static void *dt_find_property_value_of_size(const struct dt_device_node *np,
+                                            const char *propname,
+                                            u32 min, u32 max, size_t *len)
+{
+    const struct dt_property *prop = dt_find_property(np, propname, NULL);
+
+    if ( !prop )
+        return ERR_PTR(-EINVAL);
+    if ( !prop->value )
+        return ERR_PTR(-ENODATA);
+    if ( prop->length < min )
+        return ERR_PTR(-EOVERFLOW);
+    if ( max && prop->length > max )
+        return ERR_PTR(-EOVERFLOW);
+
+    if ( len )
+        *len = prop->length;
+
+    return prop->value;
+}
+
+int dt_property_read_u32_index(const struct dt_device_node *np,
+                               const char *propname,
+                               u32 index, u32 *out_value)
+{
+    const u32 *val =
+        dt_find_property_value_of_size(np, propname,
+                                       ((index + 1) * sizeof(*out_value)),
+                                       0,
+                                       NULL);
+
+    if ( IS_ERR(val) )
+        return PTR_ERR(val);
+
+    *out_value = be32_to_cpup(((__be32 *)val) + index);
+
+    return 0;
+}
 
 bool_t dt_property_read_u64(const struct dt_device_node *np,
                          const char *name, u64 *out_value)
