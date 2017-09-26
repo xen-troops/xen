@@ -461,6 +461,21 @@ const char *dt_property_next_string(const struct dt_property *prop,
         s = dt_property_next_string(prop, s))
 
 /**
+ * dt_property_count_elems_of_size - Count the number of elements in a property
+ *
+ * @np:        device node from which the property value is to be read.
+ * @propname:  name of the property to be searched.
+ * @elem_size: size of the individual element
+ *
+ * Search for a property in a device node and count the number of elements of
+ * size elem_size in it. Returns number of elements on sucess, -EINVAL if the
+ * property does not exist or its length does not match a multiple of elem_size
+ * and -ENODATA if the property does not have a value.
+ */
+int dt_property_count_elems_of_size(const struct dt_device_node *np,
+                                    const char *propname, int elem_size);
+
+/**
  * Checks if the given "compat" string matches one of the strings in
  * the device's "compatible" property
  */
