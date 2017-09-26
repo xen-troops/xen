@@ -278,6 +278,26 @@ const char *dt_property_next_string(const struct dt_property *prop,
     return curv;
 }
 
+int dt_property_count_elems_of_size(const struct dt_device_node *np,
+                                    const char *propname, int elem_size)
+{
+    const struct dt_property *prop = dt_find_property(np, propname, NULL);
+
+    if ( !prop )
+        return -EINVAL;
+    if ( !prop->value )
+        return -ENODATA;
+
+    if ( prop->length % elem_size != 0 )
+    {
+        printk("%s: size of %s is not a multiple of %d\n", np->full_name,
+               propname, elem_size);
+        return -EINVAL;
+    }
+
+    return prop->length / elem_size;
+}
+
 bool_t dt_device_is_compatible(const struct dt_device_node *device,
                                const char *compat)
 {
