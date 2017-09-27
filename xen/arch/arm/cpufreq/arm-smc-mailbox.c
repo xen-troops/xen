@@ -8,14 +8,73 @@
  * This device provides a mechanism for emulating a mailbox by using
  * smc calls, allowing a "mailbox" consumer to sit in firmware running
  * on the same core.
+ *
+ * Based on patch series which hasn't reach upstream yet:
+ * => https://lkml.org/lkml/2017/7/23/129
+ *    [PATCH v2 0/3] mailbox: arm: introduce smc triggered mailbox
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2017 EPAM Systems Inc.
  */
 
+#if 0
 #include <linux/device.h>
 #include <linux/kernel.h>
 #include <linux/mailbox_controller.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/arm-smccc.h>
+#endif
+
+#include <xen/device_tree.h>
+#include <xen/err.h>
+#include <xen/xmalloc.h>
+
+#include "mailbox_controller.h"
+#include "wrappers.h"
+
+/*
+ * TODO:
+ * 1. Add releasing resources since devm.
+ */
+
+struct arm_smccc_res {
+	unsigned long a0;
+	unsigned long a1;
+	unsigned long a2;
+	unsigned long a3;
+};
+
+/* This is just to align interfaces. */
+static inline void arm_smccc_smc(unsigned long a0, unsigned long a1,
+		unsigned long a2, unsigned long a3, unsigned long a4,
+		unsigned long a5, unsigned long a6, unsigned long a7,
+		struct arm_smccc_res *res)
+{
+	register_t ret[4] = { 0 };
+
+	call_smccc_smc(a0, a1, a2, a3, a4, a5, a6, a7, ret);
+
+	res->a0 = ret[0];
+	res->a1 = ret[1];
+	res->a2 = ret[2];
+	res->a3 = ret[3];
+}
+
+static inline void arm_smccc_hvc(unsigned long a0, unsigned long a1,
+		unsigned long a2, unsigned long a3, unsigned long a4,
+		unsigned long a5, unsigned long a6, unsigned long a7,
+		struct arm_smccc_res *res)
+{
+	/*
+	 * We should never get here since the "use_hvc" flag is always false
+	 * (smc is only allowed method).
+	*/
+	BUG();
+}
+
+/***** Start of Linux code *****/
 
 #define ARM_SMC_MBOX_USE_HVC	BIT(0)
 
@@ -69,6 +128,9 @@ static int arm_smc_mbox_probe(struct platform_device *pdev)
 	if (!of_property_read_string(dev->of_node, "method", &method)) {
 		if (!strcmp("hvc", method)) {
 			use_hvc = true;
+
+			dev_warn(dev,"method must be smc\n");
+			return -EINVAL;
 		} else if (!strcmp("smc", method)) {
 			use_hvc = false;
 		} else {
@@ -112,6 +174,11 @@ static int arm_smc_mbox_probe(struct platform_device *pdev)
 	mbox->txdone_poll = true;
 	mbox->txdone_irq = false;
 	mbox->txpoll_period = 1;
+	/*
+	 * We don't have RX-done irq, but always have received data in hand since
+	 * mailbox is synchronous.
+	 */
+	mbox->rxdone_auto = true;
 	mbox->ops = &arm_smc_mbox_chan_ops;
 	mbox->dev = dev;
 
@@ -126,6 +193,7 @@ static int arm_smc_mbox_probe(struct platform_device *pdev)
 	return ret;
 }
 
+#if 0
 static int arm_smc_mbox_remove(struct platform_device *pdev)
 {
 	struct mbox_controller *mbox = platform_get_drvdata(pdev);
@@ -133,6 +201,7 @@ static int arm_smc_mbox_remove(struct platform_device *pdev)
 	mbox_controller_unregister(mbox);
 	return 0;
 }
+#endif
 
 static const struct of_device_id arm_smc_mbox_of_match[] = {
 	{ .compatible = "arm,smc-mbox", },
@@ -140,6 +209,7 @@ static const struct of_device_id arm_smc_mbox_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, arm_smc_mbox_of_match);
 
+#if 0
 static struct platform_driver arm_smc_mbox_driver = {
 	.driver = {
 		.name = "arm-smc-mbox",
@@ -153,3 +223,34 @@ module_platform_driver(arm_smc_mbox_driver);
 MODULE_AUTHOR("Andre Przywara <andre.przywara@arm.com>");
 MODULE_DESCRIPTION("Generic ARM smc mailbox driver");
 MODULE_LICENSE("GPL v2");
+#endif
+
+/***** End of Linux code *****/
+
+static int __init arm_smc_mbox_init(struct dt_device_node *dev,
+		const void *data)
+{
+	int ret;
+
+	ret = arm_smc_mbox_probe(dev);
+	if (ret) {
+		dev_err(&dev->dev, "failed to init ARM SMC mailbox (%d)\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+DT_DEVICE_START(arm_smc_mbox, "ARM SMC mailbox", DEVICE_MAILBOX)
+	.dt_match = arm_smc_mbox_of_match,
+	.init = arm_smc_mbox_init,
+DT_DEVICE_END
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 8
+ * indent-tabs-mode: t
+ * End:
+ */
