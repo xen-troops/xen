@@ -249,6 +249,10 @@ dt_find_interrupt_controller(const struct dt_device_match *matches);
 #define dt_for_each_child_node(dt, dn)                      \
     for ( dn = dt->child; dn != NULL; dn = dn->sibling )
 
+#define dt_for_available_each_child_node(dt, dn)            \
+    for ( dn = dt->child; dn != NULL; dn = dn->sibling )    \
+        if ( dt_device_is_available(dn) )
+
 /* Helper to read a big number; size is in cells (not bytes) */
 static inline u64 dt_read_number(const __be32 *cell, int size)
 {
