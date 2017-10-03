@@ -51,7 +51,7 @@ out:
     return AO_INPROGRESS;
 }
 
-static LIBXL_DEFINE_UPDATE_DEVID(vkb, "vkb")
+static LIBXL_DEFINE_UPDATE_DEVID(vkb, "vkbd")
 
 #define libxl__add_vkbs NULL
 #define libxl_device_vkb_list NULL
@@ -59,7 +59,7 @@ static LIBXL_DEFINE_UPDATE_DEVID(vkb, "vkb")
 
 LIBXL_DEFINE_DEVICE_REMOVE(vkb)
 
-DEFINE_DEVICE_TYPE_STRUCT(vkb,
+DEFINE_DEVICE_TYPE_STRUCT_X(vkb, vkb, vkbd
     .skip_attach = 1
 );
 
