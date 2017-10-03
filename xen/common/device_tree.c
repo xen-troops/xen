@@ -260,6 +260,33 @@ int dt_property_read_string(const struct dt_device_node *np,
     return 0;
 }
 
+int dt_property_read_string_helper(const struct dt_device_node *np,
+                                   const char *propname, const char **out_strs,
+                                   size_t sz, int skip)
+{
+    const struct dt_property *prop = dt_find_property(np, propname, NULL);
+    int l = 0, i = 0;
+    const char *p, *end;
+
+    if ( !prop )
+        return -EINVAL;
+    if ( !prop->value )
+        return -ENODATA;
+    p = prop->value;
+    end = p + prop->length;
+
+    for ( i = 0; p < end && (!out_strs || i < skip + sz); i++, p += l )
+    {
+        l = strnlen(p, end - p) + 1;
+        if ( p + l > end )
+            return -EILSEQ;
+        if ( out_strs && i >= skip )
+            *out_strs++ = p;
+    }
+    i -= skip;
+    return i <= 0 ? -ENODATA : i;
+}
+
 const char *dt_property_next_string(const struct dt_property *prop,
                                     const char *cur)
 {
