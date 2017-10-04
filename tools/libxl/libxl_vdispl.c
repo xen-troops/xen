@@ -176,9 +176,12 @@ int libxl_device_vdispl_getinfo(libxl_ctx *ctx, uint32_t domid,
     dompath = libxl__xs_get_dompath(gc, domid);
     info->devid = vdispl->devid;
 
-    devpath = GCSPRINTF("%s/device/vdispl/%d", dompath, info->devid);
-    libxl_path = GCSPRINTF("%s/device/vdispl/%d",
+    devpath = GCSPRINTF("%s/device/%s/%d", dompath,
+                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VDISPL),
+                        info->devid);
+    libxl_path = GCSPRINTF("%s/device/%s/%d",
                            libxl__xs_libxl_path(gc, domid),
+                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VDISPL),
                            info->devid);
     info->backend = xs_read(ctx->xsh, XBT_NULL,
                             GCSPRINTF("%s/backend", libxl_path),
@@ -249,7 +252,7 @@ LIBXL_DEFINE_DEVICE_REMOVE(vdispl)
 static LIBXL_DEFINE_UPDATE_DEVID(vdispl, "vdispl")
 LIBXL_DEFINE_DEVICE_LIST(vdispl)
 
-DEFINE_DEVICE_TYPE_STRUCT(vdispl,
+DEFINE_DEVICE_TYPE_STRUCT(vdispl, VDISPL,
     .update_config = (device_update_config_fn_t)libxl__update_config_vdispl,
     .from_xenstore = (device_from_xenstore_fn_t)libxl__vdispl_from_xenstore,
     .set_xenstore_config = (device_set_xenstore_config_fn_t)
