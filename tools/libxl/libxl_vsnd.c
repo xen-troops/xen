@@ -23,20 +23,6 @@ static int libxl__device_vsnd_setdefault(libxl__gc *gc, uint32_t domid,
                                 &vsnd->backend_domid);
 }
 
-static int libxl__device_from_vsnd(libxl__gc *gc, uint32_t domid,
-                                   libxl_device_vsnd *vsnd,
-                                   libxl__device *device)
-{
-   device->backend_devid   = vsnd->devid;
-   device->backend_domid   = vsnd->backend_domid;
-   device->backend_kind    = LIBXL__DEVICE_KIND_VSND;
-   device->devid           = vsnd->devid;
-   device->domid           = domid;
-   device->kind            = LIBXL__DEVICE_KIND_VSND;
-
-   return 0;
-}
-
 static int libxl__sample_rates_from_string(libxl__gc *gc, const char *str,
                                            libxl_vsnd_params *params)
 {
@@ -641,10 +627,13 @@ out:
     return rc;
 }
 
-LIBXL_DEFINE_DEVICE_ADD(vsnd)
-static LIBXL_DEFINE_DEVICES_ADD(vsnd)
-LIBXL_DEFINE_DEVICE_REMOVE(vsnd)
+
 static LIBXL_DEFINE_UPDATE_DEVID(vsnd)
+static LIBXL_DEFINE_DEVICE_FROM_TYPE(vsnd)
+static LIBXL_DEFINE_DEVICES_ADD(vsnd)
+
+LIBXL_DEFINE_DEVICE_ADD(vsnd)
+LIBXL_DEFINE_DEVICE_REMOVE(vsnd)
 LIBXL_DEFINE_DEVICE_LIST(vsnd)
 
 DEFINE_DEVICE_TYPE_STRUCT(vsnd, VSND,
