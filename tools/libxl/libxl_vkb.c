@@ -160,7 +160,7 @@ out:
      return rc;
 }
 
-static LIBXL_DEFINE_UPDATE_DEVID(vkb, "vkbd")
+static LIBXL_DEFINE_UPDATE_DEVID(vkb)
 
 #define libxl__add_vkbs NULL
 #define libxl_device_vkb_compare NULL

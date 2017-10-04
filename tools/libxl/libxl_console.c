@@ -691,7 +691,7 @@ out:
     return AO_INPROGRESS;
 }
 
-static LIBXL_DEFINE_UPDATE_DEVID(vfb, "vfb")
+static LIBXL_DEFINE_UPDATE_DEVID(vfb)
 
 static int libxl__set_xenstore_vfb(libxl__gc *gc, uint32_t domid,
                                    libxl_device_vfb *vfb,
