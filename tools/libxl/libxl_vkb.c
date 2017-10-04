@@ -21,20 +21,6 @@ static int libxl__device_vkb_setdefault(libxl__gc *gc, uint32_t domid,
     return libxl__resolve_domid(gc, vkb->backend_domname, &vkb->backend_domid);
 }
 
-static int libxl__device_from_vkb(libxl__gc *gc, uint32_t domid,
-                                  libxl_device_vkb *vkb,
-                                  libxl__device *device)
-{
-    device->backend_devid = vkb->devid;
-    device->backend_domid = vkb->backend_domid;
-    device->backend_kind = LIBXL__DEVICE_KIND_VKBD;
-    device->devid = vkb->devid;
-    device->domid = domid;
-    device->kind = LIBXL__DEVICE_KIND_VKBD;
-
-    return 0;
-}
-
 static int libxl__device_vkb_dm_needed(libxl_device_vkb *vkb, uint32_t domid)
 {
    if (vkb->backend_type == LIBXL_VKB_BACKEND_QEMU)
@@ -161,6 +147,7 @@ out:
 }
 
 static LIBXL_DEFINE_UPDATE_DEVID(vkb)
+static LIBXL_DEFINE_DEVICE_FROM_TYPE(vkb)
 
 #define libxl__add_vkbs NULL
 #define libxl_device_vkb_compare NULL
