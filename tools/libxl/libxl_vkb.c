@@ -122,9 +122,12 @@ int libxl_device_vkb_getinfo(libxl_ctx *ctx, uint32_t domid,
     dompath = libxl__xs_get_dompath(gc, domid);
     info->devid = vkb->devid;
 
-    devpath = GCSPRINTF("%s/device/vkbd/%d", dompath, info->devid);
-    libxl_path = GCSPRINTF("%s/device/vkbd/%d",
+    devpath = GCSPRINTF("%s/device/%s/%d", dompath,
+                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VKBD),
+                        info->devid);
+    libxl_path = GCSPRINTF("%s/device/%s/%d",
                            libxl__xs_libxl_path(gc, domid),
+                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VKBD),
                            info->devid);
     info->backend = xs_read(ctx->xsh, XBT_NULL,
                             GCSPRINTF("%s/backend", libxl_path),
@@ -165,7 +168,7 @@ static LIBXL_DEFINE_UPDATE_DEVID(vkb, "vkbd")
 LIBXL_DEFINE_DEVICE_LIST(vkb)
 LIBXL_DEFINE_DEVICE_REMOVE(vkb)
 
-DEFINE_DEVICE_TYPE_STRUCT_X(vkb, vkb, vkbd,
+DEFINE_DEVICE_TYPE_STRUCT(vkb, VKBD,
     .skip_attach = 1,
     .dm_needed   = (device_dm_needed_fn_t)libxl__device_vkb_dm_needed,
     .from_xenstore = (device_from_xenstore_fn_t)libxl__vkb_from_xenstore
