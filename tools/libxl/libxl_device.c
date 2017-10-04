@@ -2007,7 +2007,8 @@ void *libxl__device_list(libxl__gc *gc, const struct libxl_device_type *dt,
     *num = 0;
 
     libxl_path = GCSPRINTF("%s/device/%s",
-                           libxl__xs_libxl_path(gc, domid), dt->entry);
+                           libxl__xs_libxl_path(gc, domid),
+                           libxl__device_kind_to_string(dt->type));
 
     dir = libxl__xs_directory(gc, XBT_NULL, libxl_path, &ndirs);
 
