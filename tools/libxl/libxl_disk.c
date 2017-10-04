@@ -97,12 +97,14 @@ int libxl_evenable_disk_eject(libxl_ctx *ctx, uint32_t guest_domid,
 
     int devid = libxl__device_disk_dev_number(vdev, NULL, NULL);
 
-    path = GCSPRINTF("%s/device/vbd/%d/eject",
+    path = GCSPRINTF("%s/device/%s/%d/eject",
+                 libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VBD),
                  libxl__xs_get_dompath(gc, domid),
                  devid);
     if (!path) { rc = ERROR_NOMEM; goto out; }
 
-    const char *libxl_path = GCSPRINTF("%s/device/vbd/%d",
+    const char *libxl_path = GCSPRINTF("%s/device/%s/%d",
+                                 libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VBD),
                                  libxl__xs_libxl_path(gc, domid),
                                  devid);
     evg->be_ptr_path = libxl__sprintf(NOGC, "%s/backend", libxl_path);
@@ -612,7 +614,9 @@ int libxl_vdev_to_device_disk(libxl_ctx *ctx, uint32_t domid,
     if (!dom_xl_path) {
         goto out;
     }
-    libxl_path = GCSPRINTF("%s/device/vbd/%d", dom_xl_path, devid);
+    libxl_path = GCSPRINTF("%s/device/%s/%d", dom_xl_path,
+                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VBD),
+                           devid);
 
     rc = libxl__disk_from_xenstore(gc, libxl_path, devid, disk);
 out:
@@ -634,9 +638,13 @@ int libxl_device_disk_getinfo(libxl_ctx *ctx, uint32_t domid,
     diskinfo->devid = libxl__device_disk_dev_number(disk->vdev, NULL, NULL);
 
     /* tap devices entries in xenstore are written as vbd devices. */
-    fe_path = GCSPRINTF("%s/device/vbd/%d", dompath, diskinfo->devid);
-    libxl_path = GCSPRINTF("%s/device/vbd/%d",
-                           libxl__xs_libxl_path(gc, domid), diskinfo->devid);
+    fe_path = GCSPRINTF("%s/device/%s/%d", dompath,
+                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VBD),
+                        diskinfo->devid);
+    libxl_path = GCSPRINTF("%s/device/%s/%d",
+                           libxl__xs_libxl_path(gc, domid),
+                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VBD),
+                           diskinfo->devid);
     diskinfo->backend = xs_read(ctx->xsh, XBT_NULL,
                                 GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!diskinfo->backend) {
@@ -885,8 +893,10 @@ static char * libxl__alloc_vdev(libxl__gc *gc, void *get_vdev_user,
         if (devid < 0)
             return NULL;
         if (libxl__xs_read(gc, t,
-                    GCSPRINTF("%s/device/vbd/%d/backend",
-                        libxl_dom_path, devid)) == NULL) {
+                    GCSPRINTF("%s/device/%s/%d/backend",
+                        libxl_dom_path,
+                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VBD),
+                        devid)) == NULL) {
             if (errno == ENOENT)
                 return libxl__devid_to_vdev(gc, devid);
             else
@@ -1179,7 +1189,7 @@ LIBXL_DEFINE_DEVICE_LIST(disk)
 
 #define libxl__device_disk_update_devid NULL
 
-DEFINE_DEVICE_TYPE_STRUCT_X(disk, disk, vbd,
+DEFINE_DEVICE_TYPE_STRUCT(disk, VBD,
     .merge       = libxl_device_disk_merge,
     .dm_needed   = libxl_device_disk_dm_needed,
     .from_xenstore = (device_from_xenstore_fn_t)libxl__disk_from_xenstore,
