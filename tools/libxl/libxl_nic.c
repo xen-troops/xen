@@ -408,7 +408,9 @@ int libxl_devid_to_device_nic(libxl_ctx *ctx, uint32_t domid,
     if (!libxl_dom_path)
         goto out;
 
-    libxl_path = GCSPRINTF("%s/device/vif/%d", libxl_dom_path, devid);
+    libxl_path = GCSPRINTF("%s/device/%s/%d", libxl_dom_path,
+                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VIF),
+                           devid);
 
     rc = libxl__nic_from_xenstore(gc, libxl_path, devid, nic);
     if (rc) goto out;
@@ -448,9 +450,13 @@ int libxl_device_nic_getinfo(libxl_ctx *ctx, uint32_t domid,
     dompath = libxl__xs_get_dompath(gc, domid);
     nicinfo->devid = nic->devid;
 
-    nicpath = GCSPRINTF("%s/device/vif/%d", dompath, nicinfo->devid);
-    libxl_path = GCSPRINTF("%s/device/vif/%d",
-                           libxl__xs_libxl_path(gc, domid), nicinfo->devid);
+    nicpath = GCSPRINTF("%s/device/%s/%d", dompath,
+                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VIF),
+                        nicinfo->devid);
+    libxl_path = GCSPRINTF("%s/device/%s/%d",
+                           libxl__xs_libxl_path(gc, domid),
+                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VIF),
+                           nicinfo->devid);
     nicinfo->backend = xs_read(ctx->xsh, XBT_NULL,
                                 GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!nicinfo->backend) {
@@ -539,7 +545,7 @@ LIBXL_DEFINE_DEVICE_ADD(nic)
 LIBXL_DEFINE_DEVICES_ADD(nic)
 LIBXL_DEFINE_DEVICE_REMOVE(nic)
 
-DEFINE_DEVICE_TYPE_STRUCT_X(nic, nic, vif,
+DEFINE_DEVICE_TYPE_STRUCT(nic, VIF,
     .update_config = libxl_device_nic_update_config,
     .from_xenstore = (device_from_xenstore_fn_t)libxl__nic_from_xenstore,
     .set_xenstore_config = (device_set_xenstore_config_fn_t)
