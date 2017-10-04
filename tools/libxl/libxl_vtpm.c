@@ -118,9 +118,13 @@ int libxl_device_vtpm_getinfo(libxl_ctx *ctx,
     dompath = libxl__xs_get_dompath(gc, domid);
     vtpminfo->devid = vtpm->devid;
 
-    vtpmpath = GCSPRINTF("%s/device/vtpm/%d", dompath, vtpminfo->devid);
-    libxl_path = GCSPRINTF("%s/device/vtpm/%d",
-                           libxl__xs_libxl_path(gc, domid), vtpminfo->devid);
+    vtpmpath = GCSPRINTF("%s/device/%s/%d", dompath,
+                         libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VTPM),
+                         vtpminfo->devid);
+    libxl_path = GCSPRINTF("%s/device/%s/%d",
+                           libxl__xs_libxl_path(gc, domid),
+                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VTPM),
+                           vtpminfo->devid);
     vtpminfo->backend = xs_read(ctx->xsh, XBT_NULL,
           GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!vtpminfo->backend) {
@@ -244,7 +248,7 @@ static LIBXL_DEFINE_DEVICES_ADD(vtpm)
 LIBXL_DEFINE_DEVICE_REMOVE(vtpm)
 LIBXL_DEFINE_DEVICE_LIST(vtpm)
 
-DEFINE_DEVICE_TYPE_STRUCT(vtpm,
+DEFINE_DEVICE_TYPE_STRUCT(vtpm, VTPM,
     .update_config = libxl_device_vtpm_update_config,
     .from_xenstore = (device_from_xenstore_fn_t)libxl__vtpm_from_xenstore,
     .set_xenstore_config = (device_set_xenstore_config_fn_t)
