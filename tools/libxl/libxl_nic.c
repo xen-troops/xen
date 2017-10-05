@@ -380,31 +380,6 @@ static int libxl__nic_from_xenstore(libxl__gc *gc, const char *libxl_path,
     return rc;
 }
 
-int libxl_devid_to_device_nic(libxl_ctx *ctx, uint32_t domid,
-                              int devid, libxl_device_nic *nic)
-{
-    GC_INIT(ctx);
-    char *libxl_dom_path, *libxl_path;
-    int rc = ERROR_FAIL;
-
-    libxl_device_nic_init(nic);
-    libxl_dom_path = libxl__xs_libxl_path(gc, domid);
-    if (!libxl_dom_path)
-        goto out;
-
-    libxl_path = GCSPRINTF("%s/device/%s/%d", libxl_dom_path,
-                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VIF),
-                           devid);
-
-    rc = libxl__nic_from_xenstore(gc, libxl_path, devid, nic);
-    if (rc) goto out;
-
-    rc = 0;
-out:
-    GC_FREE;
-    return rc;
-}
-
 libxl_device_nic *libxl_device_nic_list(libxl_ctx *ctx, uint32_t domid, int *num)
 {
     libxl_device_nic *r;
@@ -528,6 +503,7 @@ out:
 static LIBXL_DEFINE_UPDATE_DEVID(nic)
 static LIBXL_DEFINE_DEVICE_FROM_TYPE(nic)
 
+LIBXL_DEFINE_DEVID_TO_DEVICE(nic)
 LIBXL_DEFINE_DEVICE_ADD(nic)
 LIBXL_DEFINE_DEVICES_ADD(nic)
 LIBXL_DEFINE_DEVICE_REMOVE(nic)
