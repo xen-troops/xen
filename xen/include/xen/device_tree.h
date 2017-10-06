@@ -931,6 +931,8 @@ int dt_count_phandle_with_args(const struct dt_device_node *np,
                                const char *list_name,
                                const char *cells_name);
 
+extern struct dt_device_node *cpu_dt_nodes[];
+
 #ifdef CONFIG_DEVICE_TREE_DEBUG
 #define dt_dprintk(fmt, args...)  \
     printk(XENLOG_DEBUG fmt, ## args)
