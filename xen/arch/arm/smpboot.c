@@ -39,6 +39,7 @@ cpumask_t cpu_present_map;
 cpumask_t cpu_possible_map;
 
 struct cpuinfo_arm cpu_data[NR_CPUS];
+struct dt_device_node *cpu_dt_nodes[NR_CPUS];
 
 /* CPU logical map: map xen cpuid to an MPIDR */
 register_t __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = MPIDR_INVALID };
@@ -109,6 +110,8 @@ static void __init dt_smp_init_cpus(void)
     int rc;
 
     mpidr = boot_cpu_data.mpidr.bits & MPIDR_HWID_MASK;
+
+    memset(cpu_dt_nodes, 0, sizeof(cpu_dt_nodes));
 
     if ( !cpus )
     {
@@ -210,6 +213,8 @@ static void __init dt_smp_init_cpus(void)
             cpuidx = NR_CPUS;
             break;
         }
+
+        cpu_dt_nodes[i] = cpu;
 
         if ( (rc = arch_cpu_init(i, cpu)) < 0 )
         {
