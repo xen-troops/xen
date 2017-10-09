@@ -185,7 +185,7 @@ static void libxl__device_vdispl_add(libxl__egc *egc, uint32_t domid,
                                      libxl_device_vdispl *vdispl,
                                      libxl__ao_device *aodev)
 {
-    libxl__device_add(egc, domid, &libxl__vdispl_devtype, vdispl, aodev);
+    libxl__device_add_async(egc, domid, &libxl__vdispl_devtype, vdispl, aodev);
 }
 
 static int libxl__device_vdispl_getconnectors(libxl_ctx *ctx,

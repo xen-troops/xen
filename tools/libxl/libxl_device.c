@@ -1850,9 +1850,28 @@ out:
     return rc;
 }
 
-void libxl__device_add(libxl__egc *egc, uint32_t domid,
-                       const struct libxl_device_type *dt, void *type,
-                       libxl__ao_device *aodev)
+int libxl__device_add(libxl__gc *gc, uint32_t domid,
+                      const struct libxl_device_type *dt, void *type)
+{
+    int rc;
+
+    rc = dt->set_default(gc, domid, type);
+    if (rc) goto out;
+
+    if (dt->set_xenstore_config) {
+        rc = dt->set_xenstore_config(gc, domid, type);
+        if (rc) goto out;
+    }
+
+    rc = 0;
+
+out:
+    return rc;
+}
+
+void libxl__device_add_async(libxl__egc *egc, uint32_t domid,
+                             const struct libxl_device_type *dt, void *type,
+                             libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
     libxl__device *device;

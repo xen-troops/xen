@@ -850,6 +850,41 @@ out:
     return rc;
 }
 
+int parse_vkbd_config(libxl_device_vkbd *vkbd, char *token)
+{
+    char *oparg;
+    int rc;
+
+    if (MATCH_OPTION("backend", token, oparg)) {
+        vkbd->backend_domname = strdup(oparg);
+    } else if (MATCH_OPTION("dev_id", token, oparg)) {
+        vkbd->devid = atoi(oparg);
+    } else if (MATCH_OPTION("backend_type", token, oparg)) {
+        libxl_vkbd_backend backend_type;
+        rc = libxl_vkbd_backend_from_string(oparg, &backend_type);
+        if (rc) {
+            fprintf(stderr, "Unknown backend_type \"%s\" in vkbd spec\n",
+                    oparg);
+            goto out;
+        }
+        vkbd->backend_type = backend_type;
+    } else if (MATCH_OPTION("multi_touch_width", token, oparg)) {
+        vkbd->touch_width = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("multi_touch_height", token, oparg)) {
+        vkbd->touch_height = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("multi_touch_contacts", token, oparg)) {
+        vkbd->touch_contacts = strtoul(oparg, NULL, 0);
+    } else {
+        fprintf(stderr, "Unknown string \"%s\" in vkbd spec\n", token);
+        rc = 1; goto out;
+    }
+
+    rc = 0;
+
+out:
+    return rc;
+}
+
 void parse_config_data(const char *config_source,
                        const char *config_data,
                        int config_len,
@@ -859,7 +894,7 @@ void parse_config_data(const char *config_source,
     long l, vcpus = 0;
     XLU_Config *config;
     XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms,
-                   *usbctrls, *usbdevs, *p9devs, *vdispls;
+                   *usbctrls, *usbdevs, *p9devs, *vdispls, *vkbds;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs, *coprocs;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian;
     int pci_power_mgmt = 0;
@@ -1646,14 +1681,14 @@ skip_nic:
     }
 
     d_config->num_vfbs = 0;
-    d_config->num_vkbs = 0;
+    d_config->num_vkbds = 0;
     d_config->vfbs = NULL;
-    d_config->vkbs = NULL;
+    d_config->vkbds = NULL;
 
     if (!xlu_cfg_get_list (config, "vfb", &cvfbs, 0, 0)) {
         while ((buf = xlu_cfg_get_listitem (cvfbs, d_config->num_vfbs)) != NULL) {
             libxl_device_vfb *vfb;
-            libxl_device_vkb *vkb;
+            libxl_device_vkbd *vkbd;
 
             char *buf2 = strdup(buf);
             char *p, *p2;
@@ -1661,8 +1696,10 @@ skip_nic:
             vfb = ARRAY_EXTEND_INIT(d_config->vfbs, d_config->num_vfbs,
                                     libxl_device_vfb_init);
 
-            vkb = ARRAY_EXTEND_INIT(d_config->vkbs, d_config->num_vkbs,
-                                    libxl_device_vkb_init);
+            vkbd = ARRAY_EXTEND_INIT(d_config->vkbds, d_config->num_vkbds,
+                                     libxl_device_vkbd_init);
+
+            vkbd->backend_type = LIBXL_VKBD_BACKEND_QEMU;
 
             p = strtok(buf2, ",");
             if (!p)
@@ -1703,6 +1740,41 @@ skip_nic:
 
 skip_vfb:
             free(buf2);
+        }
+    }
+
+    if (!xlu_cfg_get_list (config, "vkbd", &vkbds, 0, 0)) {
+        int entry = 0;
+        while ((buf = xlu_cfg_get_listitem (vkbds, entry)) != NULL) {
+            libxl_device_vkbd *vkbd;
+            char *buf2 = strdup(buf);
+            char *p;
+
+            vkbd = ARRAY_EXTEND_INIT(d_config->vkbds,
+                                     d_config->num_vkbds,
+                                     libxl_device_vkbd_init);
+            p = strtok (buf2, ",");
+            while (p != NULL)
+            {
+                while (*p == ' ') p++;
+                if (parse_vkbd_config(vkbd, p)) {
+                    free(buf2);
+                    exit(1);
+                }
+                p = strtok (NULL, ",");
+            }
+            free(buf2);
+
+            if (vkbd->touch_width || vkbd->touch_height) {
+                if (!vkbd->touch_width || !vkbd->touch_height) {
+                    fprintf(stderr, "touch_width and touch_height should "
+                                    "be defined in vkbd spec\n");
+                    exit(1);
+                }
+                vkbd->touch_enabled = 1;
+            }
+
+            entry++;
         }
     }
 
@@ -2005,13 +2077,14 @@ skip_usbdev:
 
         if (vnc_enabled) {
             libxl_device_vfb *vfb;
-            libxl_device_vkb *vkb;
+            libxl_device_vkbd *vkbd;
 
             vfb = ARRAY_EXTEND_INIT(d_config->vfbs, d_config->num_vfbs,
                                     libxl_device_vfb_init);
 
-            vkb = ARRAY_EXTEND_INIT(d_config->vkbs, d_config->num_vkbs,
-                                    libxl_device_vkb_init);
+            vkbd = ARRAY_EXTEND_INIT(d_config->vkbds, d_config->num_vkbds,
+                                     libxl_device_vkbd_init);
+            vkbd->backend_type = LIBXL_VKBD_BACKEND_QEMU;
 
             parse_top_level_vnc_options(config, &vfb->vnc);
             parse_top_level_sdl_options(config, &vfb->sdl);

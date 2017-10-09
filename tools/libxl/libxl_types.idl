@@ -240,6 +240,12 @@ libxl_checkpointed_stream = Enumeration("checkpointed_stream", [
     (2, "COLO"),
     ])
 
+libxl_vkbd_backend = Enumeration("vkbd_backend", [
+    (0, "UNKNOWN"),
+    (1, "QEMU"),
+    (2, "LINUX")
+    ])
+
 #
 # Complex libxl types
 #
@@ -603,10 +609,15 @@ libxl_device_vfb = Struct("device_vfb", [
     ("keymap",        string),
     ])
 
-libxl_device_vkb = Struct("device_vkb", [
+libxl_device_vkbd = Struct("device_vkbd", [
     ("backend_domid", libxl_domid),
     ("backend_domname", string),
     ("devid", libxl_devid),
+    ("backend_type", libxl_vkbd_backend),
+    ("touch_enabled", bool),
+    ("touch_width", uint32),
+    ("touch_height", uint32),
+    ("touch_contacts", uint32) 
     ])
 
 libxl_device_disk = Struct("device_disk", [
@@ -807,7 +818,7 @@ libxl_domain_config = Struct("domain_config", [
     ("rdms", Array(libxl_device_rdm, "num_rdms")),
     ("dtdevs", Array(libxl_device_dtdev, "num_dtdevs")),
     ("vfbs", Array(libxl_device_vfb, "num_vfbs")),
-    ("vkbs", Array(libxl_device_vkb, "num_vkbs")),
+    ("vkbds", Array(libxl_device_vkbd, "num_vkbds")),
     ("vtpms", Array(libxl_device_vtpm, "num_vtpms")),
     ("p9", Array(libxl_device_p9, "num_p9s")),
     ("vdispls", Array(libxl_device_vdispl, "num_vdispls")),

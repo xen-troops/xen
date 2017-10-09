@@ -1249,7 +1249,6 @@ _hidden int libxl__device_disk_setdefault(libxl__gc *gc,
 _hidden int libxl__device_nic_setdefault(libxl__gc *gc, libxl_device_nic *nic,
                                          uint32_t domid, bool hotplug);
 _hidden int libxl__device_vfb_setdefault(libxl__gc *gc, libxl_device_vfb *vfb);
-_hidden int libxl__device_vkb_setdefault(libxl__gc *gc, libxl_device_vkb *vkb);
 _hidden int libxl__device_pci_setdefault(libxl__gc *gc, libxl_device_pci *pci);
 _hidden void libxl__rdm_setdefault(libxl__gc *gc,
                                    libxl_domain_build_info *b_info);
@@ -2661,10 +2660,6 @@ struct libxl__multidev {
  * it's a valid state.
  */
 
-/* Internal function to connect a vkb device */
-_hidden int libxl__device_vkb_add(libxl__gc *gc, uint32_t domid,
-                                  libxl_device_vkb *vkb);
-
 /* Internal function to connect a vfb device */
 _hidden int libxl__device_vfb_add(libxl__gc *gc, uint32_t domid,
                                   libxl_device_vfb *vfb);
@@ -3550,6 +3545,7 @@ extern const struct libxl_device_type libxl__usbctrl_devtype;
 extern const struct libxl_device_type libxl__usbdev_devtype;
 extern const struct libxl_device_type libxl__pcidev_devtype;
 extern const struct libxl_device_type libxl__vdispl_devtype;
+extern const struct libxl_device_type libxl__vkbd_devtype;
 
 extern const struct libxl_device_type *device_type_tbl[];
 
@@ -4367,8 +4363,10 @@ static inline bool libxl__acpi_defbool_val(const libxl_domain_build_info *b_info
            libxl_defbool_val(b_info->u.hvm.acpi);
 }
 
-void libxl__device_add(libxl__egc *egc, uint32_t domid,
-                       const struct libxl_device_type *dt, void *type,
+int libxl__device_add(libxl__gc *gc, uint32_t domid,
+                      const struct libxl_device_type *dt, void *type);
+void libxl__device_add_async(libxl__egc *egc, uint32_t domid,
+                             const struct libxl_device_type *dt, void *type,
                        libxl__ao_device *aodev);
 void* libxl__device_list(const struct libxl_device_type *dt,
                          libxl_ctx *ctx, uint32_t domid, int *num);
