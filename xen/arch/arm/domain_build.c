@@ -20,6 +20,7 @@
 #include <asm/psci.h>
 #include <asm/setup.h>
 #include <asm/cpufeature.h>
+#include <asm/tee/tee.h>
 
 #include <asm/gic.h>
 #include <xen/irq.h>
@@ -2206,6 +2207,9 @@ int construct_dom0(struct domain *d)
     p2m_restore_state(saved_current);
 
     discard_initial_modules();
+
+    /* Enable TEE */
+    tee_enable(d);
 
     memset(regs, 0, sizeof(*regs));
 

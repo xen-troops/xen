@@ -5,6 +5,7 @@
 #include <xen/smp.h>
 #include <asm/platform.h>
 #include <asm/psci.h>
+#include <asm/tee/tee.h>
 
 static void noreturn halt_this_cpu(void *arg)
 {

@@ -58,6 +58,12 @@ config SBSA_VUART_CONSOLE
 	---help---
 	  Allows a guest to use SBSA Generic UART as a console. The
 	  SBSA Generic UART implements a subset of ARM PL011 UART.
+config TEE
+	bool "Enable TEE mediators support" if EXPERT = "y"
+	default n
+	help
+	  This option enables generic TEE mediators support. It allows guests
+	  to access real TEE via one of TEE mediators implemented in XEN.
 
 endmenu
 

@@ -4,6 +4,7 @@ subdir-y += platforms
 subdir-$(CONFIG_ARM_64) += efi
 subdir-$(CONFIG_ACPI) += acpi
 subdir-$(CONFIG_HAS_CPUFREQ) += cpufreq
+subdir-$(CONFIG_TEE) += tee
 
 obj-$(CONFIG_HAS_ALTERNATIVE) += alternative.o
 obj-y += bootfdt.init.o
