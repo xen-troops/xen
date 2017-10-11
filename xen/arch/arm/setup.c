@@ -56,6 +56,9 @@ struct bootinfo __initdata bootinfo;
 
 struct cpuinfo_arm __read_mostly boot_cpu_data;
 
+static bool __initdata opt_dom0_tee_enabled;
+boolean_param("dom0_tee_enabled", opt_dom0_tee_enabled);
+
 #ifdef CONFIG_ACPI
 bool __read_mostly acpi_disabled;
 #endif
@@ -889,6 +892,11 @@ void __init start_xen(unsigned long boot_phys_offset,
     /* The vGIC for DOM0 is exactly emulating the hardware GIC */
     dom0_cfg.arch.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
     dom0_cfg.arch.nr_spis = gic_number_lines() - 32;
+    if ( opt_dom0_tee_enabled )
+        dom0_cfg.arch.tee_type = XEN_DOMCTL_CONFIG_TEE_NATIVE;
+    else
+        dom0_cfg.arch.tee_type = XEN_DOMCTL_CONFIG_TEE_NONE;
+
     dom0_cfg.max_vcpus = dom0_max_vcpus();
 
     dom0 = domain_create(0, &dom0_cfg, true);

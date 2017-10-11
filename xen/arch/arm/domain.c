@@ -32,6 +32,7 @@
 #include <asm/platform.h>
 #include <asm/procinfo.h>
 #include <asm/regs.h>
+#include <asm/tee/tee.h>
 #include <asm/vfp.h>
 #include <asm/vgic.h>
 #include <asm/vtimer.h>
@@ -699,6 +700,10 @@ int arch_domain_create(struct domain *d,
     if ( (rc = domain_vtimer_init(d, &config->arch)) != 0 )
         goto fail;
 
+    if ( config->arch.tee_type == XEN_DOMCTL_CONFIG_TEE_NATIVE )
+        if ( (rc = tee_domain_init(d)) != 0 )
+            goto fail;
+
     update_domain_wallclock_time(d);
 
     /*
@@ -737,6 +742,7 @@ void arch_domain_destroy(struct domain *d)
      * iommu_domain_destroy() before p2m_teardown().
      */
     iommu_domain_destroy(d);
+    tee_domain_destroy(d);
     p2m_teardown(d);
     domain_vgic_free(d);
     domain_vuart_free(d);
@@ -942,6 +948,14 @@ int domain_relinquish_resources(struct domain *d)
          * allocated via a DOMCTL call XEN_DOMCTL_vuart_op.
          */
         domain_vpl011_deinit(d);
+
+        d->arch.relmem = RELMEM_tee;
+        /* Fallthrough */
+
+    case RELMEM_tee:
+        ret = tee_relinquish_resources(d);
+        if (ret )
+            return ret;
 
         d->arch.relmem = RELMEM_xen;
         /* Fallthrough */
