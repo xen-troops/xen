@@ -1638,6 +1638,29 @@ This feature is a B<technology preview>.
 
 =back
 
+=over 4
+
+=item B<vgsx=[ "VGSX_SPEC_STRING", "VGSX_SPEC_STRING", ...]>
+
+Specifies the virtual GSX device to be provided to the guest.
+
+Each B<VGSX_SPEC_STRING> is a comma-separated list of C<KEY=VALUE>
+settings from the following list:
+
+=over 4
+
+=item B<backend=domain-id>
+
+Specifies the backend domain name or id.
+
+=item B<osid=NUMBER>
+
+Specifies OS ID.
+
+=back
+
+=back
+
 =head2 Paravirtualised (PV) Guest Specific Options
 
 The following options apply only to Paravirtual (PV) guests.
