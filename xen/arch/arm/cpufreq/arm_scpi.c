@@ -579,6 +579,8 @@ static int scpi_send_message(u8 idx, void *tx_buf, unsigned int tx_len,
 	if (ret < 0 || !rx_buf)
 		goto out;
 
+	mbox_client_txdone(scpi_chan->chan, 0);
+
 	if (!wait_for_completion_timeout(&msg->done, MAX_RX_TIMEOUT))
 		ret = -ETIMEDOUT;
 	else
@@ -1036,9 +1038,8 @@ static int scpi_probe(struct platform_device *pdev)
 		cl->dev = dev;
 		cl->rx_callback = scpi_handle_remote_msg;
 		cl->tx_prepare = scpi_tx_prepare;
-		cl->tx_block = true;
-		cl->tx_tout = 20;
-		cl->knows_txdone = false; /* controller can't ack */
+		cl->tx_block = false;
+		cl->knows_txdone = true;
 
 		INIT_LIST_HEAD(&pchan->rx_pending);
 		INIT_LIST_HEAD(&pchan->xfers_list);
