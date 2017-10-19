@@ -1202,6 +1202,65 @@ out:
     if (rc) exit(EXIT_FAILURE);
 }
 
+static int parse_vgsx_config(libxl_device_vgsx *vgsx, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("backend", token, oparg)) {
+        vgsx->backend_domname = strdup(oparg);
+    } else if (MATCH_OPTION("osid", token, oparg)) {
+        vgsx->osid = strtoul(oparg, NULL, 0);
+    } else {
+        fprintf(stderr, "Unknown string \"%s\" in vgsx spec\n", token);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void parse_vgsx_list(const XLU_Config *config,
+                            libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vgsxs;
+    const char *item;
+    char *buf = NULL;
+    int rc;
+
+    if (!xlu_cfg_get_list (config, "vgsx", &vgsxs, 0, 0)) {
+        int entry = 0;
+        while ((item = xlu_cfg_get_listitem(vgsxs, entry)) != NULL) {
+            libxl_device_vgsx *vgsx;
+            char *p;
+
+            vgsx = ARRAY_EXTEND_INIT(d_config->vgsxs,
+                                     d_config->num_vgsxs,
+                                     libxl_device_vgsx_init);
+
+            buf = strdup(item);
+
+            p = strtok (buf, ",");
+            while (p != NULL)
+            {
+                while (*p == ' ') p++;
+
+                rc = parse_vgsx_config(vgsx, p);
+                if (rc) goto out;
+
+                p = strtok (NULL, ",");
+            }
+
+            entry++;
+        }
+    }
+
+    rc = 0;
+
+out:
+    free(buf);
+    if (rc) exit(EXIT_FAILURE);
+}
+
+
 void parse_config_data(const char *config_source,
                        const char *config_data,
                        int config_len,
@@ -2731,6 +2790,7 @@ skip_usbdev:
     }
 
     parse_vkb_list(config, d_config);
+    parse_vgsx_list(config, d_config);
 
     xlu_cfg_get_defbool(config, "xend_suspend_evtchn_compat",
                         &c_info->xend_suspend_evtchn_compat, 0);
