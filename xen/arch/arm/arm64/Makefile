@@ -8,6 +8,7 @@ obj-y += entry.o
 obj-y += insn.o
 obj-$(CONFIG_LIVEPATCH) += livepatch.o
 obj-y += smpboot.o
+obj-y += smc.o
 obj-y += traps.o
 obj-y += vfp.o
 obj-y += vsysreg.o
