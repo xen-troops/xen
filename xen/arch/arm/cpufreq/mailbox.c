@@ -7,8 +7,16 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
+ *
+ * Based on Linux drivers/mailbox/mailbox.c
+ * => commit b7133d6fcd9a9eb4633357d4a27430d4e0c794ad
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2017 EPAM Systems Inc.
  */
 
+#if 0
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
@@ -20,8 +28,16 @@
 #include <linux/bitops.h>
 #include <linux/mailbox_client.h>
 #include <linux/mailbox_controller.h>
+#endif
+
+#include <xen/device_tree.h>
+#include <xen/err.h>
+#include <xen/xmalloc.h>
 
 #include "mailbox.h"
+#include "mailbox_client.h"
+#include "mailbox_controller.h"
+#include "wrappers.h"
 
 static LIST_HEAD(mbox_cons);
 static DEFINE_MUTEX(con_mutex);
@@ -85,9 +101,11 @@ static void msg_submit(struct mbox_chan *chan)
 exit:
 	spin_unlock_irqrestore(&chan->lock, flags);
 
+#if 0 /* We don't support timer based polling. */
 	if (!err && (chan->txdone_method & TXDONE_BY_POLL))
 		/* kick start the timer immediately to avoid delays */
 		hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL);
+#endif
 }
 
 static void tx_tick(struct mbox_chan *chan, int r)
@@ -114,6 +132,7 @@ static void tx_tick(struct mbox_chan *chan, int r)
 		complete(&chan->tx_complete);
 }
 
+#if 0 /* We don't support timer based polling. */
 static enum hrtimer_restart txdone_hrtimer(struct hrtimer *hrtimer)
 {
 	struct mbox_controller *mbox =
@@ -139,6 +158,7 @@ static enum hrtimer_restart txdone_hrtimer(struct hrtimer *hrtimer)
 	}
 	return HRTIMER_NORESTART;
 }
+#endif
 
 /**
  * mbox_chan_received_data - A way for controller driver to push data
@@ -374,7 +394,7 @@ struct mbox_chan *mbox_request_channel_byname(struct mbox_client *cl,
 					      const char *name)
 {
 	struct device_node *np = cl->dev->of_node;
-	struct property *prop;
+	const struct property *prop;
 	const char *mbox_name;
 	int index = 0;
 
@@ -452,13 +472,26 @@ int mbox_controller_register(struct mbox_controller *mbox)
 	if (!mbox || !mbox->dev || !mbox->ops || !mbox->num_chans)
 		return -EINVAL;
 
+	/*
+	 * Unfortunately, here we have to prevent some controllers (which need
+	 * polling timer involved) from being registered. The possible controller
+	 * must have both TX-Done and RX-Done irqs or to be completely synchronous.
+	 */
+	if (!mbox->rxdone_auto) {
+		dev_err(mbox->dev, "rx polling method is not supported\n");
+		return -EINVAL;
+	}
+
 	if (mbox->txdone_irq)
 		txdone = TXDONE_BY_IRQ;
-	else if (mbox->txdone_poll)
-		txdone = TXDONE_BY_POLL;
+	else if (mbox->txdone_poll) {
+		dev_err(mbox->dev, "tx polling method is not supported\n");
+		return -EINVAL;
+	}
 	else /* It has to be ACK then */
 		txdone = TXDONE_BY_ACK;
 
+#if 0 /* We don't support timer based polling. */
 	if (txdone == TXDONE_BY_POLL) {
 
 		if (!mbox->ops->last_tx_done) {
@@ -470,6 +503,7 @@ int mbox_controller_register(struct mbox_controller *mbox)
 			     HRTIMER_MODE_REL);
 		mbox->poll_hrt.function = txdone_hrtimer;
 	}
+#endif
 
 	for (i = 0; i < mbox->num_chans; i++) {
 		struct mbox_chan *chan = &mbox->chans[i];
@@ -509,9 +543,20 @@ void mbox_controller_unregister(struct mbox_controller *mbox)
 	for (i = 0; i < mbox->num_chans; i++)
 		mbox_free_channel(&mbox->chans[i]);
 
+#if 0 /* We don't support timer based polling. */
 	if (mbox->txdone_poll)
 		hrtimer_cancel(&mbox->poll_hrt);
+#endif
 
 	mutex_unlock(&con_mutex);
 }
 EXPORT_SYMBOL_GPL(mbox_controller_unregister);
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 8
+ * indent-tabs-mode: t
+ * End:
+ */
