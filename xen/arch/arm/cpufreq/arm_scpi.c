@@ -23,8 +23,16 @@
  *
  * You should have received a copy of the GNU General Public License along
  * with this program. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Based on Linux drivers/firmware/arm_scpi.c
+ * => commit 0d30176819c8738b012ec623c7b3db19df818e70
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2017 EPAM Systems Inc.
  */
 
+#if 0
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/bitmap.h>
@@ -44,6 +52,22 @@
 #include <linux/slab.h>
 #include <linux/sort.h>
 #include <linux/spinlock.h>
+#endif
+
+#include <xen/device_tree.h>
+#include <xen/err.h>
+#include <xen/vmap.h>
+#include <xen/sort.h>
+
+#include "scpi_protocol.h"
+#include "mailbox_client.h"
+#include "mailbox_controller.h"
+#include "wrappers.h"
+
+/*
+ * TODO:
+ * 1. Add releasing resources since devm.
+ */
 
 #define CMD_ID_SHIFT		0
 #define CMD_ID_MASK		0x7f
@@ -859,6 +883,7 @@ static int scpi_init_versions(struct scpi_drvinfo *info)
 	return ret;
 }
 
+#if 0
 static ssize_t protocol_version_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
@@ -888,6 +913,7 @@ static struct attribute *versions_attrs[] = {
 	NULL,
 };
 ATTRIBUTE_GROUPS(versions);
+#endif
 
 static void
 scpi_free_channels(struct device *dev, struct scpi_chan *pchan, int count)
@@ -909,8 +935,10 @@ static int scpi_remove(struct platform_device *pdev)
 
 	scpi_info = NULL; /* stop exporting SCPI ops through get_scpi_ops */
 
+#if 0
 	of_platform_depopulate(dev);
 	sysfs_remove_groups(&dev->kobj, versions_groups);
+#endif
 	scpi_free_channels(dev, info->channels, info->num_chans);
 	platform_set_drvdata(pdev, NULL);
 
@@ -1055,11 +1083,15 @@ err:
 		  FW_REV_PATCH(scpi_info->firmware_version));
 	scpi_info->scpi_ops = &scpi_ops;
 
+#if 0
 	ret = sysfs_create_groups(&dev->kobj, versions_groups);
 	if (ret)
 		dev_err(dev, "unable to create sysfs version group\n");
 
 	return of_platform_populate(dev->of_node, NULL, NULL, dev);
+#else
+	return 0;
+#endif
 }
 
 static const struct of_device_id scpi_of_match[] = {
@@ -1070,6 +1102,7 @@ static const struct of_device_id scpi_of_match[] = {
 
 MODULE_DEVICE_TABLE(of, scpi_of_match);
 
+#if 0
 static struct platform_driver scpi_driver = {
 	.driver = {
 		.name = "scpi_protocol",
@@ -1083,3 +1116,60 @@ module_platform_driver(scpi_driver);
 MODULE_AUTHOR("Sudeep Holla <sudeep.holla@arm.com>");
 MODULE_DESCRIPTION("ARM SCPI mailbox protocol driver");
 MODULE_LICENSE("GPL v2");
+#endif
+
+static struct device *scpi_dev;
+
+struct device *get_scpi_dev(void)
+{
+	return scpi_dev;
+}
+
+int __init scpi_init(void)
+{
+	struct dt_device_node *scpi, *mbox;
+	bool has_mbox = false;
+	int ret = -ENODEV;
+
+	scpi = dt_find_matching_node(NULL, scpi_of_match);
+	if (!scpi) {
+		printk("failed to find SCPI node in the device tree\n");
+		return -ENXIO;
+	}
+
+	/* At first find and initialize mailbox to communicate with SCP */
+	dt_for_each_device_node(dt_host, mbox) {
+		ret = device_init(mbox, DEVICE_MAILBOX, NULL);
+		if (!ret) {
+			has_mbox = true;
+			break;
+		}
+	}
+
+	if (!has_mbox) {
+		dev_err(&scpi->dev, "failed to init Mailbox interface (%d)\n", ret);
+		return ret;
+	}
+
+	ret = scpi_probe(scpi);
+	if (ret) {
+		/* TODO Do we need to deinit mailbox? */
+		dev_err(&scpi->dev, "failed to init SCPI Message Protocol (%d)\n", ret);
+		return ret;
+	}
+
+	scpi_dev = &scpi->dev;
+
+	/* TODO Do we need to mark device as used by Xen? */
+
+	return 0;
+}
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 8
+ * indent-tabs-mode: t
+ * End:
+ */
