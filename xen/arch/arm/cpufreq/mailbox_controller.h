@@ -2,16 +2,27 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
+ *
+ * Based on Linux include/linux/mailbox_controller.h
+ * => commit 0cc67945ea5933d53db69606312cf52f553d1b81
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2017 EPAM Systems Inc.
  */
 
 #ifndef __MAILBOX_CONTROLLER_H
 #define __MAILBOX_CONTROLLER_H
 
+#if 0
 #include <linux/of.h>
 #include <linux/types.h>
 #include <linux/hrtimer.h>
 #include <linux/device.h>
 #include <linux/completion.h>
+#endif
+
+#include "wrappers.h"
 
 struct mbox_chan;
 
@@ -87,7 +98,9 @@ struct mbox_controller {
 	struct mbox_chan *(*of_xlate)(struct mbox_controller *mbox,
 				      const struct of_phandle_args *sp);
 	/* Internal to API */
+#if 0 /* We don't support timer based polling. */
 	struct hrtimer poll_hrt;
+#endif
 	struct list_head node;
 };
 
@@ -137,3 +150,12 @@ void mbox_chan_received_data(struct mbox_chan *chan, void *data); /* atomic */
 void mbox_chan_txdone(struct mbox_chan *chan, int r); /* atomic */
 
 #endif /* __MAILBOX_CONTROLLER_H */
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 8
+ * indent-tabs-mode: t
+ * End:
+ */
