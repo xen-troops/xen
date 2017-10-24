@@ -7,8 +7,16 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
+ *
+ * Based on Linux drivers/mailbox/mailbox.c
+ * => commit b7133d6fcd9a9eb4633357d4a27430d4e0c794ad
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2017 EPAM Systems Inc.
  */
 
+#if 0
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
@@ -20,8 +28,34 @@
 #include <linux/bitops.h>
 #include <linux/mailbox_client.h>
 #include <linux/mailbox_controller.h>
+#endif
+
+#include <xen/config.h>
+#include <xen/delay.h>
+#include <xen/errno.h>
+#include <xen/err.h>
+#include <xen/lib.h>
+#include <xen/list.h>
+#include <xen/mm.h>
+#include <xen/vmap.h>
+#include <xen/sort.h>
+#include <xen/sched.h>
+#include <xen/sizes.h>
+#include <asm/atomic.h>
+#include <asm/device.h>
+#include <asm/io.h>
+#include <asm/platform.h>
 
 #include "mailbox.h"
+#include "mailbox_client.h"
+#include "mailbox_controller.h"
+#include "wrappers.h"
+
+/*
+ * TODO:
+ * 1. handle hrtimer.
+ */
+
 
 static LIST_HEAD(mbox_cons);
 static DEFINE_MUTEX(con_mutex);
@@ -87,7 +121,11 @@ exit:
 
 	if (!err && (chan->txdone_method & TXDONE_BY_POLL))
 		/* kick start the timer immediately to avoid delays */
+#if 0
 		hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL);
+#else
+		set_timer(&chan->mbox->poll_hrt, NOW() + MICROSECS(1));
+#endif
 }
 
 static void tx_tick(struct mbox_chan *chan, int r)
@@ -121,6 +159,8 @@ static enum hrtimer_restart txdone_hrtimer(struct hrtimer *hrtimer)
 	bool txdone, resched = false;
 	int i;
 
+	stop_timer(hrtimer);
+
 	for (i = 0; i < mbox->num_chans; i++) {
 		struct mbox_chan *chan = &mbox->chans[i];
 
@@ -134,10 +174,21 @@ static enum hrtimer_restart txdone_hrtimer(struct hrtimer *hrtimer)
 	}
 
 	if (resched) {
+#if 0
 		hrtimer_forward_now(hrtimer, ms_to_ktime(mbox->txpoll_period));
+#else
+		set_timer(hrtimer, NOW() + MILLISECS(mbox->txpoll_period));
+#endif
 		return HRTIMER_RESTART;
 	}
 	return HRTIMER_NORESTART;
+}
+
+static void mbox_timer_fn(void *data)
+{
+	struct hrtimer *hrtimer = data;
+
+	txdone_hrtimer(hrtimer);
 }
 
 /**
@@ -374,7 +425,11 @@ struct mbox_chan *mbox_request_channel_byname(struct mbox_client *cl,
 					      const char *name)
 {
 	struct device_node *np = cl->dev->of_node;
+#if 0
 	struct property *prop;
+#else
+	const struct property *prop;
+#endif
 	const char *mbox_name;
 	int index = 0;
 
@@ -466,9 +521,13 @@ int mbox_controller_register(struct mbox_controller *mbox)
 			return -EINVAL;
 		}
 
+#if 0
 		hrtimer_init(&mbox->poll_hrt, CLOCK_MONOTONIC,
 			     HRTIMER_MODE_REL);
 		mbox->poll_hrt.function = txdone_hrtimer;
+#else
+		init_timer(&mbox->poll_hrt, mbox_timer_fn, &mbox->poll_hrt, 0);
+#endif
 	}
 
 	for (i = 0; i < mbox->num_chans; i++) {
@@ -510,8 +569,21 @@ void mbox_controller_unregister(struct mbox_controller *mbox)
 		mbox_free_channel(&mbox->chans[i]);
 
 	if (mbox->txdone_poll)
+#if 0
 		hrtimer_cancel(&mbox->poll_hrt);
+#else
+		kill_timer(&mbox->poll_hrt);
+#endif
 
 	mutex_unlock(&con_mutex);
 }
 EXPORT_SYMBOL_GPL(mbox_controller_unregister);
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 8
+ * indent-tabs-mode: t
+ * End:
+ */

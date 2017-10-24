@@ -5,13 +5,24 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
+ *
+ * Based on Linux include/linux/mailbox_client.h
+ * => commit dfabde206aa10ae71a89ba75e68b1f58a6336a05
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2017 EPAM Systems Inc.
  */
 
 #ifndef __MAILBOX_CLIENT_H
 #define __MAILBOX_CLIENT_H
 
+#if 0
 #include <linux/of.h>
 #include <linux/device.h>
+#endif
+
+#include <asm/device.h>
 
 struct mbox_chan;
 
@@ -49,3 +60,12 @@ bool mbox_client_peek_data(struct mbox_chan *chan); /* atomic */
 void mbox_free_channel(struct mbox_chan *chan); /* may sleep */
 
 #endif /* __MAILBOX_CLIENT_H */
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 8
+ * indent-tabs-mode: t
+ * End:
+ */
