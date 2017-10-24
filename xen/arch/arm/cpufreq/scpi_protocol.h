@@ -14,8 +14,25 @@
  *
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Based on Linux include/linux/scpi_protocol.h
+ * => commit 45ca7df7c345465dbd2426a33012c9c33d27de62
+ *
+ * Xen modification:
+ * Oleksandr Tyshchenko <Oleksandr_Tyshchenko@epam.com>
+ * Copyright (C) 2017 EPAM Systems Inc.
  */
+
+#ifndef __ARCH_ARM_CPUFREQ_SCPI_PROTOCOL_H__
+#define __ARCH_ARM_CPUFREQ_SCPI_PROTOCOL_H__
+
+#if 0
 #include <linux/types.h>
+#endif
+
+#include <asm/device.h>
+
+#define IS_REACHABLE(CONFIG_ARM_SCPI_PROTOCOL) 1
 
 struct scpi_opp {
 	u32 freq;
@@ -78,7 +95,22 @@ struct scpi_ops {
 };
 
 #if IS_REACHABLE(CONFIG_ARM_SCPI_PROTOCOL)
+int scpi_init(void);
+struct device *get_scpi_dev(void);
 struct scpi_ops *get_scpi_ops(void);
 #else
+static inline int scpi_init(void) { return -1; }
+static inline struct device *get_scpi_dev(void) { return NULL; }
 static inline struct scpi_ops *get_scpi_ops(void) { return NULL; }
 #endif
+
+#endif /* __ARCH_ARM_CPUFREQ_SCPI_PROTOCOL_H__ */
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 8
+ * indent-tabs-mode: t
+ * End:
+ */
