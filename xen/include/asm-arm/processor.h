@@ -802,6 +802,10 @@ void vcpu_regs_user_to_hyp(struct vcpu *vcpu,
 int call_smc(register_t function_id, register_t arg0, register_t arg1,
              register_t arg2);
 
+void call_smccc_smc(register_t a0, register_t a1, register_t a2,
+                    register_t a3, register_t a4, register_t a5,
+                    register_t a6, register_t a7, register_t res[4]);
+
 void do_trap_hyp_serror(struct cpu_user_regs *regs);
 
 void do_trap_guest_serror(struct cpu_user_regs *regs);
