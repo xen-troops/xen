@@ -30,32 +30,14 @@
 #include <linux/mailbox_controller.h>
 #endif
 
-#include <xen/config.h>
-#include <xen/delay.h>
-#include <xen/errno.h>
+#include <xen/device_tree.h>
 #include <xen/err.h>
-#include <xen/lib.h>
-#include <xen/list.h>
-#include <xen/mm.h>
-#include <xen/vmap.h>
-#include <xen/sort.h>
-#include <xen/sched.h>
-#include <xen/sizes.h>
-#include <asm/atomic.h>
-#include <asm/device.h>
-#include <asm/io.h>
-#include <asm/platform.h>
+#include <xen/xmalloc.h>
 
 #include "mailbox.h"
 #include "mailbox_client.h"
 #include "mailbox_controller.h"
 #include "wrappers.h"
-
-/*
- * TODO:
- * 1. handle hrtimer.
- */
-
 
 static LIST_HEAD(mbox_cons);
 static DEFINE_MUTEX(con_mutex);
@@ -119,12 +101,10 @@ static void msg_submit(struct mbox_chan *chan)
 exit:
 	spin_unlock_irqrestore(&chan->lock, flags);
 
+#if 0 /* We don't support timer based polling. */
 	if (!err && (chan->txdone_method & TXDONE_BY_POLL))
 		/* kick start the timer immediately to avoid delays */
-#if 0
 		hrtimer_start(&chan->mbox->poll_hrt, 0, HRTIMER_MODE_REL);
-#else
-		set_timer(&chan->mbox->poll_hrt, NOW() + MICROSECS(1));
 #endif
 }
 
@@ -152,14 +132,13 @@ static void tx_tick(struct mbox_chan *chan, int r)
 		complete(&chan->tx_complete);
 }
 
+#if 0 /* We don't support timer based polling. */
 static enum hrtimer_restart txdone_hrtimer(struct hrtimer *hrtimer)
 {
 	struct mbox_controller *mbox =
 		container_of(hrtimer, struct mbox_controller, poll_hrt);
 	bool txdone, resched = false;
 	int i;
-
-	stop_timer(hrtimer);
 
 	for (i = 0; i < mbox->num_chans; i++) {
 		struct mbox_chan *chan = &mbox->chans[i];
@@ -174,22 +153,12 @@ static enum hrtimer_restart txdone_hrtimer(struct hrtimer *hrtimer)
 	}
 
 	if (resched) {
-#if 0
 		hrtimer_forward_now(hrtimer, ms_to_ktime(mbox->txpoll_period));
-#else
-		set_timer(hrtimer, NOW() + MILLISECS(mbox->txpoll_period));
-#endif
 		return HRTIMER_RESTART;
 	}
 	return HRTIMER_NORESTART;
 }
-
-static void mbox_timer_fn(void *data)
-{
-	struct hrtimer *hrtimer = data;
-
-	txdone_hrtimer(hrtimer);
-}
+#endif
 
 /**
  * mbox_chan_received_data - A way for controller driver to push data
@@ -507,13 +476,26 @@ int mbox_controller_register(struct mbox_controller *mbox)
 	if (!mbox || !mbox->dev || !mbox->ops || !mbox->num_chans)
 		return -EINVAL;
 
+	/*
+	 * Unfortunately, here we have to prevent some controllers (which need
+	 * polling timer involved) from being registered. The possible controller
+	 * must have both TX-Done and RX-Done irqs or to be completely synchronous.
+	 */
+	if (!mbox->rxdone_auto) {
+		dev_err(mbox->dev, "rx polling method is not supported\n");
+		return -EINVAL;
+	}
+
 	if (mbox->txdone_irq)
 		txdone = TXDONE_BY_IRQ;
-	else if (mbox->txdone_poll)
-		txdone = TXDONE_BY_POLL;
+	else if (mbox->txdone_poll) {
+		dev_err(mbox->dev, "tx polling method is not supported\n");
+		return -EINVAL;
+	}
 	else /* It has to be ACK then */
 		txdone = TXDONE_BY_ACK;
 
+#if 0 /* We don't support timer based polling. */
 	if (txdone == TXDONE_BY_POLL) {
 
 		if (!mbox->ops->last_tx_done) {
@@ -521,14 +503,11 @@ int mbox_controller_register(struct mbox_controller *mbox)
 			return -EINVAL;
 		}
 
-#if 0
 		hrtimer_init(&mbox->poll_hrt, CLOCK_MONOTONIC,
 			     HRTIMER_MODE_REL);
 		mbox->poll_hrt.function = txdone_hrtimer;
-#else
-		init_timer(&mbox->poll_hrt, mbox_timer_fn, &mbox->poll_hrt, 0);
-#endif
 	}
+#endif
 
 	for (i = 0; i < mbox->num_chans; i++) {
 		struct mbox_chan *chan = &mbox->chans[i];
@@ -568,11 +547,9 @@ void mbox_controller_unregister(struct mbox_controller *mbox)
 	for (i = 0; i < mbox->num_chans; i++)
 		mbox_free_channel(&mbox->chans[i]);
 
+#if 0 /* We don't support timer based polling. */
 	if (mbox->txdone_poll)
-#if 0
 		hrtimer_cancel(&mbox->poll_hrt);
-#else
-		kill_timer(&mbox->poll_hrt);
 #endif
 
 	mutex_unlock(&con_mutex);

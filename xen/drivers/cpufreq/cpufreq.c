@@ -561,11 +561,8 @@ int set_px_pminfo(uint32_t acpi_id, struct xen_processor_performance *dom0_px_in
 
         if ( dom0_px_info->flags == XEN_PX_DATA )
         {
-            struct xen_processor_px *states;
+            struct xen_processor_px *states = (dom0_px_info->states).p;
 
-#define get_xen_guest_handle(val, hnd)  do { val = (hnd).p; } while (0)
-            get_xen_guest_handle(states, dom0_px_info->states);
-#undef get_xen_guest_handle
             memcpy(pxpt->states, states,
                    dom0_px_info->state_count * sizeof(struct xen_processor_px));
         }

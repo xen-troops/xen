@@ -27,9 +27,9 @@
 #include <linux/arm-smccc.h>
 #endif
 
-#include <xen/types.h>
-#include <xen/xmalloc.h>
+#include <xen/device_tree.h>
 #include <xen/err.h>
+#include <xen/xmalloc.h>
 
 #include "mailbox_controller.h"
 #include "wrappers.h"
@@ -62,12 +62,19 @@ static inline void arm_smccc_smc(unsigned long a0, unsigned long a1,
 	res->a3 = ret[3];
 }
 
-/*
- * Ugly hack to minimize changes in direct ported code. But, this won't
- * introduce a bug since we are here only when "use_hvc" flag wasn't set
- * (smc is only allowed method).
- */
-#define arm_smccc_hvc arm_smccc_smc
+static inline void arm_smccc_hvc(unsigned long a0, unsigned long a1,
+		unsigned long a2, unsigned long a3, unsigned long a4,
+		unsigned long a5, unsigned long a6, unsigned long a7,
+		struct arm_smccc_res *res)
+{
+	/*
+	 * We should never get here since the "use_hvc" flag is always false
+	 * (smc is only allowed method).
+	*/
+	BUG();
+}
+
+/***** Start of Linux code *****/
 
 #define ARM_SMC_MBOX_USE_HVC	BIT(0)
 
@@ -159,6 +166,11 @@ static int arm_smc_mbox_probe(struct platform_device *pdev)
 
 	mbox->txdone_poll = false;
 	mbox->txdone_irq = false;
+	/*
+	 * We don't have RX-done irq, but always have received data in hand since
+	 * mailbox is synchronous.
+	 */
+	mbox->rxdone_auto = true;
 	mbox->ops = &arm_smc_mbox_chan_ops;
 	mbox->dev = dev;
 
@@ -204,6 +216,8 @@ MODULE_AUTHOR("Andre Przywara <andre.przywara@arm.com>");
 MODULE_DESCRIPTION("Generic ARM smc mailbox driver");
 MODULE_LICENSE("GPL v2");
 #endif
+
+/***** End of Linux code *****/
 
 static int __init arm_smc_mbox_init(struct dt_device_node *dev,
 		const void *data)

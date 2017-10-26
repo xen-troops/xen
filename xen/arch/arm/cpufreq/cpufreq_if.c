@@ -27,7 +27,6 @@
 #include <xen/guest_access.h>
 
 #include "scpi_protocol.h"
-#include "wrappers.h"
 
 /*
  * TODO:
@@ -40,6 +39,8 @@
 static struct scpi_ops *scpi_ops;
 
 extern int scpi_cpufreq_register_driver(void);
+
+#define dev_name(dev) dt_node_full_name(dev_to_dt(dev))
 
 struct device *get_cpu_device(unsigned int cpu)
 {
@@ -121,9 +122,11 @@ static int init_cpufreq_table(struct device *cpu_dev,
     for ( opp = info->opps, i = 0; i < info->count; i++, opp++ )
     {
         freq_table[i].index = i;
-        freq_table[i].frequency = opp->freq / 1000; /* kHz */
+        /* Convert Hz -> kHz */
+        freq_table[i].frequency = opp->freq / 1000;
 
-        dev_info(cpu_dev, "Add opp %uHz %umV\n", opp->freq, opp->m_volt);
+        printk("scpi: %s: Add opp %uHz %umV\n", dev_name(cpu_dev),
+               opp->freq, opp->m_volt);
     }
 
     freq_table[i].index = i;
@@ -209,8 +212,10 @@ static int upload_cpufreq_data(cpumask_t *mask,
         if ( freq == max_freq )
             platform_limit = index;
 
-        states[index].core_frequency = freq / 1000; /* MHz */
-        states[index].transition_latency = latency / 1000; /* us */
+        /* Convert kHz -> MHz */
+        states[index].core_frequency = freq / 1000;
+        /* Convert ns -> us */
+        states[index].transition_latency = DIV_ROUND_UP(latency, 1000);
     }
 
     perf->flags = XEN_PX_DATA; /* all info in a one-shot */
@@ -262,7 +267,7 @@ int __init scpi_cpufreq_postinit(void)
         cpu_dev = get_cpu_device(cpu);
         if ( !cpu_dev )
         {
-            printk("failed to get cpu%d device\n", cpu);
+            printk("scpi: failed to get cpu%d device\n", cpu);
             return -ENODEV;
         }
 
@@ -272,7 +277,8 @@ int __init scpi_cpufreq_postinit(void)
         ret = get_sharing_cpus(cpu, &shared_cpus);
         if ( ret )
         {
-            dev_err(cpu_dev, "failed to get sharing cpumask (%d)\n", ret);
+            printk("scpi: %s: failed to get sharing cpumask (%d)\n",
+                   dev_name(cpu_dev), ret);
             return ret;
         }
 
@@ -282,7 +288,8 @@ int __init scpi_cpufreq_postinit(void)
         ret = init_cpufreq_table(cpu_dev, &freq_table);
         if ( ret )
         {
-            dev_err(cpu_dev, "failed to init cpufreq table (%d)\n", ret);
+            printk("scpi: %s: failed to init cpufreq table (%d)\n",
+                   dev_name(cpu_dev), ret);
             return ret;
         }
 
@@ -290,7 +297,8 @@ int __init scpi_cpufreq_postinit(void)
         free_cpufreq_table(&freq_table);
         if ( ret )
         {
-            dev_err(cpu_dev, "failed to upload cpufreq data (%d)\n", ret);
+            printk("scpi: %s: failed to upload cpufreq data (%d)\n",
+                   dev_name(cpu_dev), ret);
             return ret;
         }
     }
@@ -319,7 +327,8 @@ static int __init scpi_clocks_init(struct dt_device_node *np)
         ret = dt_property_count_strings(child, "clock-output-names");
         if ( ret < 0 )
         {
-            dev_err(&np->dev, "%s: invalid clock output count\n", child->name);
+            printk("scpi: %s: invalid clock output count @ %s\n",
+                   dev_name(&np->dev), child->name);
             break;
         }
         count = ret;
@@ -334,7 +343,8 @@ static int __init scpi_clocks_init(struct dt_device_node *np)
                                                 idx, &name);
             if ( ret )
             {
-                dev_err(&np->dev, "invalid clock name @ %s\n", child->name);
+                printk("scpi: %s: invalid clock name @ %s\n",
+                       dev_name(&np->dev), child->name);
                 break;
             }
 
@@ -342,18 +352,23 @@ static int __init scpi_clocks_init(struct dt_device_node *np)
                                              idx, &domain);
             if ( ret )
             {
-                dev_err(&np->dev, "invalid clock index @ %s\n", child->name);
+                printk("scpi: %s: invalid clock index @ %s\n",
+                       dev_name(&np->dev), child->name);
                 break;
             }
 
             info = scpi_ops->dvfs_get_info(domain);
             if ( IS_ERR(info) )
             {
+                printk("scpi: %s: failed to get DVFS info of "
+                       "power domain %u (clock '%s')\n",
+                       dev_name(&np->dev), domain, name);
                 ret = PTR_ERR(info);
                 break;
             }
 
-            dev_dbg(&np->dev, "found DVFS clock '%s'\n", name);
+            printk(XENLOG_DEBUG "scpi: %s: found DVFS clock '%s'\n",
+                   dev_name(&np->dev), name);
         }
 
         break;
@@ -361,7 +376,8 @@ static int __init scpi_clocks_init(struct dt_device_node *np)
 
     if ( ret )
     {
-        dev_err(&np->dev, "failed to init DVFS clocks (%d)\n", ret);
+        printk("scpi: %s: failed to init SCPI DVFS clocks (%d)\n",
+               dev_name(&np->dev), ret);
         return ret;
     }
 
@@ -381,7 +397,7 @@ int __init scpi_cpufreq_preinit(void)
     ret = scpi_init();
     if ( ret )
     {
-        printk("failed to init SCPI (%d)\n", ret);
+        printk("scpi: failed to init SCPI (%d)\n", ret);
         return ret;
     }
 
@@ -409,7 +425,8 @@ int __init scpi_cpufreq_preinit(void)
 
     if ( ret )
     {
-        dev_err(&np->dev, "failed to init SCPI clocks (%d)\n", ret);
+        printk("scpi: %s: failed to init SCPI clocks (%d)\n",
+               dev_name(&np->dev), ret);
         return ret;
     }
 

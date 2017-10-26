@@ -60,11 +60,8 @@ static unsigned int scpi_cpufreq_get(unsigned int cpu)
         return 0;
 
     policy = per_cpu(cpufreq_cpu_policy, cpu);
-    if ( !policy || !( data = cpufreq_driver_data[policy->cpu] ) )
-        return 0;
-
-    /* Sanity check */
-    if ( data->domain_id < 0 || !data->info )
+    if ( !policy || !( data = cpufreq_driver_data[policy->cpu] ) ||
+         !data->info )
         return 0;
 
     idx = scpi_ops->dvfs_get_idx(data->domain_id);
@@ -73,22 +70,8 @@ static unsigned int scpi_cpufreq_get(unsigned int cpu)
 
     opp = data->info->opps + idx;
 
-    return opp->freq / 1000; /* kHz */
-}
-
-static unsigned int check_freq(unsigned int cpu, unsigned int freq)
-{
-    unsigned int curr_freq;
-    int i;
-
-    for ( i = 0; i < 100; i++ )
-    {
-        curr_freq = scpi_cpufreq_get(cpu);
-        if ( curr_freq == freq )
-            return 1;
-        udelay(10);
-    }
-    return 0;
+    /* Convert Hz -> kHz */
+    return opp->freq / 1000;
 }
 
 static int scpi_cpufreq_target(struct cpufreq_policy *policy,
@@ -101,11 +84,11 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
     unsigned int next_state = 0; /* Index into freq_table */
     unsigned int next_perf_state = 0; /* Index into perf table */
     unsigned int j;
-    int result = 0;
+    int result;
     const struct scpi_opp *opp;
     int idx, max_opp;
 
-    if ( unlikely(!data) || !data->perf || !data->freq_table )
+    if ( unlikely(!data) || !data->perf || !data->freq_table || !data->info )
         return -ENODEV;
 
     perf = data->perf;
@@ -127,35 +110,24 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
             return 0;
     }
 
+    /* Convert MHz -> kHz */
     freqs.old = perf->states[perf->state].core_frequency * 1000;
     freqs.new = data->freq_table[next_state].frequency;
 
-    /* Sanity check. TODO Put this at the beginning. */
-    if ( data->domain_id < 0 || !data->info )
-        return -EINVAL;
-
     max_opp = data->info->count;
     opp = data->info->opps;
-
     for ( idx = 0; idx < max_opp; idx++, opp++ )
     {
-        if ( opp->freq == freqs.new * 1000 /* Hz */ )
+        /* Compare in kHz */
+        if ( opp->freq / 1000 == freqs.new )
             break;
     }
-
     if ( idx == max_opp )
         return -EINVAL;
 
-    result = scpi_ops->dvfs_set_idx(data->domain_id, (u8)idx);
+    result = scpi_ops->dvfs_set_idx(data->domain_id, idx);
     if ( result < 0 )
         return result;
-
-    /* TODO x86 checks acpi_pstate_strict here */
-    if ( 1 && !check_freq(policy->cpu, freqs.new) )
-    {
-        printk(KERN_WARNING "Fail transfer to new freq %d\n", freqs.new);
-        return -EAGAIN;
-    }
 
     for_each_cpu( j, &online_policy_cpus )
         cpufreq_statistic_update(j, perf->state, next_perf_state);
@@ -177,6 +149,7 @@ static int scpi_cpufreq_verify(struct cpufreq_policy *policy)
 
     perf = &processor_pminfo[policy->cpu]->perf;
 
+    /* Convert MHz -> kHz */
     cpufreq_verify_within_limits(policy, 0,
         perf->states[perf->platform_limit].core_frequency * 1000);
 
@@ -187,22 +160,25 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 {
     unsigned int i;
     unsigned int valid_states = 0;
-    unsigned int cpu = policy->cpu;
     unsigned int curr_state, curr_freq;
     struct scpi_cpufreq_data *data;
-    unsigned int result = 0;
+    int result;
     struct processor_performance *perf;
     struct scpi_dvfs_info *info;
     int domain_id;
     struct device *cpu_dev;
 
+    cpu_dev = get_cpu_device(policy->cpu);
+    if ( !cpu_dev )
+        return -ENODEV;
+
     data = xzalloc(struct scpi_cpufreq_data);
     if ( !data )
         return -ENOMEM;
 
-    cpufreq_driver_data[cpu] = data;
+    cpufreq_driver_data[policy->cpu] = data;
 
-    data->perf = &processor_pminfo[cpu]->perf;
+    data->perf = &processor_pminfo[policy->cpu]->perf;
 
     perf = data->perf;
     policy->shared_type = perf->shared_type;
@@ -215,26 +191,30 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
         goto err_unreg;
     }
 
-    /* detect transition latency */
+    /* Detect transition latency */
     policy->cpuinfo.transition_latency = 0;
     for ( i = 0; i < perf->state_count; i++ )
     {
-        if ( (perf->states[i].transition_latency * 1000) >
-            policy->cpuinfo.transition_latency )
+        /* Compare in ns */
+        if ( perf->states[i].transition_latency * 1000 >
+             policy->cpuinfo.transition_latency )
+            /* Convert us -> ns */
             policy->cpuinfo.transition_latency =
                 perf->states[i].transition_latency * 1000;
     }
 
     policy->governor = cpufreq_opt_governor ? : CPUFREQ_DEFAULT_GOVERNOR;
 
-    /* table init */
+    /* Init frequency table */
     for ( i = 0; i < perf->state_count; i++ )
     {
+        /* Compare in MHz */
         if ( i > 0 && perf->states[i].core_frequency >=
              data->freq_table[valid_states - 1].frequency / 1000 )
             continue;
 
         data->freq_table[valid_states].index = i;
+        /* Convert MHz -> kHz */
         data->freq_table[valid_states].frequency =
             perf->states[i].core_frequency * 1000;
         valid_states++;
@@ -246,14 +226,7 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
     if ( result )
         goto err_freqfree;
 
-    /* Fill in fields needed for frequency changing. */
-    cpu_dev = get_cpu_device(cpu);
-    if ( !cpu_dev )
-    {
-        result = -ENODEV;
-        goto err_freqfree;
-    }
-
+    /* Fill in fields needed for frequency changing */
     domain_id = scpi_ops->device_domain_id(cpu_dev);
     if ( domain_id < 0 )
     {
@@ -271,8 +244,9 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
     data->info = info;
 
     /* Retrieve current frequency */
-    curr_freq = scpi_cpufreq_get(cpu);
+    curr_freq = scpi_cpufreq_get(policy->cpu);
 
+    /* Find corresponding freq and get it's state */
     curr_state = 0;
     for ( i = 0; data->freq_table[i].frequency != CPUFREQ_TABLE_END; i++ )
     {
@@ -283,7 +257,7 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
         }
     }
 
-    /* update fields with actual values */
+    /* Update fields with actual values */
     policy->cur = curr_freq;
     perf->state = data->freq_table[curr_state].index;
 
@@ -299,7 +273,7 @@ err_freqfree:
     xfree(data->freq_table);
 err_unreg:
     xfree(data);
-    cpufreq_driver_data[cpu] = NULL;
+    cpufreq_driver_data[policy->cpu] = NULL;
 
     return result;
 }
