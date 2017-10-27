@@ -925,7 +925,7 @@ static int parse_vsnd_pcm_stream(libxl_device_vsnd *vsnd, char *param)
         char *oparg;
 
         if (MATCH_OPTION("id", param, oparg)) {
-            stream->id = strtoul(oparg, NULL, 0);
+            stream->id = strdup(oparg);
         } else if (MATCH_OPTION("type", param, oparg)) {
 
             if (libxl_vsnd_stream_type_from_string(oparg, &stream->type)) {
