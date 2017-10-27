@@ -28,6 +28,18 @@ static int libxl__device_vkb_dm_needed(libxl_device_vkb *vkb, uint32_t domid)
     return 0;
 }
 
+static int libxl__set_xenstore_vkb(libxl__gc *gc, uint32_t domid,
+                                   libxl_device_vkb *vkb,
+                                   flexarray_t *back, flexarray_t *front,
+                                   flexarray_t *ro_front)
+{
+    if (vkb->id) {
+        flexarray_append_pair(front, "id", vkb->id);
+    }
+
+    return 0;
+}
+
 static int libxl__vkb_from_xenstore(libxl__gc *gc, const char *libxl_path,
                                     libxl_devid devid,
                                     libxl_device_vkb *vkb)
@@ -97,6 +109,8 @@ int libxl_device_vkb_getinfo(libxl_ctx *ctx, uint32_t domid,
                              NULL);
     info->frontend_id = domid;
 
+    info->id = xs_read(ctx->xsh, XBT_NULL, GCSPRINTF("%s/id", devpath), NULL);
+
     val = libxl__xs_read(gc, XBT_NULL,
           GCSPRINTF("%s/"XENKBD_FIELD_EVT_CHANNEL, devpath));
     info->evtch = val ? strtoul(val, NULL, 10) : -1;
@@ -125,7 +139,9 @@ LIBXL_DEFINE_DEVICE_REMOVE(vkb)
 DEFINE_DEVICE_TYPE_STRUCT(vkb, VKBD,
     .skip_attach = 1,
     .dm_needed   = (device_dm_needed_fn_t)libxl__device_vkb_dm_needed,
-    .from_xenstore = (device_from_xenstore_fn_t)libxl__vkb_from_xenstore
+    .from_xenstore = (device_from_xenstore_fn_t)libxl__vkb_from_xenstore,
+    .set_xenstore_config = (device_set_xenstore_config_fn_t)
+                           libxl__set_xenstore_vkb,
 );
 
 /*

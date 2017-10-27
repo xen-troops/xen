@@ -1535,6 +1535,10 @@ settings from the following list:
 
 =over 4
 
+=item B<id=STRING>
+
+Specifies the unique input id.
+
 =item B<backend=domain-id>
 
 Specifies the backend domain name or id.
