@@ -1113,7 +1113,10 @@ int parse_vkb_config(libxl_device_vkb *vkb, char *token)
             return -1;
         }
         vkb->backend_type = backend_type;
-    } else {
+    } else if (MATCH_OPTION("id", token, oparg)) {
+        vkb->id = strdup(oparg);
+    }
+    else {
         fprintf(stderr, "Unknown string \"%s\" in vkb spec\n", token);
         return -1;
     }
@@ -1154,7 +1157,7 @@ static void parse_vkb_list(const XLU_Config *config,
 
             if (vkb->backend_type == LIBXL_VKB_BACKEND_UNKNOWN) {
                 fprintf(stderr, "backend-type should be set in vkb spec\n");
-                rc = -1; goto out;
+                rc = ERROR_FAIL; goto out;
             }
 
             entry++;
