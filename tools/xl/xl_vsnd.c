@@ -142,7 +142,7 @@ int main_vsndlist(int argc, char **argv)
                        libxl_vsnd_stream *stream = &vsnds[i].pcms[j].streams[k];
                        libxl_streaminfo *info = &vsndinfo.pcms[j].streams[k];
 
-                       printf("\t\tstream: %d, id: %u, type: %s",
+                       printf("\t\tstream: %d, id: %s, type: %s",
                               k, stream->id,
                               libxl_vsnd_stream_type_to_string(stream->type));
                        print_params(&stream->params);
