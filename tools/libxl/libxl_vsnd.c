@@ -131,6 +131,7 @@ static int libxl__params_from_xenstore(libxl__gc *gc, const char *path,
 static int libxl__stream_from_xenstore(libxl__gc *gc, const char *path,
                                        libxl_vsnd_stream *stream)
 {
+    libxl_ctx *ctx = libxl__gc_owner(gc);
     const char *tmp;
     int rc;
 
@@ -139,9 +140,9 @@ static int libxl__stream_from_xenstore(libxl__gc *gc, const char *path,
                                           path), &tmp);
     if (rc) return rc;
 
-    if (tmp) {
-        stream->id = strtoul(tmp, NULL, 0);
-    }
+    stream->id = xs_read(ctx->xsh, XBT_NULL,
+                         GCSPRINTF("%s/"XENSND_FIELD_STREAM_UNIQUE_ID, path),
+                         NULL);
 
     rc = libxl__xs_read_checked(gc, XBT_NULL,
                                 GCSPRINTF("%s/"XENSND_FIELD_TYPE,
@@ -414,10 +415,12 @@ static int libxl__set_streams_vsnd(libxl__gc *gc, char *path,
     int rc;
 
     for (i = 0; i < num_streams; i++) {
-        rc = flexarray_append_pair(front,
-                 GCSPRINTF("%s%d/"XENSND_FIELD_STREAM_UNIQUE_ID, path, i),
-                 GCSPRINTF("%u", streams[i].id));
-        if (rc) return rc;
+        if (streams[i].id) {
+            rc = flexarray_append_pair(front,
+                     GCSPRINTF("%s%d/"XENSND_FIELD_STREAM_UNIQUE_ID, path, i),
+                     streams[i].id);
+            if (rc) return rc;
+        }
 
         const char *type = libxl_vsnd_stream_type_to_string(streams[i].type);
 
