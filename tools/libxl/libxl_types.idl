@@ -862,7 +862,7 @@ libxl_vsnd_stream_type = Enumeration("vsnd_stream_type", [
     ])
 
 libxl_vsnd_stream = Struct("vsnd_stream", [
-    ("id", uint32),
+    ("id", string),
     ("type", libxl_vsnd_stream_type),
     ("params", libxl_vsnd_params)
     ])
