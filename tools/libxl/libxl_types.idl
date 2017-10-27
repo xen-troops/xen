@@ -613,7 +613,8 @@ libxl_device_vkb = Struct("device_vkb", [
     ("backend_domid", libxl_domid),
     ("backend_domname", string),
     ("devid", libxl_devid),
-    ("backend_type", libxl_vkb_backend)
+    ("backend_type", libxl_vkb_backend),
+    ("id", string)
     ])
 
 libxl_device_disk = Struct("device_disk", [
@@ -1024,6 +1025,7 @@ libxl_vkbinfo = Struct("vkbinfo", [
     ("frontend", string),
     ("frontend_id", uint32),
     ("devid", libxl_devid),
+    ("id", string),
     ("state", integer),
     ("evtch", integer),
     ("rref", integer)

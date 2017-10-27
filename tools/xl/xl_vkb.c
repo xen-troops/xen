@@ -71,9 +71,9 @@ int main_vkblist(int argc, char **argv)
         /* No options */
     }
 
-    /*      Idx  BE   Hdl  Sta  evch ref  BE-path */
-    printf("%-3s %-2s %-6s %-5s %-6s %6s %-30s\n",
-           "Idx", "BE", "handle", "state", "evt-ch", "ref", "BE-path");
+    /*      Idx id     BE   Hdl  Sta  evch ref BE-path */
+    printf("%-3s %-10s %-2s %-6s %-5s %-6s %6s %-30s\n",
+           "Idx", "ID", "BE", "handle", "state", "evt-ch", "ref", "BE-path");
     for (argv += optind, argc -= optind; argc > 0; --argc, ++argv) {
         uint32_t domid = find_domain(*argv);
         vkbs = libxl_device_vkb_list(ctx, domid, &nb);
@@ -83,7 +83,9 @@ int main_vkblist(int argc, char **argv)
         for (i = 0; i < nb; ++i) {
             if (!libxl_device_vkb_getinfo(ctx, domid, &vkbs[i], &vkbinfo)) {
                 /* Idx BE */
-                printf("%-3d %-2d ", vkbinfo.devid, vkbinfo.backend_id);
+                printf("%-3d %-10s %-2d ", vkbinfo.devid,
+                                           vkbinfo.id ? vkbinfo.id : "",
+                                           vkbinfo.backend_id);
                 /* Hdl  Sta  evch ref  BE-path */
                 printf("%6d %5d %6d %6d %-30s\n",
                         vkbinfo.devid, vkbinfo.state, vkbinfo.evtch,
