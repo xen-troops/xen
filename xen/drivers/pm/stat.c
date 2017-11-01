@@ -35,10 +35,9 @@
 #include <asm/processor.h>
 #include <xen/percpu.h>
 #include <xen/domain.h>
-#include <xen/acpi.h>
 
 #include <public/sysctl.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 #include <xen/pmstat.h>
 
 DEFINE_PER_CPU_READ_MOSTLY(struct pm_px *, cpufreq_statistic_data);
@@ -132,6 +131,8 @@ int do_get_pm_info(struct xen_sysctl_get_pmstat *op)
         break;
     }
 
+/* For now those operations can be used only when ACPI is enabled */
+#ifdef CONFIG_ACPI
     case PMSTAT_get_max_cx:
     {
         op->u.getcx.nr = pmstat_get_cx_nr(op->cpuid);
@@ -150,6 +151,7 @@ int do_get_pm_info(struct xen_sysctl_get_pmstat *op)
         ret = pmstat_reset_cx_stat(op->cpuid);
         break;
     }
+#endif /* CONFIG_ACPI */
 
     default:
         printk("not defined sub-hypercall @ do_get_pm_info\n");
@@ -290,7 +292,11 @@ static int get_cpufreq_para(struct xen_sysctl_pm_op *op)
             &op->u.get_para.u.ondemand.sampling_rate,
             &op->u.get_para.u.ondemand.up_threshold);
     }
+#ifdef CONFIG_HAS_CPU_TURBO
     op->u.get_para.turbo_enabled = cpufreq_get_turbo_status(op->cpuid);
+#else
+    op->u.get_para.turbo_enabled = 0;
+#endif
 
     return ret;
 }
@@ -461,6 +467,7 @@ int do_pm_op(struct xen_sysctl_pm_op *op)
         break;
     }
 
+#ifdef CONFIG_ACPI
     case XEN_SYSCTL_pm_op_get_max_cstate:
     {
         op->u.get_max_cstate = acpi_get_cstate_limit();
@@ -472,7 +479,9 @@ int do_pm_op(struct xen_sysctl_pm_op *op)
         acpi_set_cstate_limit(op->u.set_max_cstate);
         break;
     }
+#endif /* CONFIG_ACPI */
 
+#ifdef CONFIG_HAS_CPU_TURBO
     case XEN_SYSCTL_pm_op_enable_turbo:
     {
         ret = cpufreq_update_turbo(op->cpuid, CPUFREQ_TURBO_ENABLED);
@@ -484,6 +493,7 @@ int do_pm_op(struct xen_sysctl_pm_op *op)
         ret = cpufreq_update_turbo(op->cpuid, CPUFREQ_TURBO_DISABLED);
         break;
     }
+#endif /* CONFIG_HAS_CPU_TURBO */
 
     default:
         printk("not defined sub-hypercall @ do_pm_op\n");
@@ -494,6 +504,7 @@ int do_pm_op(struct xen_sysctl_pm_op *op)
     return ret;
 }
 
+#ifdef CONFIG_ACPI
 int acpi_set_pdc_bits(u32 acpi_id, XEN_GUEST_HANDLE_PARAM(uint32) pdc)
 {
     u32 bits[3];
@@ -524,3 +535,4 @@ int acpi_set_pdc_bits(u32 acpi_id, XEN_GUEST_HANDLE_PARAM(uint32) pdc)
 
     return ret;
 }
+#endif /* CONFIG_ACPI */

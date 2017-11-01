@@ -23,6 +23,8 @@ config X86
 	select HAS_PDX
 	select NUMA
 	select VGA
+	select HAS_PM
+	select HAS_CPU_TURBO
 
 config ARCH_DEFCONFIG
 	string
