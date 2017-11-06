@@ -530,7 +530,7 @@ static void put_scpi_xfer(struct scpi_xfer *t, struct scpi_chan *ch)
 static int scpi_send_message(u8 idx, void *tx_buf, unsigned int tx_len,
 			     void *rx_buf, unsigned int rx_len)
 {
-	int ret;
+	int ret, ret2;
 	u8 chan;
 	u8 cmd;
 	struct scpi_xfer *msg;
@@ -566,21 +566,37 @@ static int scpi_send_message(u8 idx, void *tx_buf, unsigned int tx_len,
 	reinit_completion(&msg->done);
 
 	ret = mbox_send_message(scpi_chan->chan, msg);
-	if (ret < 0 || !rx_buf)
+	if (ret < 0 || !rx_buf) {
+		/* mbox_send_message returns non-negative value on success */
+		ret2 = ret < 0 ? ret : 0;
 		goto out;
+	}
 
 	if (!wait_for_completion_timeout(&msg->done, MAX_RX_TIMEOUT))
 		ret = -ETIMEDOUT;
 	else
 		/* first status word */
 		ret = msg->status;
+
+	/* SCPI error codes > 0, translate them to Linux scale */
+	ret2 = ret > 0 ? scpi_to_linux_errno(ret) : ret;
+
+	/*
+	 * If the mailbox controller has TX-done irq it definitely knows when
+	 * transmitted data has been sent and it is responsible for calling
+	 * mbox_chan_txdone() to signal framework about TX-done.
+	 * If controller can't generate TX-Done irq the client has to signal
+	 * TX-done by itself.
+	 */
+	if (!scpi_chan->chan->mbox->txdone_irq)
+		mbox_client_txdone(scpi_chan->chan, ret2);
+
 out:
 	if (ret < 0 && rx_buf) /* remove entry from the list if timed-out */
 		scpi_process_cmd(scpi_chan, msg->cmd);
 
 	put_scpi_xfer(msg, scpi_chan);
-	/* SCPI error codes > 0, translate them to Linux scale*/
-	return ret > 0 ? scpi_to_linux_errno(ret) : ret;
+	return ret2;
 }
 
 static u32 scpi_get_version(void)
@@ -1026,9 +1042,9 @@ static int scpi_probe(struct platform_device *pdev)
 		cl->dev = dev;
 		cl->rx_callback = scpi_handle_remote_msg;
 		cl->tx_prepare = scpi_tx_prepare;
-		cl->tx_block = true;
-		cl->tx_tout = 20;
-		cl->knows_txdone = false; /* controller can't ack */
+		/* Use non-blocking mode for client */
+		cl->tx_block = false;
+		cl->knows_txdone = true;
 
 		INIT_LIST_HEAD(&pchan->rx_pending);
 		INIT_LIST_HEAD(&pchan->xfers_list);
