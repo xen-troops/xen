@@ -79,15 +79,8 @@ static int arm_smc_send_data(struct mbox_chan *link, void *data)
 	return 0;
 }
 
-/* This mailbox is synchronous, so we are always done. */
-static bool arm_smc_last_tx_done(struct mbox_chan *link)
-{
-	return true;
-}
-
 static const struct mbox_chan_ops arm_smc_mbox_chan_ops = {
 	.send_data	= arm_smc_send_data,
-	.last_tx_done	= arm_smc_last_tx_done
 };
 
 static int arm_smc_mbox_probe(struct platform_device *pdev)
@@ -150,9 +143,8 @@ static int arm_smc_mbox_probe(struct platform_device *pdev)
 		mbox->chans[i].con_priv = &chan_data[i];
 	}
 
-	mbox->txdone_poll = true;
+	mbox->txdone_poll = false;
 	mbox->txdone_irq = false;
-	mbox->txpoll_period = 1;
 	/*
 	 * We don't have RX-done irq, but always have received data in hand since
 	 * mailbox is synchronous.
