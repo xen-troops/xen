@@ -3,7 +3,9 @@
 
 #include <public/platform.h>
 #include <public/sysctl.h>
+#ifdef CONFIG_ACPI
 #include <xen/acpi.h>
+#endif
 
 #define XEN_PX_INIT 0x80000000
 
@@ -24,8 +26,10 @@ int  cpufreq_del_cpu(unsigned int);
 struct processor_performance {
     uint32_t state;
     uint32_t platform_limit;
+#ifdef CONFIG_ACPI
     struct xen_pct_register control_register;
     struct xen_pct_register status_register;
+#endif
     uint32_t state_count;
     struct xen_processor_px *states;
     struct xen_psd_package domain_info;
@@ -35,8 +39,10 @@ struct processor_performance {
 };
 
 struct processor_pminfo {
+#ifdef CONFIG_ACPI
     uint32_t acpi_id;
     uint32_t id;
+#endif
     struct processor_performance    perf;
 };
 

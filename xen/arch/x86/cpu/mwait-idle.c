@@ -58,7 +58,7 @@
 #include <asm/hpet.h>
 #include <asm/mwait.h>
 #include <asm/msr.h>
-#include <acpi/cpufreq/cpufreq.h>
+#include <xen/cpufreq.h>
 
 #define MWAIT_IDLE_VERSION "0.4.1"
 #undef PREFIX
