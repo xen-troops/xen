@@ -265,7 +265,7 @@ static int disk_try_backend(disk_try_backend_args *a,
         if (libxl_defbool_val(a->disk->colo_enable))
             goto bad_colo;
 
-        if (a->disk->backend_domid != LIBXL_TOOLSTACK_DOMID) {
+        if (libxl__is_driver_domain(gc, a->disk->backend_domid)) {
             LOG(DEBUG, "Disk vdev=%s, is using a storage driver domain, "
                        "skipping physical device check", a->disk->vdev);
             return backend;
@@ -374,7 +374,7 @@ int libxl__device_disk_set_backend(libxl__gc *gc, libxl_device_disk *disk) {
         memset(&a.stab, 0, sizeof(a.stab));
     } else if ((disk->backend == LIBXL_DISK_BACKEND_UNKNOWN ||
                 disk->backend == LIBXL_DISK_BACKEND_PHY) &&
-               disk->backend_domid == LIBXL_TOOLSTACK_DOMID &&
+               (!libxl__is_driver_domain(gc, disk->backend_domid)) &&
                !disk->script) {
         if (stat(disk->pdev_path, &a.stab)) {
             LOGE(ERROR, "Disk vdev=%s failed to stat: %s",
@@ -732,7 +732,7 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
                 libxl__xs_path_cleanup(gc, t, fe_path);
             libxl__xs_path_cleanup(gc, t, libxl_path);
         }
-        if (dev->backend_domid == domid && !libxl_only) {
+        if (!libxl__is_driver_domain(gc, dev->backend_domid) && !libxl_only) {
             /*
              * The driver domain is in charge of removing what it can
              * from the backend path.
@@ -1110,7 +1110,7 @@ static void device_hotplug(libxl__egc *egc, libxl__ao_device *aodev)
         LOGD(ERROR, aodev->dev->domid, "Failed to get domid");
         goto out;
     }
-    if (aodev->dev->backend_domid != domid) {
+    if (libxl__is_driver_domain(gc, aodev->dev->backend_domid)) {
         LOGD(DEBUG, aodev->dev->domid,
              "Backend domid %d, domid %d, assuming driver domains",
              aodev->dev->backend_domid, domid);
