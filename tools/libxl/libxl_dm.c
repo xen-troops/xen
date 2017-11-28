@@ -2527,7 +2527,7 @@ int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
             continue;
 
         for (i = 0; i < num; i++) {
-            if (dt->dm_needed(gc, libxl__device_type_get_elem(dt, d_config, i),
+            if (dt->dm_needed(libxl__device_type_get_elem(dt, d_config, i),
                               domid)) {
                 ret = 1;
                 goto out;
@@ -2536,7 +2536,7 @@ int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
     }
 
     for (i = 0; i < d_config->num_channels; i++) {
-        if (!libxl__is_driver_domain(gc, d_config->channels[i].backend_domid)) {
+        if (d_config->channels[i].backend_domid == domid) {
             /* xenconsoled is limited to the first console only.
                Until this restriction is removed we must use qemu for
                secondary consoles which includes all channels. */

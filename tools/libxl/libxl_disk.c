@@ -1185,12 +1185,12 @@ static void libxl_device_disk_merge(libxl_ctx *ctx, void *d1, void *d2)
     }
 }
 
-static int libxl_device_disk_dm_needed(libxl__gc *gc, void *e, unsigned domid)
+static int libxl_device_disk_dm_needed(void *e, unsigned domid)
 {
     libxl_device_disk *elem = e;
 
     return elem->backend == LIBXL_DISK_BACKEND_QDISK &&
-           (!libxl__is_driver_domain(gc, elem->backend_domid));
+           elem->backend_domid == domid;
 }
 
 LIBXL_DEFINE_DEVICE_LIST(disk)
