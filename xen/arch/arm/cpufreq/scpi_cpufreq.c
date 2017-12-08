@@ -33,6 +33,8 @@
 
 #include "scpi_protocol.h"
 
+extern int dev_pm_opp_set_rate(unsigned long target_freq);
+
 extern struct device *get_cpu_device(unsigned int cpu);
 
 struct scpi_cpufreq_data
@@ -152,6 +154,8 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
     result = scpi_ops->dvfs_set_idx(data->domain, idx);
     if ( result < 0 )
         return result;
+
+    dev_pm_opp_set_rate(freqs.new * 1000);
 
     for_each_cpu( j, &online_policy_cpus )
         cpufreq_statistic_update(j, perf->state, next_perf_state);
