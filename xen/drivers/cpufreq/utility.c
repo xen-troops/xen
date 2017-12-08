@@ -221,9 +221,12 @@ int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy,
         if (freq > max_freq)
             max_freq = freq;
     }
+
+    /* Clarify second_max_freq which is highest non-turbo frequency */
     for (i=0; (table[i].frequency != CPUFREQ_TABLE_END); i++) {
         unsigned int freq = table[i].frequency;
-        if (freq == CPUFREQ_ENTRY_INVALID || freq == max_freq)
+        if ((freq == CPUFREQ_ENTRY_INVALID) ||
+            (table[i].flags & CPUFREQ_BOOST_FREQ))
             continue;
         if (freq > second_max_freq)
             second_max_freq = freq;

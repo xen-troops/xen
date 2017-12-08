@@ -49,6 +49,25 @@ static struct cpufreq_driver scpi_cpufreq_driver;
 
 static struct scpi_ops *scpi_ops;
 
+static int scpi_cpufreq_update(int cpuid, struct cpufreq_policy *policy)
+{
+    if ( !cpumask_test_cpu(cpuid, &cpu_online_map) )
+        return -EINVAL;
+
+    if ( policy->turbo != CPUFREQ_TURBO_UNSUPPORTED )
+    {
+        /* TODO Do we need some actions here? */
+        if ( policy->turbo == CPUFREQ_TURBO_ENABLED )
+            printk(XENLOG_INFO "cpu%u: Turbo Mode enabled\n", policy->cpu);
+        else
+            printk(XENLOG_INFO "cpu%u: Turbo Mode disabled\n", policy->cpu);
+    }
+    else
+        printk(XENLOG_INFO "cpu%u: Turbo Mode unsupported\n", policy->cpu);
+
+    return 0;
+}
+
 static unsigned int scpi_cpufreq_get(unsigned int cpu)
 {
     struct scpi_cpufreq_data *data;
@@ -88,8 +107,12 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
     const struct scpi_opp *opp;
     int idx, max_opp;
 
-    if ( unlikely(!data) || !data->perf || !data->freq_table || !data->info )
+    if ( unlikely(!data || !data->perf || !data->freq_table || !data->info) )
         return -ENODEV;
+
+    if ( policy->turbo == CPUFREQ_TURBO_DISABLED )
+        if ( target_freq > policy->cpuinfo.second_max_freq )
+            target_freq = policy->cpuinfo.second_max_freq;
 
     perf = data->perf;
     result = cpufreq_frequency_table_target(policy,
@@ -157,6 +180,25 @@ static int scpi_cpufreq_verify(struct cpufreq_policy *policy)
     return cpufreq_frequency_table_verify(policy, data->freq_table);
 }
 
+/* TODO Add a way to recognize Boost frequencies */
+static inline bool is_turbo_freq(int index, int count)
+{
+    /* ugly Boost frequencies recognition */
+    switch ( count )
+    {
+    /* H3 has 2 turbo-freq among 5 OPPs */
+    case 5:
+        return index <= 1 ? true : false;
+
+    /* M3 has 3 turbo-freq among 6 OPPs */
+    case 6:
+        return index <= 2 ? true : false;
+
+    default:
+        return false;
+    }
+}
+
 static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 {
     unsigned int i;
@@ -206,6 +248,9 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 
     policy->governor = cpufreq_opt_governor ? : CPUFREQ_DEFAULT_GOVERNOR;
 
+    /* Boost is not supported by default */
+    policy->turbo = CPUFREQ_TURBO_UNSUPPORTED;
+
     /* Initialize frequency table */
     for ( i = 0; i < perf->state_count; i++ )
     {
@@ -218,6 +263,22 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
         /* Convert MHz -> kHz */
         data->freq_table[valid_states].frequency =
             perf->states[i].core_frequency * 1000;
+
+        data->freq_table[valid_states].flags = 0;
+        if ( is_turbo_freq(valid_states, perf->state_count) )
+        {
+            printk(XENLOG_INFO "cpu%u: Turbo freq detected: %u\n",
+                   policy->cpu, data->freq_table[valid_states].frequency);
+            data->freq_table[valid_states].flags |= CPUFREQ_BOOST_FREQ;
+
+            if ( policy->turbo == CPUFREQ_TURBO_UNSUPPORTED )
+            {
+                printk(XENLOG_INFO "cpu%u: Turbo Mode detected and enabled\n",
+                       policy->cpu);
+                policy->turbo = CPUFREQ_TURBO_ENABLED;
+            }
+        }
+
         valid_states++;
     }
     data->freq_table[valid_states].frequency = CPUFREQ_TABLE_END;
@@ -301,6 +362,7 @@ static struct cpufreq_driver scpi_cpufreq_driver = {
     .get    = scpi_cpufreq_get,
     .init   = scpi_cpufreq_cpu_init,
     .exit   = scpi_cpufreq_cpu_exit,
+    .update = scpi_cpufreq_update,
 };
 
 int __init scpi_cpufreq_register_driver(void)
