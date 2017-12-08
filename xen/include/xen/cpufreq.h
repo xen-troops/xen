@@ -198,7 +198,11 @@ void cpufreq_verify_within_limits(struct cpufreq_policy *policy,
 #define CPUFREQ_ENTRY_INVALID ~0
 #define CPUFREQ_TABLE_END     ~1
 
+/* Special Values of .flags field */
+#define CPUFREQ_BOOST_FREQ    (1 << 0)
+
 struct cpufreq_frequency_table {
+    unsigned int    flags;
     unsigned int    index;     /* any */
     unsigned int    frequency; /* kHz - doesn't need to be in ascending
                                 * order */
