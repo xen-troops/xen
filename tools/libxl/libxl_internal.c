@@ -575,6 +575,24 @@ void libxl__update_domain_configuration(libxl__gc *gc,
     dst->b_info.video_memkb = src->b_info.video_memkb;
 }
 
+int libxl__is_driver_domain(libxl__gc *gc, uint32_t domid)
+{
+    const char *val;
+    int rc;
+
+    char *dom_path = libxl__xs_get_dompath(gc, domid);
+
+    if (!dom_path) {
+        return 0;
+    }
+
+    rc = libxl__xs_read_checked(gc, XBT_NULL,
+                                GCSPRINTF("%s/libxl", dom_path), &val);
+    if (rc) return 0;
+
+    return val != NULL;
+}
+
 /*
  * Local variables:
  * mode: C
