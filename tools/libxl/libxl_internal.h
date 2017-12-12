@@ -4414,6 +4414,10 @@ void* libxl__device_list(libxl__gc *gc, const struct libxl_device_type *dt,
                          uint32_t domid, int *num);
 void libxl__device_list_free(const struct libxl_device_type *dt,
                              void *list, int num);
+
+/* Check if domain is driver domain */
+_hidden bool libxl__is_driver_domain(libxl__gc *gc, uint32_t domid);
+
 #endif
 
 /*
