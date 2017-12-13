@@ -42,9 +42,10 @@ struct op_points
 	unsigned long volt; /* uV */
 };
 
-#define NR_OPP	5
+#define NR_H3_OPP	5
+#define NR_M3_OPP	6
 
-static const struct op_points rcar_op_points[EFUSE_AVS_NUM][NR_OPP] = {
+static const struct op_points rcar_h3_op_points[EFUSE_AVS_NUM][NR_H3_OPP] = {
 	{
 		{ 500000000,  820000, },
 		{ 1000000000, 820000, },
@@ -93,6 +94,65 @@ static const struct op_points rcar_op_points[EFUSE_AVS_NUM][NR_OPP] = {
 		{ 1500000000, 750000, },
 		{ 1600000000, 830000, },
 		{ 1700000000, 860000, },
+	},
+};
+
+static const struct op_points rcar_m3_op_points[EFUSE_AVS_NUM][NR_M3_OPP] = {
+	{
+		{ 500000000,  820000, },
+		{ 1000000000, 820000, },
+		{ 1500000000, 820000, },
+		{ 1600000000, 900000, },
+		{ 1700000000, 900000, },
+		{ 1800000000, 960000, },
+	},
+	{
+		{ 500000000,  820000, },
+		{ 1000000000, 820000, },
+		{ 1500000000, 820000, },
+		{ 1600000000, 900000, },
+		{ 1700000000, 900000, },
+		{ 1800000000, 960000, },
+	},
+	{
+		{ 500000000,  820000, },
+		{ 1000000000, 820000, },
+		{ 1500000000, 820000, },
+		{ 1600000000, 900000, },
+		{ 1700000000, 900000, },
+		{ 1800000000, 960000, },
+	},
+	{
+		{ 500000000,  790000, },
+		{ 1000000000, 790000, },
+		{ 1500000000, 790000, },
+		{ 1600000000, 870000, },
+		{ 1700000000, 870000, },
+		{ 1800000000, 910000, },
+	},
+	{
+		{ 500000000,  790000, },
+		{ 1000000000, 790000, },
+		{ 1500000000, 790000, },
+		{ 1600000000, 870000, },
+		{ 1700000000, 870000, },
+		{ 1800000000, 890000, },
+	},
+	{
+		{ 500000000,  770000, },
+		{ 1000000000, 770000, },
+		{ 1500000000, 770000, },
+		{ 1600000000, 850000, },
+		{ 1700000000, 850000, },
+		{ 1800000000, 870000, },
+	},
+	{
+		{ 500000000,  750000, },
+		{ 1000000000, 750000, },
+		{ 1500000000, 750000, },
+		{ 1600000000, 830000, },
+		{ 1700000000, 830000, },
+		{ 1800000000, 860000, },
 	},
 };
 
@@ -428,10 +488,20 @@ static unsigned long __maybe_unused get_voltage(void)
 static const struct op_points *find_opp(unsigned long freq)
 {
 	const struct op_points *opp;
-	int i;
+	int i, count;
+	uint32_t product = mmio_read_32(RCAR_PRR) & RCAR_PRODUCT_MASK;
 
-	for (i = 0; i < NR_OPP; i++) {
-		opp = &rcar_op_points[efuse_avs][i];
+	/* TODO Do we want to support H3 Ver1.0? */
+	if (product == RCAR_PRODUCT_H3) {
+		count = ARRAY_SIZE(rcar_h3_op_points[efuse_avs]);
+		opp = &rcar_h3_op_points[efuse_avs][0];
+	} else if (product == RCAR_PRODUCT_M3) {
+		count = ARRAY_SIZE(rcar_m3_op_points[efuse_avs]);
+		opp = &rcar_m3_op_points[efuse_avs][0];
+	} else
+		return NULL;
+
+	for (i = 0; i < count; i++, opp ++) {
 		if (opp->freq == freq)
 			return opp;
 	}
