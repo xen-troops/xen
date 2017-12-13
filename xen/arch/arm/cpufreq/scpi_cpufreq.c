@@ -185,9 +185,22 @@ static int scpi_cpufreq_verify(struct cpufreq_policy *policy)
 }
 
 /* TODO Add a way to recognize Boost frequencies */
-static inline bool is_turbo_freq(int index)
+static inline bool is_turbo_freq(int index, int count)
 {
-	return index <= 1 ? true : false;
+    /* ugly Boost frequencies recognition */
+    switch ( count )
+    {
+    /* H3 has 2 turbo-freq among 5 OPPs */
+    case 5:
+        return index <= 1 ? true : false;
+
+    /* M3 has 3 turbo-freq among 6 OPPs */
+    case 6:
+        return index <= 2 ? true : false;
+
+    default:
+        return false;
+    }
 }
 
 static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
@@ -256,7 +269,7 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
             perf->states[i].core_frequency * 1000;
 
         data->freq_table[valid_states].flags = 0;
-        if ( is_turbo_freq(valid_states) )
+        if ( is_turbo_freq(valid_states, perf->state_count) )
         {
             printk(XENLOG_INFO "cpu%u: Turbo freq detected: %u\n",
                    policy->cpu, data->freq_table[valid_states].frequency);
