@@ -41,6 +41,23 @@ int main_vkbattach(int argc, char **argv)
         if (rc) goto out;
     }
 
+    if (vkb.backend_type == LIBXL_VKB_BACKEND_UNKNOWN) {
+        fprintf(stderr, "backend-type should be set\n");
+        rc = ERROR_FAIL; goto out;
+    }
+
+    if (vkb.multi_touch_height || vkb.multi_touch_width ||
+        vkb.multi_touch_num_contacts) {
+        vkb.feature_multi_touch = true;
+    }
+
+    if (vkb.feature_multi_touch && !(vkb.multi_touch_height ||
+        vkb.multi_touch_width || vkb.multi_touch_num_contacts)) {
+        fprintf(stderr, "multi-touch-width, multi-touch-height, "
+                        "multi-touch-num-contacts should be set\n");
+        rc = ERROR_FAIL; goto out;
+    }
+
     if (dryrun_only) {
         char *json = libxl_device_vkb_to_json(ctx, &vkb);
         printf("vkb: %s\n", json);

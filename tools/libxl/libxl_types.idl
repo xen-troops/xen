@@ -629,7 +629,14 @@ libxl_device_vkb = Struct("device_vkb", [
     ("backend_domname", string),
     ("devid", libxl_devid),
     ("backend_type", libxl_vkb_backend),
-    ("id", string)
+    ("id", string),
+    ("feature_abs_pointer", bool),
+    ("feature_multi_touch", bool),
+    ("width", uint32),
+    ("height", uint32),
+    ("multi_touch_width", uint32),
+    ("multi_touch_height", uint32),
+    ("multi_touch_num_contacts", uint32)
     ])
 
 libxl_device_disk = Struct("device_disk", [
