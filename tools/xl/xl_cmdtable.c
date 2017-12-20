@@ -382,7 +382,10 @@ struct cmd_spec cmd_table[] = {
     { "vkb-attach",
       &main_vkbattach, 1, 1,
       "Create a new virtual keyboard device",
-      "<Domain> [id=<InputId>] [backend-type=<BackendType>] [backend=<BackDomain>]",
+      "<Domain> [id=<InputId>] [backend-type=<BackendType>] [backend=<BackDomain>]\n"
+      "[feature-abs-pointer=<FeatureAbsPointer>] [feature-multi-touch]=<FeatureMultiTouch>\n"
+      "[width=<Width>] [height]=<Height> [multi-touch-width]=<MultiTouchWidth>\n"
+      "[multi-touch-height]=<MultiTouchHeight> [multi-touch-num-contacts]=<MultiTouchNumContacts>\n",
     },
     { "vkb-list",
       &main_vkblist, 0, 0,
