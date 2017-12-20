@@ -1115,8 +1115,21 @@ int parse_vkb_config(libxl_device_vkb *vkb, char *token)
         vkb->backend_type = backend_type;
     } else if (MATCH_OPTION("id", token, oparg)) {
         vkb->id = strdup(oparg);
-    }
-    else {
+    } else if (MATCH_OPTION("feature-abs-pointer", token, oparg)) {
+        vkb->feature_abs_pointer = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("feature-multi-touch", token, oparg)) {
+        vkb->feature_multi_touch = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("width", token, oparg)) {
+        vkb->width = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("height", token, oparg)) {
+        vkb->height = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("multi-touch-width", token, oparg)) {
+        vkb->multi_touch_width = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("multi-touch-height", token, oparg)) {
+        vkb->multi_touch_height = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("multi-touch-num-contacts", token, oparg)) {
+        vkb->multi_touch_num_contacts = strtoul(oparg, NULL, 0);
+    } else {
         fprintf(stderr, "Unknown string \"%s\" in vkb spec\n", token);
         return -1;
     }
@@ -1157,6 +1170,19 @@ static void parse_vkb_list(const XLU_Config *config,
 
             if (vkb->backend_type == LIBXL_VKB_BACKEND_UNKNOWN) {
                 fprintf(stderr, "backend-type should be set in vkb spec\n");
+                rc = ERROR_FAIL; goto out;
+            }
+
+            if (vkb->multi_touch_height || vkb->multi_touch_width ||
+                vkb->multi_touch_num_contacts) {
+                vkb->feature_multi_touch = true;
+            }
+
+            if (vkb->feature_multi_touch && !(vkb->multi_touch_height ||
+                vkb->multi_touch_width || vkb->multi_touch_num_contacts)) {
+                fprintf(stderr, "multi-touch-width, multi-touch-height, "
+                                "multi-touch-num-contacts should be set for "
+                                "multi touch in vkb spec\n");
                 rc = ERROR_FAIL; goto out;
             }
 
