@@ -2120,6 +2120,15 @@ static void retrieve_domain_configuration_end(libxl__egc *egc,
         }
     }
 
+    /* reset IOMEM's GFN to initial value */
+    {
+        int i;
+
+        for (i = 0; i < d_config->b_info.num_iomem; i++)
+            if (d_config->b_info.iomem[i].gfn == 0)
+                d_config->b_info.iomem[i].gfn = LIBXL_INVALID_GFN;
+    }
+
     /* Devices: disk, nic, vtpm, pcidev etc. */
 
     /* The MERGE macro implements following logic:
