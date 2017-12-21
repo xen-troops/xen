@@ -20,6 +20,7 @@ struct device
     struct dt_device_node *of_node; /* Used by drivers imported from Linux */
 #endif
     struct dev_archdata archdata;
+    void *driver_data;
 };
 
 typedef struct device device_t;
@@ -36,6 +37,7 @@ enum device_class
     DEVICE_IOMMU,
     DEVICE_GIC,
     DEVICE_COPROC,
+    DEVICE_MAILBOX,
     /* Use for error */
     DEVICE_UNKNOWN,
 };

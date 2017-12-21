@@ -384,6 +384,7 @@ DEFINE_XEN_GUEST_HANDLE(xenpf_getidletime_t);
 #define XEN_PX_PSS   2
 #define XEN_PX_PPC   4
 #define XEN_PX_PSD   8
+#define XEN_PX_DATA  16
 
 struct xen_power_register {
     uint32_t     space_id;
