@@ -427,6 +427,26 @@ struct dt_device_node *dt_find_node_by_alias(const char *alias)
     return NULL;
 }
 
+int dt_alias_get_id(struct dt_device_node *np, const char *stem)
+{
+    struct dt_alias_prop *app;
+    int id = -ENODEV;
+
+    list_for_each_entry( app, &aliases_lookup, link )
+    {
+        if ( strcmp(app->stem, stem) != 0 )
+            continue;
+
+        if ( np == app->np )
+        {
+            id = app->id;
+            break;
+        }
+    }
+
+    return id;
+}
+
 const struct dt_device_match *
 dt_match_node(const struct dt_device_match *matches,
               const struct dt_device_node *node)
