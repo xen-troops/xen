@@ -35,6 +35,7 @@ enum device_class
     DEVICE_IOMMU,
     DEVICE_GIC,
     DEVICE_MAILBOX,
+    DEVICE_THS,
     /* Use for error */
     DEVICE_UNKNOWN,
 };
