@@ -402,6 +402,21 @@ static int __init scpi_cpufreq_postinit(void)
     return ret;
 }
 
+static int thermal_init(void)
+{
+	struct dt_device_node *ths;
+	unsigned int num_ths = 0;
+	int rc;
+
+	dt_for_each_device_node(dt_host, ths) {
+		rc = device_init(ths, DEVICE_THS, NULL);
+		if (!rc)
+			num_ths ++;
+	}
+
+	return (num_ths > 0) ? 0 : -ENODEV;
+}
+
 static int __init scpi_cpufreq_preinit(void)
 {
     struct dt_device_node *scpi, *clk, *dvfs_clk;
@@ -421,6 +436,13 @@ static int __init scpi_cpufreq_preinit(void)
 
     scpi = get_scpi_dev()->of_node;
     scpi_ops = get_scpi_ops();
+
+    ret = thermal_init();
+    if ( ret )
+    {
+        printk("failed to initialize thermal (%d)\n", ret);
+        return ret;
+    }
 
     ret = -ENODEV;
 
