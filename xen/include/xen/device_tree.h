@@ -608,6 +608,16 @@ struct dt_device_node *dt_find_node_by_alias(const char *alias);
  */
 struct dt_device_node *dt_find_node_by_path(const char *path);
 
+/**
+ * dt_alias_get_id - Get alias id for the given device_node
+ * @np:		Pointer to the given device_node
+ * @stem:	Alias stem of the given device_node
+ *
+ * The function travels the lookup table to get the alias id for the given
+ * device_node and alias stem. It returns the alias id if found.
+ */
+int dt_alias_get_id(struct dt_device_node *np, const char *stem);
+
 
 /**
  * dt_find_node_by_gpath - Same as dt_find_node_by_path but retrieve the
