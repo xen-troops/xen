@@ -37,6 +37,19 @@ extern bool cpufreq_debug;
 
 extern struct device *get_cpu_device(unsigned int cpu);
 
+/*
+ * To protect changing frequency driven by both CPUFreq governor and
+ * CPU throttling work.
+ */
+static DEFINE_SPINLOCK(scpi_lock);
+/*
+ * To signal that turbo frequencies are not allowed to be set
+ * (CPU throttling is present).
+ */
+static bool turbo_prohibited = false;
+/* CPU which throttling affects */
+static unsigned int target_cpu = 0;
+
 struct scpi_cpufreq_data
 {
     struct processor_performance *perf;
@@ -130,8 +143,9 @@ static int scpi_cpufreq_set(unsigned int cpu, unsigned int freq)
     return 0;
 }
 
-static int scpi_cpufreq_target(struct cpufreq_policy *policy,
-                               unsigned int target_freq, unsigned int relation)
+static int scpi_cpufreq_target_unlocked(struct cpufreq_policy *policy,
+                                        unsigned int target_freq,
+                                        unsigned int relation)
 {
     struct scpi_cpufreq_data *data = cpufreq_driver_data[policy->cpu];
     struct processor_performance *perf;
@@ -145,7 +159,7 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
     if ( unlikely(!data || !data->perf || !data->freq_table || !data->info) )
         return -ENODEV;
 
-    if ( policy->turbo == CPUFREQ_TURBO_DISABLED )
+    if ( policy->turbo == CPUFREQ_TURBO_DISABLED || turbo_prohibited )
         if ( target_freq > policy->cpuinfo.second_max_freq )
             target_freq = policy->cpuinfo.second_max_freq;
 
@@ -184,6 +198,18 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
 
     perf->state = next_perf_state;
     policy->cur = freqs.new;
+
+    return result;
+}
+
+static int scpi_cpufreq_target(struct cpufreq_policy *policy,
+                               unsigned int target_freq, unsigned int relation)
+{
+    int result;
+
+    spin_lock(&scpi_lock);
+    result = scpi_cpufreq_target_unlocked(policy, target_freq, relation);
+    spin_unlock(&scpi_lock);
 
     return result;
 }
@@ -355,6 +381,12 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
      */
     policy->resume = 1;
 
+    /*
+     * TODO: We assume that we do DVFS only for A57 cluster, where all
+     * involved CPUs share the same clock. But this should be reconsidered.
+     */
+    target_cpu = policy->cpu;
+
     return result;
 
 err_freqfree:
@@ -390,6 +422,46 @@ static struct cpufreq_driver scpi_cpufreq_driver = {
     .exit   = scpi_cpufreq_cpu_exit,
     .update = scpi_cpufreq_update,
 };
+
+int scpi_cpufreq_throttle(bool enable)
+{
+    struct cpufreq_policy *policy;
+    int result = 0;
+
+    policy = per_cpu(cpufreq_cpu_policy, target_cpu);
+    if ( !policy )
+       return 0;
+
+    if ( !enable )
+    {
+        /* Just allow to set any frequencies... */
+        turbo_prohibited = false;
+    }
+    else
+    {
+        spin_lock(&scpi_lock);
+        /* Check if we are running on turbo frequency */
+        if ( policy->cur > policy->cpuinfo.second_max_freq )
+        {
+            /* Set max non-turbo frequency */
+            result = scpi_cpufreq_set(policy->cpu,
+                                      policy->cpuinfo.second_max_freq);
+            if ( result < 0 )
+            {
+                spin_unlock(&scpi_lock);
+                return result;
+            }
+        }
+        /* Signal that turbo frequencies are not allowed to be set */
+        turbo_prohibited = true;
+        spin_unlock(&scpi_lock);
+    }
+
+    printk(XENLOG_INFO "cpu%u: %s CPU throttling\n", policy->cpu,
+           turbo_prohibited ? "Enable" : "Disable");
+
+    return 0;
+}
 
 int __init scpi_cpufreq_register_driver(void)
 {
