@@ -95,6 +95,43 @@ static unsigned int scpi_cpufreq_get(unsigned int cpu)
     return opp->freq / 1000;
 }
 
+static int scpi_cpufreq_set(unsigned int cpu, unsigned int freq)
+{
+    struct scpi_cpufreq_data *data;
+    struct cpufreq_policy *policy;
+    const struct scpi_opp *opp;
+    int idx, max_opp;
+    int result;
+
+    if ( cpu >= nr_cpu_ids || !cpu_online(cpu) )
+        return 0;
+
+    policy = per_cpu(cpufreq_cpu_policy, cpu);
+    if ( !policy || !(data = cpufreq_driver_data[policy->cpu]) ||
+         !data->info )
+        return 0;
+
+    /* Find corresponding index */
+    max_opp = data->info->count;
+    opp = data->info->opps;
+    for ( idx = 0; idx < max_opp; idx++, opp++ )
+    {
+        /* Compare in kHz */
+        if ( opp->freq / 1000 == freq )
+            break;
+    }
+    if ( idx == max_opp )
+        return -EINVAL;
+
+    result = scpi_ops->dvfs_set_idx(data->domain, idx);
+    if ( result < 0 )
+        return result;
+
+    dev_pm_opp_set_rate(freq * 1000);
+
+    return 0;
+}
+
 static int scpi_cpufreq_target(struct cpufreq_policy *policy,
                                unsigned int target_freq, unsigned int relation)
 {
@@ -106,8 +143,6 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
     unsigned int next_perf_state = 0; /* Index into perf table */
     unsigned int j;
     int result;
-    const struct scpi_opp *opp;
-    int idx, max_opp;
 
     if ( unlikely(!data || !data->perf || !data->freq_table || !data->info) )
         return -ENODEV;
@@ -139,23 +174,9 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
     freqs.old = perf->states[perf->state].core_frequency * 1000;
     freqs.new = data->freq_table[next_state].frequency;
 
-    /* Find corresponding index */
-    max_opp = data->info->count;
-    opp = data->info->opps;
-    for ( idx = 0; idx < max_opp; idx++, opp++ )
-    {
-        /* Compare in kHz */
-        if ( opp->freq / 1000 == freqs.new )
-            break;
-    }
-    if ( idx == max_opp )
-        return -EINVAL;
-
-    result = scpi_ops->dvfs_set_idx(data->domain, idx);
+    result = scpi_cpufreq_set(policy->cpu, freqs.new);
     if ( result < 0 )
         return result;
-
-    dev_pm_opp_set_rate(freqs.new * 1000);
 
     for_each_cpu( j, &online_policy_cpus )
         cpufreq_statistic_update(j, perf->state, next_perf_state);
