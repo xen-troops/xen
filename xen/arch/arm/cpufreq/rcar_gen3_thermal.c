@@ -37,6 +37,36 @@
 extern void mmio_write_32(uintptr_t addr, uint32_t value);
 extern uint32_t mmio_read_32(uintptr_t addr);
 
+extern int scpi_cpufreq_throttle(bool enable);
+
+static bool throttle_enabled = false;
+
+struct thermal_trip_point {
+	/*
+	 * To show what action must be performed if current temperature exceeds
+	 * trip point temperature: reboot system if this flag is set and do
+	 * CPU throttling otherwise.
+	 */
+	bool critical;
+	int temp;
+	int hyst;
+};
+
+static const struct thermal_trip_point trip_points[2] = {
+	{
+		.critical = false,
+		/* Linux's IPA service starts working at 90 C, but we set 80 C */
+		.temp = 80000,
+		.hyst = 4000,
+	},
+	{
+		.critical = true,
+		/* Linux's EMS service starts working at 110 C, but we set 100 C */
+		.temp = 100000,
+		.hyst = 0,
+	},
+};
+
 /* Add missed #define-s to control THS clock */
 /* CPG base address */
 #define	CPG_BASE		(0xE6150000U)
@@ -342,7 +372,7 @@ static int rcar_gen3_thermal_update_temp(struct rcar_thermal_priv *priv)
 	return 0;
 }
 
-static int __maybe_unused rcar_gen3_thermal_get_temp(void *devdata, int *temp)
+static int rcar_gen3_thermal_get_temp(void *devdata, int *temp)
 {
 	struct rcar_thermal_priv *priv = devdata;
 	int ctemp;
@@ -411,12 +441,60 @@ static void _rcar_thermal_irq_ctrl(struct rcar_thermal_priv *priv, int enable)
 	spin_unlock_irqrestore(&priv->lock, flags);
 }
 
+static void handle_thermal_trip(int temp, int trip)
+{
+	/* Don't analyze if trip point temperature is not set */
+	if (trip_points[trip].temp <= 0)
+		return;
+
+	if (trip_points[trip].critical) {
+		/* If we have not crossed the trip point temperature, we do not care. */
+		if (temp < trip_points[trip].temp)
+			return;
+
+		printk("Reached critical temperature (%d C): rebooting machine\n",
+				temp / 1000);
+
+		machine_restart(0);
+	} else {
+		/* Simple two point regulation */
+		if (temp > trip_points[trip].temp) {
+			if (throttle_enabled)
+				return;
+
+			if (scpi_cpufreq_throttle(true)) {
+				printk("Failed to enable CPU throttling\n");
+				return;
+			}
+			throttle_enabled = true;
+		} else if (temp < trip_points[trip].temp - trip_points[trip].hyst) {
+			if (!throttle_enabled)
+				return;
+
+			scpi_cpufreq_throttle(false);
+			throttle_enabled = false;
+		}
+	}
+}
+
+static void thermal_zone_device_update(struct rcar_thermal_priv *priv)
+{
+	int i, ret, temp;
+
+	ret = rcar_gen3_thermal_get_temp(priv, &temp);
+	if (ret)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(trip_points); i++)
+		handle_thermal_trip(temp, i);
+}
+
 static void rcar_gen3_thermal_work(unsigned long data)
 {
 	struct rcar_thermal_priv *priv = (struct rcar_thermal_priv *)data;
 
 	rcar_gen3_thermal_update_temp(priv);
-	/* TODO Here we must read current temp and make sure it doesn't exceed limit. */
+	thermal_zone_device_update(priv);
 	rcar_thermal_irq_enable(priv);
 }
 
