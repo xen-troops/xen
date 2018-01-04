@@ -34,6 +34,8 @@
 #include <asm/device.h>
 #include <asm/io.h>
 
+extern bool cpufreq_debug;
+
 extern void mmio_write_32(uintptr_t addr, uint32_t value);
 extern uint32_t mmio_read_32(uintptr_t addr);
 
@@ -484,6 +486,9 @@ static void thermal_zone_device_update(struct rcar_thermal_priv *priv)
 	ret = rcar_gen3_thermal_get_temp(priv, &temp);
 	if (ret)
 		return;
+
+	if (cpufreq_debug)
+		printk("Current CPU temperature: %d mC\n", temp);
 
 	for (i = 0; i < ARRAY_SIZE(trip_points); i++)
 		handle_thermal_trip(temp, i);
