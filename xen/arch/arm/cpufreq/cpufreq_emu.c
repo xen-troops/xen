@@ -32,6 +32,8 @@
 #include "rcar_def.h"
 #include "iic_dvfs.h"
 
+extern bool cpufreq_debug;
+
 #define EFUSE_AVS0			(0U)
 #define EFUSE_AVS_NUM		(7U)
 static uint32_t efuse_avs = EFUSE_AVS0;
@@ -560,8 +562,8 @@ int dev_pm_opp_set_rate(unsigned long target_freq)
 	}
 
 	/* Change frequency */
-	printk("%s(): switching OPP: %lu Hz --> %lu Hz\n",
-			__func__, old_freq, freq);
+	if (cpufreq_debug)
+		printk("Switching CPU OPP: %lu Hz --> %lu Hz\n", old_freq, freq);
 
 	prate = pll0_clk_round_rate(prate);
 	if (old_prate != prate)
