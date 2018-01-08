@@ -1299,6 +1299,27 @@ int xenmem_add_to_physmap_one(
     return rc;
 }
 
+static int process_p2m_lookup(struct domain *d, xen_pfn_t *pma,
+                              struct xen_p2m_lookup *req)
+{
+    int i;
+
+    if ( unlikely(copy_from_guest(pma, req->pa, req->num_frames)) )
+        return -EFAULT;
+
+    for ( i = 0; i < req->num_frames; i++ )
+    {
+        pma[i] = mfn_to_maddr(gfn_to_mfn(d, gaddr_to_gfn(pma[i])));
+    }
+
+    if ( unlikely(copy_to_guest(req->ma, pma, req->num_frames)) )
+        return -EFAULT;
+
+    return 0;
+}
+
+#define FRAMES_ON_STACK 32
+
 long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( op )
@@ -1312,7 +1333,7 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
     {
         struct xen_p2m_lookup req;
         struct domain *d;
-        int i;
+        int rc;
 
         if ( copy_from_guest(&req, arg, 1) )
             return -EFAULT;
@@ -1324,26 +1345,31 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( d == NULL )
             return -ESRCH;
 
-        for ( i = 0; i < req.num_frames; i++ )
+        if ( likely (req.num_frames <= FRAMES_ON_STACK) )
         {
-            xen_pfn_t pa, ma;
+            /* more than 95% cases for GSX operation */
+            xen_pfn_t pma[FRAMES_ON_STACK];
 
-            if ( unlikely(copy_from_guest_offset(&pa, req.pa, i, 1)) )
+            rc = process_p2m_lookup(d, pma, &req);
+        }
+        else
+        {
+            xen_pfn_t *pma;
+
+            pma = xmalloc_array(xen_pfn_t, req.num_frames);
+
+            if ( unlikely(!pma) )
             {
-                rcu_unlock_domain(d);
-                return -EFAULT;
+                rc = -ENOMEM;
             }
-
-            ma = mfn_to_maddr(p2m_lookup(d, gaddr_to_gfn(pa), NULL));
-
-            if ( unlikely(copy_to_guest_offset(req.ma, i, &ma, 1)) )
+            else
             {
-                rcu_unlock_domain(d);
-                return -EFAULT;
+                rc = process_p2m_lookup(d, pma, &req);
+                xfree(pma);
             }
         }
         rcu_unlock_domain(d);
-        return 0;
+        return rc;
     }
     default:
         return -ENOSYS;
