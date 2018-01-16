@@ -1355,7 +1355,7 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
                 return -EFAULT;
             }
 
-            ma = pfn_to_paddr(p2m_lookup(d, paddr_to_pfn(pa), NULL));
+            ma = pfn_to_paddr(mfn_x(p2m_lookup(d, _gfn(paddr_to_pfn(pa)), NULL)));
 
             if ( unlikely(copy_to_guest_offset(req.ma, i, &ma, 1)) )
             {
