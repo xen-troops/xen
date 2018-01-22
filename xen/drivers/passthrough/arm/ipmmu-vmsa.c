@@ -44,6 +44,8 @@
 /* This one came from Linux drivers/iommu/Kconfig */
 #define CONFIG_IPMMU_VMSA_CTX_NUM	8
 
+extern int ipmmu_preinit(struct dt_device_node *np);
+
 /***** Start of Xen specific code *****/
 
 #define IOMMU_READ	(1 << 0)
@@ -2640,6 +2642,16 @@ static __init int ipmmu_vmsa_init(struct dt_device_node *dev,
 	 * give the IPMMU device to dom0.
 	 */
 	dt_device_set_used_by(dev, DOMID_XEN);
+
+	/*
+	 * Perform platform specific actions such as power-on, errata maintenance
+	 * if required.
+	 */
+	rc = ipmmu_preinit(dev);
+	if (rc) {
+		dev_err(&dev->dev, "failed to preinit IPMMU (%d)\n", rc);
+		return rc;
+	}
 
 	rc = ipmmu_probe(dev);
 	if (rc) {
