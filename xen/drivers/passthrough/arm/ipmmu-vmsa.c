@@ -45,6 +45,7 @@
 #define CONFIG_IPMMU_VMSA_CTX_NUM	8
 
 extern int ipmmu_preinit(struct dt_device_node *np);
+extern bool ipmmu_is_mmu_tlb_disable_needed(struct dt_device_node *np);
 
 /***** Start of Xen specific code *****/
 
@@ -256,6 +257,9 @@ struct ipmmu_vmsa_device {
 #if 0 /* Xen: Not needed */
 	struct dma_iommu_mapping *mapping;
 #endif
+
+	/* To show whether we have to disable IPMMU TLB cache function */
+	bool is_mmu_tlb_disabled;
 };
 
 struct ipmmu_vmsa_domain {
@@ -468,6 +472,10 @@ static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 #define IMUASID_ASID8_SHIFT		8
 #define IMUASID_ASID0_MASK		(0xff << 0)
 #define IMUASID_ASID0_SHIFT		0
+
+#define IMSCTLR				0x0500
+#define IMSCTLR_DISCACHE	0xE0000000
+
 
 #ifdef CONFIG_RCAR_DDR_BACKUP
 #define HW_REGISTER_BACKUP_SIZE		ARRAY_SIZE(root_pgtable0_reg)
@@ -1126,6 +1134,14 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 #if 0
 		ret = ipmmu_domain_init_context(domain);
 #endif
+		/*
+		 * Here we have to disable IPMMU TLB cache function of IPMMU caches
+		 * that do require such action.
+		 */
+		if (domain->mmus[0]->is_mmu_tlb_disabled)
+			ipmmu_ctx_write1(domain, IMSCTLR,
+					ipmmu_ctx_read(domain, IMSCTLR) | IMSCTLR_DISCACHE);
+
 		ipmmu_ctx_write1(domain, IMCTR,
 				ipmmu_ctx_read(domain, IMCTR) | IMCTR_FLUSH);
 
@@ -1947,6 +1963,9 @@ static int ipmmu_probe(struct platform_device *pdev)
 		}
 
 		ipmmu_device_reset(mmu);
+	} else {
+		/* Only IPMMU caches are affected */
+		mmu->is_mmu_tlb_disabled = ipmmu_is_mmu_tlb_disable_needed(pdev);
 	}
 
 	/*
