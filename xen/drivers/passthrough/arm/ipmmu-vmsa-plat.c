@@ -247,6 +247,35 @@ static int __init ipmmu_power_on(struct dt_device_node *np)
 	return ret;
 }
 
+/*
+ * Check if we will have to disable IPMMU TLB cache function of IPMMU caches
+ * that belong to non ALWAYS_ON power domain (IPMMU-VP0, IPMMU-VC0 belong
+ * to A3xx power domains) due to H/W restriction.
+ * Required action will be performed right before enabling corresponding
+ * IPMMU-XX.
+ */
+bool ipmmu_is_mmu_tlb_disable_needed(struct dt_device_node *np)
+{
+	int i, pd;
+
+	/* W/A is actual for H3 and M3N SoCs only */
+	if (!dt_device_is_compatible(np, "renesas,ipmmu-r8a7795") &&
+			!dt_device_is_compatible(np, "renesas,ipmmu-r8a77965"))
+		return false;
+
+	pd = ipmmu_get_mmu_pd(np);
+	if (pd < 0 || pd == RCAR_GEN3_PD_ALWAYS_ON)
+		return false;
+
+	/* Actually check among power domains we have already powered on */
+	for (i = 0; i < ARRAY_SIZE(rcar_sysc_chs); i++) {
+		if (rcar_sysc_chs[i].isr_bit == pd)
+			return true;
+	}
+
+	return false;
+}
+
 int __init ipmmu_preinit(struct dt_device_node *np)
 {
 	return ipmmu_power_on(np);
