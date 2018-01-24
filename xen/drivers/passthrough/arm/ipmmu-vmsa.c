@@ -44,6 +44,12 @@
 #define IPMMU_CTX_MAX		8
 #define IPMMU_PER_DEV_MAX	4
 
+/* This one came from Linux drivers/iommu/Kconfig */
+#define CONFIG_IPMMU_VMSA_CTX_NUM	8
+
+extern int ipmmu_preinit(struct dt_device_node *np);
+extern bool ipmmu_is_mmu_tlb_disable_needed(struct dt_device_node *np);
+
 /***** Start of Xen specific code *****/
 
 #define IOMMU_READ	(1 << 0)
@@ -253,6 +259,9 @@ struct ipmmu_vmsa_device {
 #if 0 /* Xen: Not needed */
 	struct dma_iommu_mapping *mapping;
 #endif
+
+	/* To show whether we have to disable IPMMU TLB cache function */
+	bool is_mmu_tlb_disabled;
 };
 
 struct ipmmu_vmsa_domain {
@@ -481,6 +490,8 @@ static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 #define IMUASID_ASID8_SHIFT		8
 #define IMUASID_ASID0_MASK		(0xff << 0)
 #define IMUASID_ASID0_SHIFT		0
+
+#define IMSCTLR				0x0500
 
 #ifdef CONFIG_RCAR_DDR_BACKUP
 #define HW_REGISTER_BACKUP_SIZE		ARRAY_SIZE(root_pgtable0_reg)
@@ -1138,6 +1149,14 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 #if 0
 		ret = ipmmu_domain_init_context(domain);
 #endif
+		/*
+		 * Here we have to disable IPMMU TLB cache function of IPMMU caches
+		 * that do require such action.
+		 */
+		if (domain->mmus[0]->is_mmu_tlb_disabled)
+			ipmmu_ctx_write1(domain, IMSCTLR,
+					ipmmu_ctx_read(domain, IMSCTLR) | 0xE0000000);
+
 		ipmmu_ctx_write1(domain, IMCTR,
 				ipmmu_ctx_read(domain, IMCTR) | IMCTR_FLUSH);
 
@@ -1868,6 +1887,9 @@ static const struct of_device_id ipmmu_of_ids[] = {
 		.compatible = "renesas,ipmmu-r8a7795",
 		.data = &ipmmu_features_rcar_gen3,
 	}, {
+		.compatible = "renesas,ipmmu-r8a77965",
+		.data = &ipmmu_features_rcar_gen3,
+	}, {
 		.compatible = "renesas,ipmmu-r8a7796",
 		.data = &ipmmu_features_rcar_gen3,
 	}, {
@@ -1944,6 +1966,9 @@ static int ipmmu_probe(struct platform_device *pdev)
 	else
 		mmu->num_ctx = 1;
 
+	mmu->num_ctx = min_t(unsigned int, CONFIG_IPMMU_VMSA_CTX_NUM,
+		mmu->num_ctx);
+
 	WARN_ON(mmu->num_ctx > IPMMU_CTX_MAX);
 
 	irq = platform_get_irq(pdev, 0);
@@ -1972,6 +1997,9 @@ static int ipmmu_probe(struct platform_device *pdev)
 		}
 
 		ipmmu_device_reset(mmu);
+	} else {
+		/* Only IPMMU caches are affected */
+		mmu->is_mmu_tlb_disabled = ipmmu_is_mmu_tlb_disable_needed(pdev);
 	}
 
 	/*
@@ -2261,6 +2289,8 @@ static int __init ipmmu_vmsa_iommu_of_setup(struct device_node *np)
 IOMMU_OF_DECLARE(ipmmu_vmsa_iommu_of, "renesas,ipmmu-vmsa",
 		 ipmmu_vmsa_iommu_of_setup);
 IOMMU_OF_DECLARE(ipmmu_r8a7795_iommu_of, "renesas,ipmmu-r8a7795",
+		 ipmmu_vmsa_iommu_of_setup);
+IOMMU_OF_DECLARE(ipmmu_r8a77965_iommu_of, "renesas,ipmmu-r8a77965",
 		 ipmmu_vmsa_iommu_of_setup);
 IOMMU_OF_DECLARE(ipmmu_r8a7796_iommu_of, "renesas,ipmmu-r8a7796",
 		 ipmmu_vmsa_iommu_of_setup);
@@ -2735,6 +2765,16 @@ static __init int ipmmu_vmsa_init(struct dt_device_node *dev,
 	 * give the IPMMU device to dom0.
 	 */
 	dt_device_set_used_by(dev, DOMID_XEN);
+
+	/*
+	 * Perform platform specific actions such as power-on, errata maintenance
+	 * if required.
+	 */
+	rc = ipmmu_preinit(dev);
+	if (rc) {
+		dev_err(&dev->dev, "failed to preinit IPMMU (%d)\n", rc);
+		return rc;
+	}
 
 	rc = ipmmu_probe(dev);
 	if (rc) {
