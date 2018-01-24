@@ -37,10 +37,9 @@ static int libxl__console_tty_path(libxl__gc *gc, uint32_t domid, int cons_num,
         if (cons_num == 0)
             *tty_path = GCSPRINTF("%s/console/tty", dom_path);
         else
-            *tty_path = GCSPRINTF("%s/device/%s/%d/tty", dom_path,
-                                  libxl__device_kind_to_string(
-                                  LIBXL__DEVICE_KIND_CONSOLE),
-                                  cons_num);
+            *tty_path = GCSPRINTF("%s/tty",
+                                  libxl__domain_device_frontend_path(gc, domid,
+                                  cons_num, LIBXL__DEVICE_KIND_CONSOLE));
         rc = 0;
         break;
     default:
@@ -568,20 +567,19 @@ int libxl_device_channel_getinfo(libxl_ctx *ctx, uint32_t domid,
                                  libxl_channelinfo *channelinfo)
 {
     GC_INIT(ctx);
-    char *dompath, *fe_path, *libxl_path;
+    char *fe_path, *libxl_path;
     char *val;
     int rc;
 
-    dompath = libxl__xs_get_dompath(gc, domid);
     channelinfo->devid = channel->devid;
 
-    fe_path = GCSPRINTF("%s/device/%s/%d", dompath,
-                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_CONSOLE),
-                        channelinfo->devid + 1);
-    libxl_path = GCSPRINTF("%s/device/%s/%d",
-                           libxl__xs_libxl_path(gc, domid),
-                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_CONSOLE),
-                           channelinfo->devid + 1);
+    fe_path = libxl__domain_device_frontend_path(gc, domid,
+                                                 channelinfo->devid + 1,
+                                                 LIBXL__DEVICE_KIND_CONSOLE);
+    libxl_path = libxl__domain_device_libxl_path(gc, domid,
+                                                 channelinfo->devid + 1,
+                                                 LIBXL__DEVICE_KIND_CONSOLE);
+
     channelinfo->backend = xs_read(ctx->xsh, XBT_NULL,
                                    GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!channelinfo->backend) {

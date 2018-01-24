@@ -402,20 +402,16 @@ int libxl_device_nic_getinfo(libxl_ctx *ctx, uint32_t domid,
                               libxl_device_nic *nic, libxl_nicinfo *nicinfo)
 {
     GC_INIT(ctx);
-    char *dompath, *nicpath, *libxl_path;
+    char *nicpath, *libxl_path;
     char *val;
     int rc;
 
-    dompath = libxl__xs_get_dompath(gc, domid);
     nicinfo->devid = nic->devid;
 
-    nicpath = GCSPRINTF("%s/device/%s/%d", dompath,
-                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VIF),
-                        nicinfo->devid);
-    libxl_path = GCSPRINTF("%s/device/%s/%d",
-                           libxl__xs_libxl_path(gc, domid),
-                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VIF),
-                           nicinfo->devid);
+    nicpath = libxl__domain_device_frontend_path(gc, domid, nicinfo->devid,
+                                                 LIBXL__DEVICE_KIND_VIF);
+    libxl_path = libxl__domain_device_libxl_path(gc, domid, nicinfo->devid,
+                                                 LIBXL__DEVICE_KIND_VIF);
     nicinfo->backend = xs_read(ctx->xsh, XBT_NULL,
                                 GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!nicinfo->backend) {

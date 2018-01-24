@@ -94,21 +94,17 @@ int libxl_device_vtpm_getinfo(libxl_ctx *ctx,
                               libxl_vtpminfo *vtpminfo)
 {
     GC_INIT(ctx);
-    char *libxl_path, *dompath, *vtpmpath;
+    char *libxl_path, *vtpmpath;
     char *val;
     int rc = 0;
 
     libxl_vtpminfo_init(vtpminfo);
-    dompath = libxl__xs_get_dompath(gc, domid);
     vtpminfo->devid = vtpm->devid;
 
-    vtpmpath = GCSPRINTF("%s/device/%s/%d", dompath,
-                         libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VTPM),
-                         vtpminfo->devid);
-    libxl_path = GCSPRINTF("%s/device/%s/%d",
-                           libxl__xs_libxl_path(gc, domid),
-                           libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VTPM),
-                           vtpminfo->devid);
+    vtpmpath = libxl__domain_device_frontend_path(gc, domid, vtpminfo->devid,
+                                                  LIBXL__DEVICE_KIND_VTPM);
+    libxl_path = libxl__domain_device_libxl_path(gc, domid, vtpminfo->devid,
+                                                 LIBXL__DEVICE_KIND_VTPM);
     vtpminfo->backend = xs_read(ctx->xsh, XBT_NULL,
           GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!vtpminfo->backend) {
