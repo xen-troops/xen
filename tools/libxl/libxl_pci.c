@@ -125,9 +125,8 @@ static int libxl__device_pci_add_xenstore(libxl__gc *gc, uint32_t domid, libxl_d
     libxl_device_pci_init(&pcidev_saved);
     libxl_device_pci_copy(CTX, &pcidev_saved, pcidev);
 
-    be_path = GCSPRINTF("%s/backend/%s/%d/0", libxl__xs_get_dompath(gc, 0),
-                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_PCI),
-                        domid);
+    be_path = libxl__domain_device_backend_path(gc, 0, domid, 0,
+                                                LIBXL__DEVICE_KIND_PCI);
     num_devs = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/num_devs", be_path));
     if (!num_devs)
         return libxl__create_pci_backend(gc, domid, pcidev, 1);
@@ -197,9 +196,8 @@ static int libxl__device_pci_remove_xenstore(libxl__gc *gc, uint32_t domid, libx
     int num, i, j;
     xs_transaction_t t;
 
-    be_path = GCSPRINTF("%s/backend/%s/%d/0", libxl__xs_get_dompath(gc, 0),
-                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_PCI),
-                        domid);
+    be_path = libxl__domain_device_backend_path(gc, 0, domid, 0,
+                                                LIBXL__DEVICE_KIND_PCI);
     num_devs_path = GCSPRINTF("%s/num_devs", be_path);
     num_devs = libxl__xs_read(gc, XBT_NULL, num_devs_path);
     if (!num_devs)
@@ -1596,9 +1594,8 @@ libxl_device_pci *libxl_device_pci_list(libxl_ctx *ctx, uint32_t domid, int *num
 
     *num = 0;
 
-    be_path = GCSPRINTF("%s/backend/%s/%d/0", libxl__xs_get_dompath(gc, 0),
-                        libxl__device_kind_to_string(LIBXL__DEVICE_KIND_PCI),
-                        domid);
+    be_path = libxl__domain_device_backend_path(gc, 0, domid, 0,
+                                                LIBXL__DEVICE_KIND_PCI);
     num_devs = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/num_devs", be_path));
     if (!num_devs)
         goto out;
