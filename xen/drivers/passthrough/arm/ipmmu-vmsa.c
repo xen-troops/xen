@@ -423,6 +423,8 @@ static void set_archdata(struct device *dev, struct ipmmu_vmsa_archdata *p)
 #define IMTTLBR1			0x0018
 #define IMTTUBR1			0x001c
 
+#define IMTTLBR_MASK		0xFFFFF000
+
 #define IMSTR				0x0020
 #define IMSTR_ERRLVL_MASK		(3 << 12)
 #define IMSTR_ERRLVL_SHIFT		12
@@ -849,14 +851,14 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	dev_notice(domain->root->dev, "d%d: Set IPMMU context %u (pgd 0x%"PRIx64")\n",
 			domain->d->domain_id, domain->context_id, ttbr);
 
-	ipmmu_ctx_write(domain, IMTTLBR0, ttbr);
+	ipmmu_ctx_write(domain, IMTTLBR0, ttbr & IMTTLBR_MASK);
 	ipmmu_ctx_write(domain, IMTTUBR0, ttbr >> 32);
 
 	/*
 	 * With enabling IMCTR_VA64 we need to setup TTBR1 as well
 	 */
 	if (domain->root->features->imctr_va64) {
-		ipmmu_ctx_write(domain, IMTTLBR1, ttbr);
+		ipmmu_ctx_write(domain, IMTTLBR1, ttbr & IMTTLBR_MASK);
 		ipmmu_ctx_write(domain, IMTTUBR1, ttbr >> 32);
 	}
 
