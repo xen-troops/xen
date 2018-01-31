@@ -781,7 +781,7 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
                 libxl__xs_path_cleanup(gc, t, fe_path);
             libxl__xs_path_cleanup(gc, t, libxl_path);
         }
-        if (dev->backend_domid == domid && !libxl_only) {
+        if (!libxl__is_driver_domain(gc, dev->backend_domid) && !libxl_only) {
             /*
              * The driver domain is in charge of removing what it can
              * from the backend path.
@@ -1167,15 +1167,18 @@ static void device_hotplug(libxl__egc *egc, libxl__ao_device *aodev)
         LOGD(ERROR, aodev->dev->domid, "Failed to get domid");
         goto out;
     }
-    if (aodev->dev->backend_domid != domid) {
+
+    if (aodev->dev->backend_domid != domid &&
+        aodev->action != LIBXL__DEVICE_ACTION_REMOVE) {
+        LOG(DEBUG, "Not a remove, not executing hotplug scripts");
+        goto out;
+    }
+
+    if (libxl__is_driver_domain(gc, aodev->dev->backend_domid) &&
+        aodev->action == LIBXL__DEVICE_ACTION_REMOVE) {
         LOGD(DEBUG, aodev->dev->domid,
              "Backend domid %d, domid %d, assuming driver domains",
              aodev->dev->backend_domid, domid);
-
-        if (aodev->action != LIBXL__DEVICE_ACTION_REMOVE) {
-            LOG(DEBUG, "Not a remove, not executing hotplug scripts");
-            goto out;
-        }
 
         aodev->xswait.ao = ao;
         aodev->xswait.what = "removal of backend path";
