@@ -485,12 +485,8 @@ p2m_pt_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
 {
     /* XXX -- this might be able to be faster iff current->domain == d */
     void *table;
-<<<<<<< HEAD
     unsigned long gfn = gfn_x(gfn_);
-    unsigned long i, gfn_remainder = gfn;
-=======
     unsigned long gfn_remainder = gfn;
->>>>>>> d530dd9... iommu: Add extra order argument to the IOMMU APIs and platform callbacks
     l1_pgentry_t *p2m_entry, entry_content;
     /* Intermediate table to free if we're replacing it with a superpage. */
     l1_pgentry_t intermediate_entry = l1e_empty();

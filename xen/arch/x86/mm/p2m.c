@@ -1138,11 +1138,7 @@ int set_identity_p2m_entry(struct domain *d, unsigned long gfn_l,
     {
         if ( !need_iommu(d) )
             return 0;
-<<<<<<< HEAD
-        return iommu_map_page(d, gfn_l, gfn_l, IOMMUF_readable|IOMMUF_writable);
-=======
-        return iommu_map_pages(d, gfn, gfn, 0, IOMMUF_readable|IOMMUF_writable);
->>>>>>> d530dd9... iommu: Add extra order argument to the IOMMU APIs and platform callbacks
+        return iommu_map_page(d, gfn_l, gfn_l, 0, IOMMUF_readable|IOMMUF_writable);
     }
 
     gfn_lock(p2m, gfn, 0);
@@ -1232,11 +1228,7 @@ int clear_identity_p2m_entry(struct domain *d, unsigned long gfn_l)
     {
         if ( !need_iommu(d) )
             return 0;
-<<<<<<< HEAD
-        return iommu_unmap_page(d, gfn_l);
-=======
-        return iommu_unmap_pages(d, gfn, 0);
->>>>>>> d530dd9... iommu: Add extra order argument to the IOMMU APIs and platform callbacks
+        return iommu_unmap_page(d, gfn_l, 0);
     }
 
     gfn_lock(p2m, gfn, 0);
