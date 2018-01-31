@@ -27,8 +27,13 @@ libxl__device_kind = Enumeration("device_kind", [
     (10, "QUSB"),
     (11, "9PFS"),
     (12, "VDISPL"),
+<<<<<<< HEAD
     (13, "VUART"),
     (14, "VSND"),
+=======
+    (13, "VSND"),
+    (14, "VGSX")
+>>>>>>> e8e4d36... libxl: add vgsx device
     ])
 
 libxl__console_backend = Enumeration("console_backend", [
