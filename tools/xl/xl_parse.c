@@ -860,16 +860,10 @@ void parse_config_data(const char *config_source,
     long l, vcpus = 0;
     XLU_Config *config;
     XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms,
-<<<<<<< HEAD
                    *usbctrls, *usbdevs, *p9devs, *vdispls;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs,
-                   *mca_caps;
+                   *mca_caps, *coprocs;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian, num_mca_caps;
-=======
-                   *usbctrls, *usbdevs, *p9devs;
-    XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs, *coprocs;
-    int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian;
->>>>>>> df3f5d6... libxl/coproc: Introduce coproc configuration for domU
     int pci_power_mgmt = 0;
     int pci_msitranslate = 0;
     int pci_permissive = 0;
