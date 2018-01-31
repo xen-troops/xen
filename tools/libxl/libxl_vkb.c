@@ -34,6 +34,13 @@ static int libxl__device_from_vkb(libxl__gc *gc, uint32_t domid,
     return 0;
 }
 
+static int libxl__device_vkb_dm_needed(libxl_device_vkb *vkb, uint32_t domid)
+{
+   if (vkb->backend_type == LIBXL_VKB_BACKEND_QEMU)
+        return 1;
+    return 0;
+}
+
 int libxl_device_vkb_add(libxl_ctx *ctx, uint32_t domid, libxl_device_vkb *vkb,
                          const libxl_asyncop_how *ao_how)
 {
@@ -60,7 +67,8 @@ static LIBXL_DEFINE_UPDATE_DEVID(vkb, "vkbd")
 LIBXL_DEFINE_DEVICE_REMOVE(vkb)
 
 DEFINE_DEVICE_TYPE_STRUCT_X(vkb, vkb, vkbd
-    .skip_attach = 1
+    .skip_attach = 1,
+    .dm_needed   = (device_dm_needed_fn_t)libxl__device_vkb_dm_needed
 );
 
 /*
