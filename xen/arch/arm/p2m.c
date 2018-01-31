@@ -961,12 +961,8 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
     if ( lpae_valid(orig_pte) && entry->p2m.base != orig_pte.p2m.base )
         p2m_free_entry(p2m, orig_pte, level);
 
-<<<<<<< HEAD
     if ( need_iommu(p2m->domain) &&
          (lpae_valid(orig_pte) || lpae_valid(*entry)) )
-        rc = iommu_iotlb_flush(p2m->domain, gfn_x(sgfn), 1UL << page_order);
-=======
-    if ( need_iommu(p2m->domain) && (p2m_valid(orig_pte) || p2m_valid(*entry)) )
     {
         if ( iommu_use_hap_pt(p2m->domain) )
             rc = iommu_iotlb_flush(p2m->domain, gfn_x(sgfn), 1UL << page_order);
@@ -976,7 +972,6 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
         else
             rc = iommu_unmap_pages(p2m->domain, gfn_x(sgfn), page_order);
     }
->>>>>>> 48bdc97... xen/arm: p2m: Update IOMMU mapping whenever possible if page table is not shared
     else
         rc = 0;
 
