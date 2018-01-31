@@ -757,6 +757,22 @@ void libxl__ev_devlock_unlock(libxl__gc *gc, libxl__ev_devlock *lock)
     libxl__ev_devlock_init(lock);
 }
 
+bool libxl__is_driver_domain(libxl__gc *gc, uint32_t domid)
+{
+    const char *val;
+    int rc;
+
+    char *dom_path = libxl__xs_get_dompath(gc, domid);
+
+    if (!dom_path) return false;
+
+    rc = libxl__xs_read_checked(gc, XBT_NULL,
+                                GCSPRINTF("%s/libxl", dom_path), &val);
+    if (rc) return false;
+
+    return val != NULL;
+}
+
 /*
  * Local variables:
  * mode: C

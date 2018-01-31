@@ -4723,6 +4723,9 @@ _hidden int libxl__domain_pvcontrol(libxl__egc *egc,
                                     libxl__xswait_state *pvcontrol,
                                     domid_t domid, const char *cmd);
 
+/* Check if domain is driver domain */
+_hidden bool libxl__is_driver_domain(libxl__gc *gc, uint32_t domid);
+
 #endif
 
 /*
