@@ -4395,7 +4395,6 @@ void* libxl__device_list(libxl__gc *gc, const struct libxl_device_type *dt,
 void libxl__device_list_free(const struct libxl_device_type *dt,
                              void *list, int num);
 
-<<<<<<< HEAD
 static inline bool libxl__timer_mode_is_default(libxl_timer_mode *tm)
 {
     return *tm == LIBXL_TIMER_MODE_DEFAULT;
@@ -4405,11 +4404,10 @@ static inline bool libxl__string_is_default(char **s)
 {
     return *s == NULL;
 }
-=======
+
 /* Check if domain is driver domain */
 _hidden bool libxl__is_driver_domain(libxl__gc *gc, uint32_t domid);
 
->>>>>>> 9e39cd5... libxl: add libxl__is_driver_domain function
 #endif
 
 /*
