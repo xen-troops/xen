@@ -4615,6 +4615,10 @@ static inline const char *libxl__qemu_qmp_path(libxl__gc *gc, int domid)
 {
     return GCSPRINTF("%s/qmp-libxl-%d", libxl__run_dir_path(), domid);
 }
+
+/* Check if domain is driver domain */
+_hidden bool libxl__is_driver_domain(libxl__gc *gc, uint32_t domid);
+
 #endif
 
 /*
