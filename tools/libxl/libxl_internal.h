@@ -4404,6 +4404,10 @@ static inline bool libxl__string_is_default(char **s)
 {
     return *s == NULL;
 }
+
+/* Check if domain is driver domain */
+_hidden bool libxl__is_driver_domain(libxl__gc *gc, uint32_t domid);
+
 #endif
 
 /*
