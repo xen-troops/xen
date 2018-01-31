@@ -1,0 +1,1 @@
+obj-y += coproc.o schedule.o

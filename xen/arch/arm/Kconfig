@@ -50,12 +50,19 @@ config HAS_ITS
         prompt "GICv3 ITS MSI controller support" if EXPERT = "y"
         depends on HAS_GICV3
 
+<<<<<<< HEAD
 config SBSA_VUART_CONSOLE
 	bool "Emulated SBSA UART console support"
 	default y
 	---help---
 	  Allows a guest to use SBSA Generic UART as a console. The
 	  SBSA Generic UART implements a subset of ARM PL011 UART.
+=======
+config HAS_COPROC
+	bool "Remote processors framework (EXPERIMENTAL)"
+	default y
+	depends on ARM
+>>>>>>> cb8e5c0... arm/coproc: First draft of generic remote processors framework
 
 endmenu
 
