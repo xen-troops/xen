@@ -27,7 +27,11 @@ libxl__device_kind = Enumeration("device_kind", [
     (10, "QUSB"),
     (11, "9PFS"),
     (12, "VDISPL"),
+<<<<<<< HEAD
     (13, "VUART"),
+=======
+    (13, "VSND")
+>>>>>>> d8d7be6... libxl: add PV sound device
     ])
 
 libxl__console_backend = Enumeration("console_backend", [
