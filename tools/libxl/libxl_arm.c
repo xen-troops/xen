@@ -1018,14 +1018,10 @@ next_resize:
         FDT( make_timer_node(gc, fdt, ainfo, xc_config->clock_frequency) );
         FDT( make_hypervisor_node(gc, fdt, vers) );
 
-<<<<<<< HEAD
         if (info->arch_arm.vuart == LIBXL_VUART_TYPE_SBSA_UART)
             FDT( make_vpl011_uart_node(gc, fdt, ainfo, dom) );
 
-        if (pfdt)
-=======
         if (pfdt) {
->>>>>>> df3f5d6... libxl/coproc: Introduce coproc configuration for domU
             FDT( copy_partial_fdt(gc, fdt, pfdt) );
             FDT( copy_coprocs_nodes(gc, fdt, pfdt, info) );
         }
