@@ -1898,6 +1898,7 @@ const libxl__device_type *device_type_tbl[] = {
     &libxl__vsnd_devtype,
     &libxl__virtio_devtype,
     &libxl__p9_devtype,
+    &libxl__vgsx_devtype,
     NULL
 };
 
