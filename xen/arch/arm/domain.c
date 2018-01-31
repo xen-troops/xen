@@ -881,13 +881,12 @@ int domain_relinquish_resources(struct domain *d)
         if ( ret )
             return ret;
 
-<<<<<<< HEAD
         /*
          * Release the resources allocated for vpl011 which were
          * allocated via a DOMCTL call XEN_DOMCTL_vuart_op.
          */
         domain_vpl011_deinit(d);
-=======
+
 #ifdef CONFIG_HAS_COPROC
         d->arch.relmem = RELMEM_coproc;
         /* Fallthrough */
@@ -897,7 +896,6 @@ int domain_relinquish_resources(struct domain *d)
         if ( ret )
             return ret;
 #endif
->>>>>>> f5b2438... xen/arm: Coproc's domain resources must be released before memory
 
         d->arch.relmem = RELMEM_xen;
         /* Fallthrough */
