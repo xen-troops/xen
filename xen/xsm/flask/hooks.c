@@ -749,13 +749,11 @@ static int flask_domctl(struct domain *d, int cmd)
     case XEN_DOMCTL_soft_reset:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SOFT_RESET);
 
-<<<<<<< HEAD
     case XEN_DOMCTL_set_gnttab_limits:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SET_GNTTAB_LIMITS);
-=======
+
     case XEN_DOMCTL_attach_coproc:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__ATTACH_COPROC);
->>>>>>> db1fea6... flask: Add XEN_DOMCTL_attach_coproc support
 
     default:
         return avc_unknown_permission("domctl", cmd);
