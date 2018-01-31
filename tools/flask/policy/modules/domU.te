@@ -27,7 +27,7 @@ delegate_devices(dom0_t, domU_t)
 # Both of these domain types can be created using the default (system) role
 role system_r types { domU_t dm_dom_t };
 
-use_device(domU_t, irq_t)
-use_device(domU_t, iomem_t)
-use_device(domU_t, device_t)
-use_device(domU_t, ioport_t)
+use_device_noiommu(domU_t, irq_t)
+use_device_noiommu(domU_t, iomem_t)
+use_device_noiommu(domU_t, device_t)
+use_device_noiommu(domU_t, ioport_t)
