@@ -1268,7 +1268,6 @@ connectors=id0:1920x1080;id1:800x600;id2:640x480
 
 =back
 
-<<<<<<< HEAD
 =item B<dm_restrict=BOOLEAN>
 
 Restrict the device model after startup,
@@ -1373,7 +1372,6 @@ we may break backward compatibility.
 
 =back
 
-=======
 =item B<vsnd=[ VCARD_SPEC, VCARD_SPEC, ... ]>
 
 Specifies the virtual sound cards to be provided to the guest.
@@ -1524,7 +1522,6 @@ I<EXAMPLE:>
         ]  
     ]
 
->>>>>>> 451b12c... docs: add PV sound device config
 =back
 
 =head2 Paravirtualised (PV) Guest Specific Options
