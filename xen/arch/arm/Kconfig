@@ -23,6 +23,8 @@ config ARM
 	select HAS_PASSTHROUGH
 	select HAS_PDX
 	select VIDEO
+	select HAS_CPUFREQ
+	select HAS_PM
 
 config ARCH_DEFCONFIG
 	string
@@ -56,6 +58,12 @@ config SBSA_VUART_CONSOLE
 	---help---
 	  Allows a guest to use SBSA Generic UART as a console. The
 	  SBSA Generic UART implements a subset of ARM PL011 UART.
+
+config HAS_COPROC
+	bool "Remote processors framework (EXPERIMENTAL)"
+	default y
+	depends on ARM
+	source "arch/arm/coproc/Kconfig"
 
 endmenu
 

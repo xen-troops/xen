@@ -736,7 +736,7 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
                 libxl__xs_path_cleanup(gc, t, fe_path);
             libxl__xs_path_cleanup(gc, t, libxl_path);
         }
-        if (dev->backend_domid == domid && !libxl_only) {
+        if (!libxl__is_driver_domain(gc, dev->backend_domid) && !libxl_only) {
             /*
              * The driver domain is in charge of removing what it can
              * from the backend path.
@@ -1115,15 +1115,18 @@ static void device_hotplug(libxl__egc *egc, libxl__ao_device *aodev)
         LOGD(ERROR, aodev->dev->domid, "Failed to get domid");
         goto out;
     }
-    if (aodev->dev->backend_domid != domid) {
+
+    if (aodev->dev->backend_domid != domid &&
+        aodev->action != LIBXL__DEVICE_ACTION_REMOVE) {
+        LOG(DEBUG, "Not a remove, not executing hotplug scripts");
+        goto out;
+    }
+
+    if (libxl__is_driver_domain(gc, aodev->dev->backend_domid) &&
+        aodev->action == LIBXL__DEVICE_ACTION_REMOVE) {
         LOGD(DEBUG, aodev->dev->domid,
              "Backend domid %d, domid %d, assuming driver domains",
              aodev->dev->backend_domid, domid);
-
-        if (aodev->action != LIBXL__DEVICE_ACTION_REMOVE) {
-            LOG(DEBUG, "Not a remove, not executing hotplug scripts");
-            goto out;
-        }
 
         aodev->xswait.ao = ao;
         aodev->xswait.what = "removal of backend path";
@@ -1391,7 +1394,8 @@ out:
 }
 
 /* common function to get next device id */
-int libxl__device_nextid(libxl__gc *gc, uint32_t domid, char *device)
+int libxl__device_nextid(libxl__gc *gc, uint32_t domid,
+                         libxl__device_kind device)
 {
     char *libxl_dom_path, **l;
     unsigned int nb;
@@ -1401,8 +1405,8 @@ int libxl__device_nextid(libxl__gc *gc, uint32_t domid, char *device)
         return nextid;
 
     l = libxl__xs_directory(gc, XBT_NULL,
-        GCSPRINTF("%s/device/%s", libxl_dom_path, device),
-                            &nb);
+        GCSPRINTF("%s/device/%s", libxl_dom_path,
+                  libxl__device_kind_to_string(device)), &nb);
     if (l == NULL || nb == 0)
         nextid = 0;
     else
@@ -2007,7 +2011,8 @@ void *libxl__device_list(libxl__gc *gc, const struct libxl_device_type *dt,
     *num = 0;
 
     libxl_path = GCSPRINTF("%s/device/%s",
-                           libxl__xs_libxl_path(gc, domid), dt->entry);
+                           libxl__xs_libxl_path(gc, domid),
+                           libxl__device_kind_to_string(dt->type));
 
     dir = libxl__xs_directory(gc, XBT_NULL, libxl_path, &ndirs);
 

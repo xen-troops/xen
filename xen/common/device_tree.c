@@ -176,6 +176,58 @@ bool_t dt_property_read_u32(const struct dt_device_node *np,
     return 1;
 }
 
+/**
+ * dt_find_property_value_of_size
+ *
+ * @np:       device node from which the property value is to be read.
+ * @propname: name of the property to be searched.
+ * @min:      minimum allowed length of property value
+ * @max:      maximum allowed length of property value (0 means unlimited)
+ * @len:      if !=NULL, actual length is written to here
+ *
+ * Search for a property in a device node and valid the requested size.
+ * Returns the property value on success, -EINVAL if the property does not
+ * exist, -ENODATA if property does not have a value, and -EOVERFLOW if the
+ * property data is too small or too large.
+ */
+static void *dt_find_property_value_of_size(const struct dt_device_node *np,
+                                            const char *propname,
+                                            u32 min, u32 max, size_t *len)
+{
+    const struct dt_property *prop = dt_find_property(np, propname, NULL);
+
+    if ( !prop )
+        return ERR_PTR(-EINVAL);
+    if ( !prop->value )
+        return ERR_PTR(-ENODATA);
+    if ( prop->length < min )
+        return ERR_PTR(-EOVERFLOW);
+    if ( max && prop->length > max )
+        return ERR_PTR(-EOVERFLOW);
+
+    if ( len )
+        *len = prop->length;
+
+    return prop->value;
+}
+
+int dt_property_read_u32_index(const struct dt_device_node *np,
+                               const char *propname,
+                               u32 index, u32 *out_value)
+{
+    const u32 *val =
+        dt_find_property_value_of_size(np, propname,
+                                       ((index + 1) * sizeof(*out_value)),
+                                       0,
+                                       NULL);
+
+    if ( IS_ERR(val) )
+        return PTR_ERR(val);
+
+    *out_value = be32_to_cpup(((__be32 *)val) + index);
+
+    return 0;
+}
 
 bool_t dt_property_read_u64(const struct dt_device_node *np,
                          const char *name, u64 *out_value)
@@ -206,6 +258,71 @@ int dt_property_read_string(const struct dt_device_node *np,
     *out_string = pp->value;
 
     return 0;
+}
+
+int dt_property_read_string_helper(const struct dt_device_node *np,
+                                   const char *propname, const char **out_strs,
+                                   size_t sz, int skip)
+{
+    const struct dt_property *prop = dt_find_property(np, propname, NULL);
+    int l = 0, i = 0;
+    const char *p, *end;
+
+    if ( !prop )
+        return -EINVAL;
+    if ( !prop->value )
+        return -ENODATA;
+    p = prop->value;
+    end = p + prop->length;
+
+    for ( i = 0; p < end && (!out_strs || i < skip + sz); i++, p += l )
+    {
+        l = strnlen(p, end - p) + 1;
+        if ( p + l > end )
+            return -EILSEQ;
+        if ( out_strs && i >= skip )
+            *out_strs++ = p;
+    }
+    i -= skip;
+    return i <= 0 ? -ENODATA : i;
+}
+
+const char *dt_property_next_string(const struct dt_property *prop,
+                                    const char *cur)
+{
+    const void *curv = cur;
+
+    if ( !prop )
+        return NULL;
+
+    if ( !cur )
+        return prop->value;
+
+    curv += strlen(cur) + 1;
+    if ( curv >= prop->value + prop->length )
+        return NULL;
+
+    return curv;
+}
+
+int dt_property_count_elems_of_size(const struct dt_device_node *np,
+                                    const char *propname, int elem_size)
+{
+    const struct dt_property *prop = dt_find_property(np, propname, NULL);
+
+    if ( !prop )
+        return -EINVAL;
+    if ( !prop->value )
+        return -ENODATA;
+
+    if ( prop->length % elem_size != 0 )
+    {
+        printk("%s: size of %s is not a multiple of %d\n", np->full_name,
+               propname, elem_size);
+        return -EINVAL;
+    }
+
+    return prop->length / elem_size;
 }
 
 bool_t dt_device_is_compatible(const struct dt_device_node *device,
@@ -308,6 +425,26 @@ struct dt_device_node *dt_find_node_by_alias(const char *alias)
     }
 
     return NULL;
+}
+
+int dt_alias_get_id(struct dt_device_node *np, const char *stem)
+{
+    struct dt_alias_prop *app;
+    int id = -ENODEV;
+
+    list_for_each_entry( app, &aliases_lookup, link )
+    {
+        if ( strcmp(app->stem, stem) != 0 )
+            continue;
+
+        if ( np == app->np )
+        {
+            id = app->id;
+            break;
+        }
+    }
+
+    return id;
 }
 
 const struct dt_device_match *
@@ -1516,6 +1653,11 @@ bool_t dt_device_for_passthrough(const struct dt_device_node *device)
 
 }
 
+bool_t dt_device_for_coproc(const struct dt_device_node *device)
+{
+    return (dt_find_property(device, "xen,coproc", NULL) != NULL);
+}
+
 static int __dt_parse_phandle_with_args(const struct dt_device_node *np,
                                         const char *list_name,
                                         const char *cells_name,
@@ -1661,6 +1803,13 @@ int dt_parse_phandle_with_args(const struct dt_device_node *np,
         return -EINVAL;
     return __dt_parse_phandle_with_args(np, list_name, cells_name, 0,
                                         index, out_args);
+}
+
+int dt_count_phandle_with_args(const struct dt_device_node *np,
+                               const char *list_name,
+                               const char *cells_name)
+{
+    return __dt_parse_phandle_with_args(np, list_name, cells_name, 0, -1, NULL);
 }
 
 /**

@@ -374,6 +374,26 @@ const struct dt_property *dt_find_property(const struct dt_device_node *np,
  */
 bool_t dt_property_read_u32(const struct dt_device_node *np,
                             const char *name, u32 *out_value);
+
+/**
+ * dt_property_read_u32_index - Find and read a u32 from a multi-value property.
+ *
+ * @np:        device node from which the property value is to be read.
+ * @propname:  name of the property to be searched.
+ * @index:     index of the u32 in the list of values
+ * @out_value: pointer to return value, modified only if no error.
+ *
+ * Search for a property in a device node and read nth 32-bit value from
+ * it. Returns 0 on success, -EINVAL if the property does not exist,
+ * -ENODATA if property does not have a value, and -EOVERFLOW if the
+ * property data isn't large enough.
+ *
+ * The out_value is modified only if a valid u32 value can be decoded.
+ */
+int dt_property_read_u32_index(const struct dt_device_node *np,
+                               const char *propname,
+                               u32 index, u32 *out_value);
+
 /**
  * dt_property_read_u64 - Helper to read a u64 property.
  * @np: node to get the value
@@ -418,6 +438,123 @@ static inline bool_t dt_property_read_bool(const struct dt_device_node *np,
  */
 int dt_property_read_string(const struct dt_device_node *np,
                             const char *propname, const char **out_string);
+
+/**
+ * dt_property_read_string_helper() - Utility helper for parsing string properties
+ * @np:       device node from which the property value is to be read.
+ * @propname: name of the property to be searched.
+ * @out_strs: output array of string pointers.
+ * @sz:       number of array elements to read.
+ * @skip:     Number of strings to skip over at beginning of list.
+ *
+ * Don't call this function directly. It is a utility helper for the
+ * dt_property_read_string*() family of functions.
+ */
+int dt_property_read_string_helper(const struct dt_device_node *np,
+                                   const char *propname, const char **out_strs,
+                                   size_t sz, int skip);
+
+/**
+ * dt_property_read_string_array() - Read an array of strings from a multiple
+ *                                   strings property.
+ * @np:       device node from which the property value is to be read.
+ * @propname: name of the property to be searched.
+ * @out_strs: output array of string pointers.
+ * @sz:       number of array elements to read.
+ *
+ * Search for a property in a device tree node and retrieve a list of
+ * terminated string values (pointer to data, not a copy) in that property.
+ *
+ * If @out_strs is NULL, the number of strings in the property is returned.
+ */
+static inline int dt_property_read_string_array(const struct dt_device_node *np,
+                                                const char *propname,
+                                                const char **out_strs,
+                                                size_t sz)
+{
+	return dt_property_read_string_helper(np, propname, out_strs, sz, 0);
+}
+
+/**
+ * dt_property_count_strings() - Find and return the number of strings from a
+ *                               multiple strings property.
+ * @np:       device node from which the property value is to be read.
+ * @propname: name of the property to be searched.
+ *
+ * Search for a property in a device tree node and retrieve the number of null
+ * terminated string contain in it. Returns the number of strings on
+ * success, -EINVAL if the property does not exist, -ENODATA if property
+ * does not have a value, and -EILSEQ if the string is not null-terminated
+ * within the length of the property data.
+ */
+static inline int dt_property_count_strings(const struct dt_device_node *np,
+                                            const char *propname)
+{
+	return dt_property_read_string_helper(np, propname, NULL, 0, 0);
+}
+
+/**
+ * dt_property_read_string_index() - Find and read a string from a multiple
+ *                                   strings property.
+ * @np:         device node from which the property value is to be read.
+ * @propname:   name of the property to be searched.
+ * @index:      index of the string in the list of strings
+ * @out_string: pointer to null terminated return string, modified only if
+ *              return value is 0.
+ *
+ * Search for a property in a device tree node and retrieve a null
+ * terminated string value (pointer to data, not a copy) in the list of strings
+ * contained in that property.
+ * Returns 0 on success, -EINVAL if the property does not exist, -ENODATA if
+ * property does not have a value, and -EILSEQ if the string is not
+ * null-terminated within the length of the property data.
+ *
+ * The out_string pointer is modified only if a valid string can be decoded.
+ */
+static inline int dt_property_read_string_index(const struct dt_device_node *np,
+                                                const char *propname,
+                                                int index, const char **output)
+{
+	int rc = dt_property_read_string_helper(np, propname, output, 1, index);
+
+	return rc < 0 ? rc : 0;
+}
+
+/**
+ * dt_property_for_each_string - Iterate over an array of strings within
+ * a property with a given name for a given node.
+ *
+ * Example:
+ *
+ * struct dt_property *prop;
+ * const char *s;
+ *
+ * dt_property_for_each_string(np, "propname", prop, s)
+ *     printk("String value: %s\n", s);
+ */
+const char *dt_property_next_string(const struct dt_property *prop,
+                                    const char *cur);
+
+#define dt_property_for_each_string(np, propname, prop, s)    \
+    for (prop = dt_find_property(np, propname, NULL),         \
+        s = dt_property_next_string(prop, NULL);              \
+        s;                                                    \
+        s = dt_property_next_string(prop, s))
+
+/**
+ * dt_property_count_elems_of_size - Count the number of elements in a property
+ *
+ * @np:        device node from which the property value is to be read.
+ * @propname:  name of the property to be searched.
+ * @elem_size: size of the individual element
+ *
+ * Search for a property in a device node and count the number of elements of
+ * size elem_size in it. Returns number of elements on sucess, -EINVAL if the
+ * property does not exist or its length does not match a multiple of elem_size
+ * and -ENODATA if the property does not have a value.
+ */
+int dt_property_count_elems_of_size(const struct dt_device_node *np,
+                                    const char *propname, int elem_size);
 
 /**
  * Checks if the given "compat" string matches one of the strings in
@@ -470,6 +607,16 @@ struct dt_device_node *dt_find_node_by_alias(const char *alias);
  * Returns a node pointer.
  */
 struct dt_device_node *dt_find_node_by_path(const char *path);
+
+/**
+ * dt_alias_get_id - Get alias id for the given device_node
+ * @np:		Pointer to the given device_node
+ * @stem:	Alias stem of the given device_node
+ *
+ * The function travels the lookup table to get the alias id for the given
+ * device_node and alias stem. It returns the alias id if found.
+ */
+int dt_alias_get_id(struct dt_device_node *np, const char *stem);
 
 
 /**
@@ -639,6 +786,17 @@ bool_t dt_device_is_available(const struct dt_device_node *device);
 bool_t dt_device_for_passthrough(const struct dt_device_node *device);
 
 /**
+ * dt_device_for_coproc - Check if a device is a coprocessor to be shared
+ * by CSF
+ *
+ * @device: Node to check
+ *
+ * Return true if the property "xen,coproc" is present in the node,
+ * false otherwise.
+ */
+ bool_t dt_device_for_coproc(const struct dt_device_node *device);
+
+/**
  * dt_match_node - Tell if a device_node has a matching of dt_device_match
  * @matches: array of dt_device_match structures to search in
  * @node: the dt_device_node structure to match against
@@ -763,6 +921,27 @@ int dt_parse_phandle_with_args(const struct dt_device_node *np,
                                const char *list_name,
                                const char *cells_name, int index,
                                struct dt_phandle_args *out_args);
+
+/**
+ * dt_count_phandle_with_args() - Find the number of phandles references in a property
+ * @np: pointer to a device tree node containing a list
+ * @list_name: property name that contains a list
+ * @cells_name: property name that specifies phandles' arguments count
+ *
+ * Returns the number of phandle + argument tuples within a property. It
+ * is a typical pattern to encode a list of phandle and variable
+ * arguments into a single property. The number of arguments is encoded
+ * by a property in the phandle-target node. For example, a gpios
+ * property would contain a list of GPIO specifies consisting of a
+ * phandle and 1 or more arguments. The number of arguments are
+ * determined by the #gpio-cells property in the node pointed to by the
+ * phandle.
+ */
+int dt_count_phandle_with_args(const struct dt_device_node *np,
+                               const char *list_name,
+                               const char *cells_name);
+
+extern struct dt_device_node *cpu_dt_nodes[];
 
 #ifdef CONFIG_DEVICE_TREE_DEBUG
 #define dt_dprintk(fmt, args...)  \

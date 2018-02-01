@@ -36,6 +36,7 @@
 #include <asm/vtimer.h>
 
 #include "vuart.h"
+#include "coproc/coproc.h"
 
 DEFINE_PER_CPU(struct vcpu *, curr_vcpu);
 
@@ -586,7 +587,7 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     ASSERT(config != NULL);
 
     /* p2m_init relies on some value initialized by the IOMMU subsystem */
-    if ( (rc = iommu_domain_init(d)) != 0 )
+    if ( (rc = iommu_domain_init(d, config->use_iommu ? true : false)) != 0 )
         goto fail;
 
     if ( (rc = p2m_init(d)) != 0 )
@@ -671,6 +672,11 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     if ( is_hardware_domain(d) && (rc = domain_vuart_init(d)) )
         goto fail;
 
+#ifdef CONFIG_HAS_COPROC
+    if ( (rc = vcoproc_domain_init(d)) != 0 )
+        goto fail;
+#endif
+
     return 0;
 
 fail:
@@ -682,6 +688,9 @@ fail:
 
 void arch_domain_destroy(struct domain *d)
 {
+#ifdef CONFIG_HAS_COPROC
+    vcoproc_domain_free(d);
+#endif
     /* IOMMU page table is shared with P2M, always call
      * iommu_domain_destroy() before p2m_teardown().
      */
@@ -877,6 +886,16 @@ int domain_relinquish_resources(struct domain *d)
          * allocated via a DOMCTL call XEN_DOMCTL_vuart_op.
          */
         domain_vpl011_deinit(d);
+
+#ifdef CONFIG_HAS_COPROC
+        d->arch.relmem = RELMEM_coproc;
+        /* Fallthrough */
+
+    case RELMEM_coproc:
+        ret = coproc_release_vcoprocs(d);
+        if ( ret )
+            return ret;
+#endif
 
         d->arch.relmem = RELMEM_xen;
         /* Fallthrough */

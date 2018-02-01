@@ -1320,6 +1320,27 @@ int xenmem_add_to_physmap_one(
     return rc;
 }
 
+static int process_p2m_lookup(struct domain *d, xen_pfn_t *pma,
+                              struct xen_p2m_lookup *req)
+{
+    int i;
+
+    if ( unlikely(copy_from_guest(pma, req->pa, req->num_frames)) )
+        return -EFAULT;
+
+    for ( i = 0; i < req->num_frames; i++ )
+    {
+        pma[i] = pfn_to_paddr(mfn_x(gfn_to_mfn(d, _gfn(paddr_to_pfn(pma[i])))));
+    }
+
+    if ( unlikely(copy_to_guest(req->ma, pma, req->num_frames)) )
+        return -EFAULT;
+
+    return 0;
+}
+
+#define FRAMES_ON_STACK 32
+
 long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( op )
@@ -1329,6 +1350,48 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_get_sharing_freed_pages:
         return 0;
 
+    case XENMEM_p2m_lookup:
+    {
+        struct xen_p2m_lookup req;
+        struct domain *d;
+        int rc;
+
+        if ( copy_from_guest(&req, arg, 1) )
+            return -EFAULT;
+
+        if ( guest_handle_is_null(req.pa) || guest_handle_is_null(req.ma))
+            return -EINVAL;
+
+        d = rcu_lock_domain_by_any_id(req.domid);
+        if ( d == NULL )
+            return -ESRCH;
+
+        if ( likely (req.num_frames <= FRAMES_ON_STACK) )
+        {
+            /* more than 95% cases for GSX operation */
+            xen_pfn_t pma[FRAMES_ON_STACK];
+
+            rc = process_p2m_lookup(d, pma, &req);
+        }
+        else
+        {
+            xen_pfn_t *pma;
+
+            pma = xmalloc_array(xen_pfn_t, req.num_frames);
+
+            if ( unlikely(!pma) )
+            {
+                rc = -ENOMEM;
+            }
+            else
+            {
+                rc = process_p2m_lookup(d, pma, &req);
+                xfree(pma);
+            }
+        }
+        rcu_unlock_domain(d);
+        return rc;
+    }
     default:
         return -ENOSYS;
     }

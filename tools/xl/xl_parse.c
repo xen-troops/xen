@@ -851,6 +851,410 @@ out:
     return rc;
 }
 
+static int parse_vsnd_params(libxl_vsnd_params *params, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("sample-rates", token, oparg)) {
+        int i;
+        libxl_string_list rates = NULL;
+
+        split_string_into_string_list(oparg, ";", &rates);
+
+        params->num_sample_rates = libxl_string_list_length(&rates);
+        params->sample_rates = calloc(params->num_sample_rates,
+                                      sizeof(*params->sample_rates));
+
+        for (i = 0; i < params->num_sample_rates; i++) {
+            params->sample_rates[i] = strtoul(rates[i], NULL, 0);
+        }
+
+        libxl_string_list_dispose(&rates);
+    } else if (MATCH_OPTION("sample-formats", token, oparg)) {
+        int i;
+        libxl_string_list formats = NULL;
+
+        split_string_into_string_list(oparg, ";", &formats);
+
+        params->num_sample_formats = libxl_string_list_length(&formats);
+        params->sample_formats = calloc(params->num_sample_formats,
+                                        sizeof(*params->sample_formats));
+
+        for (i = 0; i < params->num_sample_formats; i++) {
+            libxl_vsnd_pcm_format format;
+
+            if (libxl_vsnd_pcm_format_from_string(formats[i], &format)) {
+                fprintf(stderr, "Invalid pcm format: %s\n", formats[i]);
+                exit(EXIT_FAILURE);
+            }
+
+            params->sample_formats[i] = format;
+        }
+
+        libxl_string_list_dispose(&formats);
+    } else if (MATCH_OPTION("channels-min", token, oparg)) {
+        params->channels_min = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("channels-max", token, oparg)) {
+        params->channels_max = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("buffer-size", token, oparg)) {
+        params->buffer_size = strtoul(oparg, NULL, 0);
+    } else {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_pcm_stream(libxl_device_vsnd *vsnd, char *param)
+{
+    if (vsnd->num_vsnd_pcms == 0) {
+        fprintf(stderr, "No vsnd pcm device\n");
+        return -1;
+    }
+
+    libxl_vsnd_pcm *pcm = &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+    if (pcm->num_vsnd_streams == 0) {
+        fprintf(stderr, "No vsnd stream\n");
+        return -1;
+    }
+
+    libxl_vsnd_stream *stream = &pcm->streams[pcm->num_vsnd_streams - 1];
+
+    if (parse_vsnd_params(&stream->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION("id", param, oparg)) {
+            stream->id = strdup(oparg);
+        } else if (MATCH_OPTION("type", param, oparg)) {
+
+            if (libxl_vsnd_stream_type_from_string(oparg, &stream->type)) {
+                fprintf(stderr, "Invalid stream type: %s\n", oparg);
+                return -1;
+            }
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_pcm_param(libxl_device_vsnd *vsnd, char *param)
+{
+    if (vsnd->num_vsnd_pcms == 0) {
+        fprintf(stderr, "No pcm device\n");
+        return -1;
+    }
+
+    libxl_vsnd_pcm *pcm = &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+    if (parse_vsnd_params(&pcm->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION("name", param, oparg)) {
+            pcm->name = strdup(oparg);
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_card_param(libxl_device_vsnd *vsnd, char *param)
+{
+    if (parse_vsnd_params(&vsnd->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION("backend", param, oparg)) {
+            vsnd->backend_domname = strdup(oparg);
+        } else if (MATCH_OPTION("short-name", param, oparg)) {
+            vsnd->short_name = strdup(oparg);
+        } else if (MATCH_OPTION("long-name", param, oparg)) {
+            vsnd->long_name = strdup(oparg);
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_create_item(libxl_device_vsnd *vsnd, const char *key)
+{
+    if (strcasecmp(key, "card") == 0) {
+
+    } else if (strcasecmp(key, "pcm") == 0) {
+        ARRAY_EXTEND_INIT_NODEVID(vsnd->pcms, vsnd->num_vsnd_pcms,
+                                  libxl_vsnd_pcm_init);
+    } else if (strcasecmp(key, "stream") == 0) {
+        if (vsnd->num_vsnd_pcms == 0) {
+            ARRAY_EXTEND_INIT_NODEVID(vsnd->pcms, vsnd->num_vsnd_pcms,
+                                      libxl_vsnd_pcm_init);
+        }
+
+        libxl_vsnd_pcm *pcm =  &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+        ARRAY_EXTEND_INIT_NODEVID(pcm->streams, pcm->num_vsnd_streams,
+                                  libxl_vsnd_stream_init);
+    } else {
+        fprintf(stderr, "Invalid key: %s\n", key);
+        return -1;
+    }
+
+    return 0;
+}
+
+int parse_vsnd_item(libxl_device_vsnd *vsnd, const char *spec)
+{
+    char *buf = strdup(spec);
+    char *token = strtok(buf, ",");
+    char *key = NULL;
+    int ret;
+
+    while(token) {
+        while (*token == ' ') token++;
+
+        if (!key) {
+            key = token;
+            ret = parse_vsnd_create_item(vsnd, key);
+            if (ret) goto out;
+        } else {
+            if (strcasecmp(key, "card") == 0) {
+                ret = parse_vsnd_card_param(vsnd, token);
+                if (ret) goto out;
+            } else if (strcasecmp(key, "pcm") == 0) {
+                ret = parse_vsnd_pcm_param(vsnd, token);
+                if (ret) goto out;
+            } else if (strcasecmp(key, "stream") == 0) {
+                ret = parse_vsnd_pcm_stream(vsnd, token);
+                if (ret) goto out;
+            }
+        }
+        token = strtok (NULL, ",");
+    }
+
+    ret = 0;
+
+out:
+    free(buf);
+    return ret;
+}
+
+static void parse_vsnd_card_config(const XLU_Config *config,
+                                   XLU_ConfigValue *card_value,
+                                   libxl_domain_config *d_config)
+{
+    int ret;
+
+    XLU_ConfigList *card_list;
+
+    // get card
+    ret = xlu_cfg_value_get_list(config, card_value,  &card_list, 0);
+
+    if (ret) {
+        fprintf(stderr, "Failed to get vsnd card list: %s\n", strerror(ret));
+        goto out;
+    }
+
+    libxl_device_vsnd *vsnd;
+
+    vsnd = ARRAY_EXTEND_INIT(d_config->vsnds,
+                             d_config->num_vsnds,
+                             libxl_device_vsnd_init);
+
+    const char *card_item;
+    int item = 0;
+
+    while ((card_item = xlu_cfg_get_listitem(card_list, item++)) != NULL) {
+        ret = parse_vsnd_item(vsnd, card_item);
+        if (ret) goto out;
+    }
+
+    ret = 0;
+
+out:
+    if (ret) exit(EXIT_FAILURE);
+}
+
+static void parse_vsnd_config(const XLU_Config *config,
+                              libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vsnds;
+
+    if (!xlu_cfg_get_list(config, "vsnd", &vsnds, 0, 0)) {
+        XLU_ConfigValue *card_value;
+
+        d_config->num_vsnds = 0;
+        d_config->vsnds = NULL;
+
+        while ((card_value = xlu_cfg_get_listitem2(vsnds, d_config->num_vsnds))
+               != NULL) {
+            parse_vsnd_card_config(config, card_value, d_config);
+        }
+    }
+}
+
+int parse_vkb_config(libxl_device_vkb *vkb, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("backend", token, oparg)) {
+        vkb->backend_domname = strdup(oparg);
+    } else if (MATCH_OPTION("backend-type", token, oparg)) {
+        libxl_vkb_backend backend_type;
+        if (libxl_vkb_backend_from_string(oparg, &backend_type)) {
+            fprintf(stderr, "Unknown backend_type \"%s\" in vkb spec\n",
+                            oparg);
+            return -1;
+        }
+        vkb->backend_type = backend_type;
+    } else if (MATCH_OPTION("id", token, oparg)) {
+        vkb->id = strdup(oparg);
+    } else if (MATCH_OPTION("feature-abs-pointer", token, oparg)) {
+        vkb->feature_abs_pointer = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("feature-multi-touch", token, oparg)) {
+        vkb->feature_multi_touch = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("width", token, oparg)) {
+        vkb->width = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("height", token, oparg)) {
+        vkb->height = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("multi-touch-width", token, oparg)) {
+        vkb->multi_touch_width = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("multi-touch-height", token, oparg)) {
+        vkb->multi_touch_height = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION("multi-touch-num-contacts", token, oparg)) {
+        vkb->multi_touch_num_contacts = strtoul(oparg, NULL, 0);
+    } else {
+        fprintf(stderr, "Unknown string \"%s\" in vkb spec\n", token);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void parse_vkb_list(const XLU_Config *config,
+                           libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vkbs;
+    const char *item;
+    char *buf = NULL;
+    int rc;
+
+    if (!xlu_cfg_get_list (config, "vkb", &vkbs, 0, 0)) {
+        int entry = 0;
+        while ((item = xlu_cfg_get_listitem(vkbs, entry)) != NULL) {
+            libxl_device_vkb *vkb;
+            char *p;
+
+            vkb = ARRAY_EXTEND_INIT(d_config->vkbs,
+                                    d_config->num_vkbs,
+                                    libxl_device_vkb_init);
+
+            buf = strdup(item);
+
+            p = strtok (buf, ",");
+            while (p != NULL)
+            {
+                while (*p == ' ') p++;
+
+                rc = parse_vkb_config(vkb, p);
+                if (rc) goto out;
+
+                p = strtok (NULL, ",");
+            }
+
+            if (vkb->backend_type == LIBXL_VKB_BACKEND_UNKNOWN) {
+                fprintf(stderr, "backend-type should be set in vkb spec\n");
+                rc = ERROR_FAIL; goto out;
+            }
+
+            if (vkb->multi_touch_height || vkb->multi_touch_width ||
+                vkb->multi_touch_num_contacts) {
+                vkb->feature_multi_touch = true;
+            }
+
+            if (vkb->feature_multi_touch && !(vkb->multi_touch_height ||
+                vkb->multi_touch_width || vkb->multi_touch_num_contacts)) {
+                fprintf(stderr, "multi-touch-width, multi-touch-height, "
+                                "multi-touch-num-contacts should be set for "
+                                "multi touch in vkb spec\n");
+                rc = ERROR_FAIL; goto out;
+            }
+
+            entry++;
+        }
+    }
+
+    rc = 0;
+
+out:
+    free(buf);
+    if (rc) exit(EXIT_FAILURE);
+}
+
+static int parse_vgsx_config(libxl_device_vgsx *vgsx, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("backend", token, oparg)) {
+        vgsx->backend_domname = strdup(oparg);
+    } else if (MATCH_OPTION("osid", token, oparg)) {
+    	vgsx->osid = strtoul(oparg, NULL, 0);
+    } else {
+        fprintf(stderr, "Unknown string \"%s\" in vgsx spec\n", token);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void parse_vgsx_list(const XLU_Config *config,
+                            libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vgsxs;
+    const char *item;
+    char *buf = NULL;
+    int rc;
+
+    if (!xlu_cfg_get_list (config, "vgsx", &vgsxs, 0, 0)) {
+        int entry = 0;
+        while ((item = xlu_cfg_get_listitem(vgsxs, entry)) != NULL) {
+            libxl_device_vgsx *vgsx;
+            char *p;
+
+            vgsx = ARRAY_EXTEND_INIT(d_config->vgsxs,
+                                     d_config->num_vgsxs,
+                                     libxl_device_vgsx_init);
+
+            buf = strdup(item);
+
+            p = strtok (buf, ",");
+            while (p != NULL)
+            {
+                while (*p == ' ') p++;
+
+                rc = parse_vgsx_config(vgsx, p);
+                if (rc) goto out;
+
+                p = strtok (NULL, ",");
+            }
+
+            entry++;
+        }
+    }
+
+    rc = 0;
+
+out:
+    free(buf);
+    if (rc) exit(EXIT_FAILURE);
+}
+
 void parse_config_data(const char *config_source,
                        const char *config_data,
                        int config_len,
@@ -862,7 +1266,7 @@ void parse_config_data(const char *config_source,
     XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms,
                    *usbctrls, *usbdevs, *p9devs, *vdispls;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs,
-                   *mca_caps;
+                   *mca_caps, *coprocs;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian, num_mca_caps;
     int pci_power_mgmt = 0;
     int pci_msitranslate = 0;
@@ -1680,6 +2084,8 @@ void parse_config_data(const char *config_source,
         }
     }
 
+    parse_vsnd_config(config, d_config);
+
     if (!xlu_cfg_get_list (config, "channel", &channels, 0, 0)) {
         d_config->num_channels = 0;
         d_config->channels = NULL;
@@ -1807,6 +2213,8 @@ skip_nic:
             vkb = ARRAY_EXTEND_INIT(d_config->vkbs, d_config->num_vkbs,
                                     libxl_device_vkb_init);
 
+            vkb->backend_type = LIBXL_VKB_BACKEND_QEMU;
+
             p = strtok(buf2, ",");
             if (!p)
                 goto skip_vfb;
@@ -1918,6 +2326,24 @@ skip_vfb:
             dtdev->path = strdup(buf);
             if (dtdev->path == NULL) {
                 fprintf(stderr, "unable to duplicate string for dtdevs\n");
+                exit(-1);
+            }
+        }
+    }
+
+    if (!xlu_cfg_get_list (config, "coproc", &coprocs, 0, 0)) {
+        b_info->num_coprocs = 0;
+        b_info->coprocs = NULL;
+        for (i = 0; (buf = xlu_cfg_get_listitem(coprocs, i)) != NULL; i++) {
+            libxl_device_coproc *coproc;
+
+            coproc = ARRAY_EXTEND_INIT_NODEVID(b_info->coprocs,
+                                               b_info->num_coprocs,
+                                               libxl_device_coproc_init);
+
+            coproc->path = strdup(buf);
+            if (coproc->path == NULL) {
+                fprintf(stderr, "unable to duplicate string for coprocs\n");
                 exit(-1);
             }
         }
@@ -2136,6 +2562,8 @@ skip_usbdev:
             vkb = ARRAY_EXTEND_INIT(d_config->vkbs, d_config->num_vkbs,
                                     libxl_device_vkb_init);
 
+            vkb->backend_type = LIBXL_VKB_BACKEND_QEMU;
+
             parse_top_level_vnc_options(config, &vfb->vnc);
             parse_top_level_sdl_options(config, &vfb->sdl);
             xlu_cfg_replace_string (config, "keymap", &vfb->keymap, 0);
@@ -2285,7 +2713,11 @@ skip_usbdev:
                     "Unknown gic_version \"%s\" specified\n", buf);
             exit(-ERROR_FAIL);
         }
-     }
+    }
+
+    parse_vkb_list(config, d_config);
+
+    parse_vgsx_list(config, d_config);
 
     xlu_cfg_destroy(config);
 }

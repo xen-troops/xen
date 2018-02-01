@@ -40,7 +40,7 @@ extern unsigned int iommu_dev_iotlb_timeout;
 
 int iommu_setup(void);
 
-int iommu_domain_init(struct domain *d);
+int iommu_domain_init(struct domain *d, bool use_iommu);
 void iommu_hwdom_init(struct domain *d);
 void iommu_domain_destroy(struct domain *d);
 int deassign_device(struct domain *d, u16 seg, u8 bus, u8 devfn);
@@ -49,20 +49,23 @@ void arch_iommu_domain_destroy(struct domain *d);
 int arch_iommu_domain_init(struct domain *d);
 int arch_iommu_populate_page_table(struct domain *d);
 void arch_iommu_check_autotranslated_hwdom(struct domain *d);
+void arch_iommu_hwdom_init(struct domain *d);
 
 int iommu_construct(struct domain *d);
 
 /* Function used internally, use iommu_domain_destroy */
 void iommu_teardown(struct domain *d);
 
-/* iommu_map_page() takes flags to direct the mapping operation. */
+/* iommu_map_pages() takes flags to direct the mapping operation. */
 #define _IOMMUF_readable 0
 #define IOMMUF_readable  (1u<<_IOMMUF_readable)
 #define _IOMMUF_writable 1
 #define IOMMUF_writable  (1u<<_IOMMUF_writable)
-int __must_check iommu_map_page(struct domain *d, unsigned long gfn,
-                                unsigned long mfn, unsigned int flags);
-int __must_check iommu_unmap_page(struct domain *d, unsigned long gfn);
+int __must_check iommu_map_pages(struct domain *d, unsigned long gfn,
+                                 unsigned long mfn, unsigned int order,
+                                 unsigned int flags);
+int __must_check iommu_unmap_pages(struct domain *d, unsigned long gfn,
+                                   unsigned int order);
 
 enum iommu_feature
 {
@@ -126,6 +129,17 @@ int iommu_do_dt_domctl(struct xen_domctl *, struct domain *,
 
 #endif /* HAS_DEVICE_TREE */
 
+#ifdef CONFIG_HAS_COPROC
+/* Assign a coproc device "dev" to IOMMU context in domain "d" */
+int iommu_assign_coproc(struct domain *d, device_t *dev);
+/* Deassign a coproc device "dev" from IOMMU context in domain "d" */
+int iommu_deassign_coproc(struct domain *d, device_t *dev);
+/* Disable IOMMU context in domain "d" for a coproc device "dev" */
+int iommu_disable_coproc(struct domain *d, device_t *dev);
+/* Enable IOMMU context in domain "d" for a coproc device "dev" */
+int iommu_enable_coproc(struct domain *d, device_t *dev);
+#endif /* HAS_COPROC */
+
 struct page_info;
 
 /*
@@ -152,9 +166,14 @@ struct iommu_ops {
 #endif /* HAS_PCI */
 
     void (*teardown)(struct domain *d);
-    int __must_check (*map_page)(struct domain *d, unsigned long gfn,
-                                 unsigned long mfn, unsigned int flags);
-    int __must_check (*unmap_page)(struct domain *d, unsigned long gfn);
+    int __must_check (*map_pages)(struct domain *d, unsigned long gfn,
+                                  unsigned long mfn, unsigned int order,
+                                  unsigned int flags);
+    int __must_check (*unmap_pages)(struct domain *d, unsigned long gfn,
+                                    unsigned int order);
+#ifdef CONFIG_ARM
+    int (*alloc_page_table)(struct domain *d);
+#endif /* CONFIG_ARM */
     void (*free_page_table)(struct page_info *);
 #ifdef CONFIG_X86
     void (*update_ire_from_apic)(unsigned int apic, unsigned int reg, unsigned int value);
@@ -170,6 +189,12 @@ struct iommu_ops {
     int __must_check (*iotlb_flush_all)(struct domain *d);
     int (*get_reserved_device_memory)(iommu_grdm_t *, void *);
     void (*dump_p2m_table)(struct domain *d);
+#ifdef CONFIG_HAS_COPROC
+    int (*assign_coproc)(struct domain *d, device_t *dev);
+    int (*deassign_coproc)(struct domain *d, device_t *dev);
+    int (*disable_coproc)(struct domain *d, device_t *dev);
+    int (*enable_coproc)(struct domain *d, device_t *dev);
+#endif /* HAS_COPROC */
 };
 
 int __must_check iommu_suspend(void);
@@ -197,7 +222,7 @@ void iommu_dev_iotlb_flush_timeout(struct domain *d, struct pci_dev *pdev);
  * The purpose of the iommu_dont_flush_iotlb optional cpu flag is to
  * avoid unecessary iotlb_flush in the low level IOMMU code.
  *
- * iommu_map_page/iommu_unmap_page must flush the iotlb but somethimes
+ * iommu_map_pages/iommu_unmap_pages must flush the iotlb but somethimes
  * this operation can be really expensive. This flag will be set by the
  * caller to notify the low level IOMMU code to avoid the iotlb flushes.
  * iommu_iotlb_flush/iommu_iotlb_flush_all will be explicitly called by

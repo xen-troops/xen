@@ -1369,6 +1369,7 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         libxl__device_console_dispose(&console);
 
         libxl_device_vkb_init(&vkb);
+        vkb.backend_type = LIBXL_VKB_BACKEND_QEMU;
         libxl__device_add(gc, domid, &libxl__vkb_devtype, &vkb);
         libxl_device_vkb_dispose(&vkb);
 
@@ -1397,6 +1398,9 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         for (i = 0; i < d_config->num_vfbs; i++) {
             libxl__device_add(gc, domid, &libxl__vfb_devtype,
                               &d_config->vfbs[i]);
+        }
+
+        for (i = 0; i < d_config->num_vkbs; i++) {
             libxl__device_add(gc, domid, &libxl__vkb_devtype,
                               &d_config->vkbs[i]);
         }
@@ -1466,7 +1470,7 @@ out:
 #define libxl__device_from_dtdev NULL
 #define libxl__device_dtdev_setdefault NULL
 #define libxl__device_dtdev_update_devid NULL
-static DEFINE_DEVICE_TYPE_STRUCT(dtdev);
+static DEFINE_DEVICE_TYPE_STRUCT(dtdev, NONE);
 
 const struct libxl_device_type *device_type_tbl[] = {
     &libxl__disk_devtype,
@@ -1477,6 +1481,8 @@ const struct libxl_device_type *device_type_tbl[] = {
     &libxl__pcidev_devtype,
     &libxl__dtdev_devtype,
     &libxl__vdispl_devtype,
+    &libxl__vsnd_devtype,
+    &libxl__vgsx_devtype,
     NULL
 };
 
@@ -1492,7 +1498,7 @@ static void domcreate_attach_devices(libxl__egc *egc,
 
     if (ret) {
         LOGD(ERROR, domid, "unable to add %s devices",
-             device_type_tbl[dcs->device_type_idx]->type);
+             libxl__device_kind_to_string(device_type_tbl[dcs->device_type_idx]->type));
         goto error_out;
     }
 
