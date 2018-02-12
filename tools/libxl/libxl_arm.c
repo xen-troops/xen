@@ -105,7 +105,8 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         return ERROR_FAIL;
     }
 
-    if (d_config->num_dtdevs || d_config->num_pcidevs)
+    if (d_config->num_dtdevs || d_config->num_pcidevs ||
+        d_config->b_info.num_coprocs)
         xc_config->use_iommu = 1;
     else
         xc_config->use_iommu = 0;
