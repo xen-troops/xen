@@ -41,6 +41,9 @@
  *
  */
 
+#define IPMMU_CTX_MAX		8
+#define IPMMU_PER_DEV_MAX	4
+
 /***** Start of Xen specific code *****/
 
 #define IOMMU_READ	(1 << 0)
@@ -203,18 +206,13 @@ struct ipmmu_vmsa_xen_domain {
  * but, on Xen, we also have to store the iommu domain.
  */
 struct ipmmu_vmsa_xen_device {
-	struct iommu_domain *domain;
+	struct iommu_domain *domains[IPMMU_CTX_MAX];
 	struct ipmmu_vmsa_archdata *archdata;
 };
 
 #define dev_iommu(dev) ((struct ipmmu_vmsa_xen_device *)dev->archdata.iommu)
-#define dev_iommu_domain(dev) (dev_iommu(dev)->domain)
 
 /***** Start of Linux IPMMU code *****/
-
-#define IPMMU_CTX_MAX 8
-
-#define IPMMU_PER_DEV_MAX 4
 
 struct ipmmu_features {
 	bool use_ns_alias_offset;
@@ -301,6 +299,22 @@ static LIST_HEAD(ipmmu_slave_devices);
 static struct ipmmu_vmsa_domain *to_vmsa_domain(struct iommu_domain *dom)
 {
 	return container_of(dom, struct ipmmu_vmsa_domain, io_domain);
+}
+
+static inline struct iommu_domain *to_iommu_domain(struct device *dev,
+		unsigned int context_id)
+{
+	ASSERT(context_id < IPMMU_CTX_MAX);
+
+	return dev_iommu(dev)->domains[context_id];
+}
+
+static inline void set_iommu_domain(struct device *dev, unsigned int context_id,
+		struct iommu_domain *domain)
+{
+	ASSERT(context_id < IPMMU_CTX_MAX);
+
+	dev_iommu(dev)->domains[context_id] = domain;
 }
 
 /*
@@ -2299,10 +2313,13 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
 	struct iommu_domain *io_domain;
 	struct ipmmu_vmsa_domain *domain;
+	unsigned int context_id;
 	int ret = 0;
 
 	if (!xen_domain || !xen_domain->base_context)
 		return -EINVAL;
+
+	context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
 
 	if (!dev->archdata.iommu) {
 		dev->archdata.iommu = xzalloc(struct ipmmu_vmsa_xen_device);
@@ -2318,7 +2335,7 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 
 	spin_lock(&xen_domain->lock);
 
-	if (dev_iommu_domain(dev)) {
+	if (to_iommu_domain(dev, context_id)) {
 		dev_err(dev, "already attached to IPMMU domain\n");
 		ret = -EEXIST;
 		goto out;
@@ -2338,7 +2355,7 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 		spin_lock_init(&domain->lock);
 
 		domain->d = d;
-		domain->context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
+		domain->context_id = context_id;
 		io_domain = &domain->io_domain;
 
 		/* Chain the new context to the Xen domain */
@@ -2351,7 +2368,7 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 			ipmmu_vmsa_destroy_domain(io_domain);
 	} else {
 		atomic_inc(&io_domain->ref);
-		dev_iommu_domain(dev) = io_domain;
+		set_iommu_domain(dev, context_id, io_domain);
 	}
 
 out:
@@ -2363,7 +2380,11 @@ out:
 static int ipmmu_vmsa_deassign_dev(struct domain *d, struct device *dev)
 {
 	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
-	struct iommu_domain *io_domain = dev_iommu_domain(dev);
+	struct iommu_domain *io_domain;
+	unsigned int context_id;
+
+	context_id = to_vmsa_domain(xen_domain->base_context)->context_id;
+	io_domain = to_iommu_domain(dev, context_id);
 
 	if (!io_domain || to_vmsa_domain(io_domain)->d != d) {
 		dev_err(dev, " not attached to domain %d\n", d->domain_id);
@@ -2373,7 +2394,7 @@ static int ipmmu_vmsa_deassign_dev(struct domain *d, struct device *dev)
 	spin_lock(&xen_domain->lock);
 
 	ipmmu_detach_device(io_domain, dev);
-	dev_iommu_domain(dev) = NULL;
+	set_iommu_domain(dev, context_id, NULL);
 	atomic_dec(&io_domain->ref);
 
 	if (io_domain->ref.counter == 0)
