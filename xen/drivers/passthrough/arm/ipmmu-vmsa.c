@@ -41,6 +41,9 @@
  *
  */
 
+/* This one came from Linux drivers/iommu/Kconfig */
+#define CONFIG_IPMMU_VMSA_CTX_NUM	8
+
 /***** Start of Xen specific code *****/
 
 #define IOMMU_READ	(1 << 0)
@@ -1832,6 +1835,9 @@ static const struct of_device_id ipmmu_of_ids[] = {
 		.compatible = "renesas,ipmmu-r8a7795",
 		.data = &ipmmu_features_rcar_gen3,
 	}, {
+		.compatible = "renesas,ipmmu-r8a77965",
+		.data = &ipmmu_features_rcar_gen3,
+	}, {
 		.compatible = "renesas,ipmmu-r8a7796",
 		.data = &ipmmu_features_rcar_gen3,
 	}, {
@@ -1907,6 +1913,9 @@ static int ipmmu_probe(struct platform_device *pdev)
 		mmu->num_ctx = 8;
 	else
 		mmu->num_ctx = 1;
+
+	mmu->num_ctx = min_t(unsigned int, CONFIG_IPMMU_VMSA_CTX_NUM,
+		mmu->num_ctx);
 
 	WARN_ON(mmu->num_ctx > IPMMU_CTX_MAX);
 
@@ -2225,6 +2234,8 @@ static int __init ipmmu_vmsa_iommu_of_setup(struct device_node *np)
 IOMMU_OF_DECLARE(ipmmu_vmsa_iommu_of, "renesas,ipmmu-vmsa",
 		 ipmmu_vmsa_iommu_of_setup);
 IOMMU_OF_DECLARE(ipmmu_r8a7795_iommu_of, "renesas,ipmmu-r8a7795",
+		 ipmmu_vmsa_iommu_of_setup);
+IOMMU_OF_DECLARE(ipmmu_r8a77965_iommu_of, "renesas,ipmmu-r8a77965",
 		 ipmmu_vmsa_iommu_of_setup);
 IOMMU_OF_DECLARE(ipmmu_r8a7796_iommu_of, "renesas,ipmmu-r8a7796",
 		 ipmmu_vmsa_iommu_of_setup);
