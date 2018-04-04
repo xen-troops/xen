@@ -554,6 +554,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
     # 65000 which is reserved by the toolstack.
     ("device_tree",      string),
     ("dt_compatible",    libxl_string_list),
+    ("dt_passthrough_nodes", libxl_string_list),
     ("acpi",             libxl_defbool),
     ("bootloader",       string),
     ("bootloader_args",  libxl_string_list),
