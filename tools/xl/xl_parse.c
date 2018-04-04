@@ -2669,6 +2669,13 @@ skip_vfb:
         }
     }
 
+    e = xlu_cfg_get_list_as_string_list(config, "dt_compatible",
+                                        &b_info->dt_compatible, 1);
+    if (e && e != ESRCH) {
+            fprintf(stderr,"xl: Unable to parse dt_compatible\n");
+            exit(-ERROR_FAIL);
+    }
+
     if (!xlu_cfg_get_list(config, "usbctrl", &usbctrls, 0, 0)) {
         d_config->num_usbctrls = 0;
         d_config->usbctrls = NULL;
