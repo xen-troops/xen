@@ -290,46 +290,20 @@ static int fdt_property_regs(libxl__gc *gc, void *fdt,
 
 static int make_root_properties(libxl__gc *gc,
                                 const libxl_version_info *vers,
-                                void *fdt,
-                                const libxl_domain_build_info *info)
+                                void *fdt)
 {
-    const char *compat0 = GCSPRINTF("xen,xenvm-%d.%d",
-                                    vers->xen_version_major,
-                                    vers->xen_version_minor);
-    const char *compat1 = "xen,xenvm";
-    const char **compats;
-    char *compat, *p;
-    size_t sz = 0;
-    int i, res, num_compats;
+    int res;
 
     res = fdt_property_string(fdt, "model", GCSPRINTF("XENVM-%d.%d",
                                                       vers->xen_version_major,
                                                       vers->xen_version_minor));
     if (res) return res;
 
-    num_compats = 2 + libxl_string_list_length(&info->dt_compatible);
-    compats = libxl__zalloc(gc, num_compats * sizeof(*compats));
-    if (!compats)
-        return -FDT_ERR_INTERNAL;
-
-    compats[0] = compat0;
-    compats[1] = compat1;
-    sz = strlen(compat0) + strlen(compat1) + 2;
-    for (i = 0; info->dt_compatible && info->dt_compatible[i] != NULL; i++) {
-        compats[2 + i] = info->dt_compatible[i];
-        sz += strlen(info->dt_compatible[i]) + 1;
-    }
-
-    p = compat = libxl__zalloc(gc, sz);
-    if (!p)
-        return -FDT_ERR_INTERNAL;
-
-    for (i = 0; i < num_compats; i++) {
-        strcpy(p, compats[i]);
-        p += strlen(compats[i]) + 1;
-    }
-
-    res = fdt_property(fdt, "compatible", compat, sz);
+    res = fdt_property_compat(gc, fdt, 2,
+                              GCSPRINTF("xen,xenvm-%d.%d",
+                                        vers->xen_version_major,
+                                        vers->xen_version_minor),
+                              "xen,xenvm");
     if (res) return res;
 
     res = fdt_property_cell(fdt, "interrupt-parent", PHANDLE_GIC);
@@ -950,7 +924,7 @@ next_resize:
 
         FDT( fdt_begin_node(fdt, "") );
 
-        FDT( make_root_properties(gc, vers, fdt, info) );
+        FDT( make_root_properties(gc, vers, fdt) );
         FDT( make_chosen_node(gc, fdt, !!dom->modules[0].blob, state, info) );
         FDT( make_cpus_node(gc, fdt, info->max_vcpus, ainfo) );
         FDT( make_psci_node(gc, fdt) );
