@@ -1511,6 +1511,14 @@ void __init setup_virt_paging(void)
     }
 
     /*
+     * HACK: Force to use 40 bit IPA. We will get 3-level P2M with
+     * two concatenated translation tables at level 1. This is needed
+     * as the IPMMU doesn't support 4-level page tables.
+     * Please note that we can use 32 or 36 bit IPA as well.
+     */
+    pa_range = 2;
+
+    /*
      * If the flag is not set then it means all CPUs support 16-bit
      * VMIDs.
      */
