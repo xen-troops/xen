@@ -47,7 +47,7 @@
  * translation table format and as the result is able
  * to share P2M with the CPU.
  */
-/*#define CONFIG_PGT_IS_SHARED	1*/
+#define CONFIG_PGT_IS_SHARED	1
 
 /* This one came from Linux drivers/iommu/Kconfig */
 #define CONFIG_IPMMU_VMSA_CTX_NUM	8
