@@ -2864,9 +2864,10 @@ static __init int ipmmu_vmsa_init(struct dt_device_node *dev,
 		return -EINVAL;
 	}
 
-	if (!dt_device_is_compatible(dev, "renesas,ipmmu-r8a77965")) {
+	if (!dt_device_is_compatible(dev, "renesas,ipmmu-r8a77965") &&
+		!dt_device_is_compatible(dev, "renesas,ipmmu-r8a7795")) {
 		dev_err(&dev->dev,
-			"Only M3N SoC IPMMU supports sharing P2M table with the CPU\n");
+			"Only M3N/H3 SoC IPMMU supports sharing P2M table with the CPU\n");
 		return -EINVAL;
 	}
 #endif
