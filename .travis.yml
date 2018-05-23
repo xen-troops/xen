@@ -1,45 +1,37 @@
+env:
+    global:
+        # The next declaration is the encrypted COVERITY_SCAN_TOKEN, created
+        #   via the "travis encrypt" command using the project repo's public key
+        - secure: "tJlx0mV5/Eemy0ZYpsaG3VnK3Zjuh410QTrKC5PNp2SjFA3nBM1StqTuu/Ua2vL7N8HLlJk2AtrmomiYXbmlZpCHx0Ohn23C3XwaaoLFnOrnOhpYJfgsjr2aCLWyLe29YIU41qkJSQQSW5ipSZyEGZCeW2Pf6C/Ep2UerbxEH//UgUAcxKUblCx71O1JZxsod7Df/lsr1lbCWf3XXeZUCD7dWU1kJzJWwEZYvBQp3YsJbDwQZHD6ZYW95KH6ClDFW3SbkNCK/1mBr+X80ECKmb/jCjy4MOfMydnLD3c9fPwJcy6W4Xzx58LdbAsnInWhLy1jytWT7zM7LzXS6rTKlZGFfV3i3SuWX9aR9llXraPiYpPafT1VMv1T32pgf42ljr7s+1kmHs008N8cCyF+7Kj7W4RfgYoZFlIAdwbtGxUZwaUoDqVzj4H0PNKKkEA/plAx5cv2E5m5uiGQkwHstPZtoH5osERkdxuJJJsVN6ux/PWEpNcNh/jCR9QgfKpMVKSYoSjvLADwicscjHLQqocJoOjg7GPFVyLpMprkx4XQ97RL9nBsMhQfwZi4xgJwK3c+Po8qz9JbHZv2g9Og/6tizOqNyWIm3hncVsAWbgul5vToCrQWDiUhvT/ZAUScTMf9um/U7v2OjTdkc8W9VFL2cvLPQx1mOHIDnokihL0="
+
 language: c
+
+os:
+    - linux
+
 dist: trusty
 sudo: required
-# don't test master, smoke and coverity branches
+
 branches:
-    except:
-        - master
-        - smoke
-        - /^coverity-tested\/.*/
-        - /^stable-.*/
-matrix:
-    include:
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=x86_64 debug=n
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=x86_64 XEN_CONFIG_EXPERT=y RANDCONFIG=y debug=n
-        - compiler: gcc-5
-          env: XEN_TARGET_ARCH=x86_64 debug=n
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=x86_64 debug=y
-        - compiler: gcc-5
-          env: XEN_TARGET_ARCH=x86_64 debug=y
-        - compiler: clang
-          env: XEN_TARGET_ARCH=x86_64 clang=y debug=n
-        - compiler: clang
-          env: XEN_TARGET_ARCH=x86_64 clang=y debug=y
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=arm32 CROSS_COMPILE=arm-linux-gnueabihf- debug=n
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=arm32 CROSS_COMPILE=arm-linux-gnueabihf- XEN_CONFIG_EXPERT=y RANDCONFIG=y debug=n
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=arm32 CROSS_COMPILE=arm-linux-gnueabihf- debug=y
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- debug=n
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- XEN_CONFIG_EXPERT=y RANDCONFIG=y debug=n
-        - compiler: gcc
-          env: XEN_TARGET_ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- debug=y
+    only:
+        - coverity-scan
+
+before_install:
+    - echo -n | openssl s_client -connect scan.coverity.com:441 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
+    - wget -c http://releases.linaro.org/components/toolchain/binaries/5.3-2016.05/aarch64-linux-gnu/gcc-linaro-5.3.1-2016.05-x86_64_aarch64-linux-gnu.tar.xz
+    - tar xf gcc-linaro-5.3.1-2016.05-x86_64_aarch64-linux-gnu.tar.xz
+    - export PATH=$PATH:$PWD/gcc-linaro-5.3.1-2016.05-x86_64_aarch64-linux-gnu/bin/
+    - aarch64-linux-gnu-gcc --version
+    # exporting the variable to be used by make utility
+    - export CROSS_COMPILE=aarch64-linux-gnu-
+    - export NUMCPUS=`nproc`
+    - export XEN_TARGET_ARCH=arm64
+
 addons:
     apt:
         sources:
             - ubuntu-toolchain-r-test
+            - llvm-toolchain-precise
         packages:
             - zlib1g-dev
             - libncurses5-dev
@@ -68,21 +60,15 @@ addons:
             - gcc-aarch64-linux-gnu
             - gcc-5
             - g++-5
-            - seabios
-            - checkpolicy
-            - ghostscript
-# we must set CXX manually instead of using 'language: cpp' due to
-# travis-ci/travis-ci#3871
-before_script:
-    - export CXX=${CC/cc/++}
-    - export CXX=${CXX/clang/clang++}
+            - clang-3.8
+    coverity_scan:
+        project:
+            name: "xen-troops/xen"
+            description: "Build submitted via Travis CI"
+        notification_email: joculator@gmail.com
+        build_command_prepend: "cov-configure --comptype gcc --compiler aarch64-linux-gnu-gcc --template"
+        build_command: "make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_HAS_SCIF=y CONFIG_DEBUG=y CONFIG_EARLY_PRINTK=salvator CONFIG_QEMU_XEN=n"
+        branch_pattern: coverity-scan
+
 script:
-    - ./scripts/travis-build
-after_script:
-    - cat xen/.config
-    - cat tools/config.log
-    - cat docs/config.log
-notifications:
-    irc:
-        channels:
-            - secure: "mPIFllF6eW3F3talvccMy55Tfcid66IPkkXZYCxDKRF2DQrMyvmg4qt0xN6gGZsdfOBMNr+/YfO5PxusBCUkVdBGBzd3QhFoIDYZbJZgzVh3yNDQ+x4L7p1cZNrwJ2loMmSX6KxGKZxZX9NRStrTUkVyp0jGZB9xkwT8Rl6jXj7EQkgQ95K1Wqafx0ycLfyDQmzX9bzi/3KIBFKMGmK18AFMh+R30zK0FPUUsS4+VhepIkVqO5puU3OYePd34wRnWlt7hjU2Vj5vYmVXp3UOE+E8/Lf9IGVAhitDi+EC35b8zo2BHJ9z6xZARYPvfSqbXcXV20RycabI+e3ufZJ40eatssly5QjWH+HhKS42C4gV1psmQhkTCNCM62Ty5uf6R1hsZJQuiOZrc8ojdje8ey2MxJk4R+Xz+Igg1/kD6+WX9/Y6Y3iRuj5HL1xCYfpTbK4mC7ofw0SofW2aAGI68jHpCqJdQCDzMl6748PlDMM0eKe0MPKIEenYHcoBnOEC/jciXUDa6wduV75EEip7oq2i+m44MopcsEDTpdliH077GhKapF0ActjvBTLpyoTRSfkKm0NZol/dgwd3PGG/mY8clIoeXWRb4opk93ejPC967KmSNC68SlfwaJmFZS5T9vAgb6k7r6i9G3dmYtrLKzws8IV1CPWqLzk58+v4pRk="
+    - if [ "${COVERITY_SCAN_BRANCH}" != 1 ]; then make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_HAS_SCIF=y CONFIG_DEBUG=y CONFIG_EARLY_PRINTK=salvator CONFIG_QEMU_XEN=n; fi
