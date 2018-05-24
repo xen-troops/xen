@@ -32,7 +32,7 @@ addons:
         update: true
         sources:
             - ubuntu-toolchain-r-test
-            - llvm-toolchain-precise
+            - llvm-toolchain-trusty-6.0
         packages:
             - zlib1g-dev
             - libncurses5-dev
@@ -61,7 +61,7 @@ addons:
             - gcc-aarch64-linux-gnu
             - gcc-7
             - g++-7
-            - clang-4.0
+            - clang-6.0
     coverity_scan:
         project:
             name: "xen-troops/xen"
