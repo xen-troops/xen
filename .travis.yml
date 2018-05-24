@@ -20,7 +20,7 @@ before_install:
     - echo -n | openssl s_client -connect https://scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
     - wget -c http://releases.linaro.org/components/toolchain/binaries/7.2-2017.11/aarch64-linux-gnu/gcc-linaro-7.2.1-2017.11-x86_64_aarch64-linux-gnu.tar.xz
     - tar xf gcc-linaro-7.2.1-2017.11-x86_64_aarch64-linux-gnu.tar.xz
-    - export PATH=$PATH:$PWD/gcc-linaro-7.2.1-2017.11-x86_64_aarch64-linux-gnu/bin/
+    - export PATH=$PWD/gcc-linaro-7.2.1-2017.11-x86_64_aarch64-linux-gnu/bin/:$PATH
     - aarch64-linux-gnu-gcc --version
     # exporting the variable to be used by make utility
     - export CROSS_COMPILE=aarch64-linux-gnu-
@@ -57,8 +57,6 @@ addons:
             - libfindlib-ocaml-dev
             - transfig
             - pandoc
-            - gcc-arm-linux-gnueabihf
-            - gcc-aarch64-linux-gnu
             - gcc-7
             - g++-7
             - clang-6.0
@@ -68,8 +66,8 @@ addons:
             description: "Build submitted via Travis CI"
         notification_email: joculator@gmail.com
         build_command_prepend: "cov-configure --comptype gcc --compiler aarch64-linux-gnu-gcc --template"
-        build_command: "make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_HAS_SCIF=y CONFIG_DEBUG=y CONFIG_EARLY_PRINTK=salvator CONFIG_QEMU_XEN=n"
+        build_command: "make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_HAS_SCIF=y CONFIG_DEBUG=y CONFIG_EARLY_PRINTK=rcar3 CONFIG_QEMU_XEN=n"
         branch_pattern: coverity-scan
 
 script:
-    - if [ "${COVERITY_SCAN_BRANCH}" != 1 ]; then make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_HAS_SCIF=y CONFIG_DEBUG=y CONFIG_EARLY_PRINTK=salvator CONFIG_QEMU_XEN=n; fi
+    - if [ "${COVERITY_SCAN_BRANCH}" != 1 ]; then make xen -j$NUMCPUS XEN_TARGET_ARCH=$XEN_TARGET_ARCH CROSS_COMPILE=$CROSS_COMPILE XSM_ENABLE=y CONFIG_HAS_SCIF=y CONFIG_DEBUG=y CONFIG_EARLY_PRINTK=rcar3 CONFIG_QEMU_XEN=n; fi
