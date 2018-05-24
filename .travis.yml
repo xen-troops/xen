@@ -29,7 +29,7 @@ before_install:
 
 addons:
     apt:
-        update: true
+        update: false
         sources:
             - ubuntu-toolchain-r-test
             - llvm-toolchain-precise
