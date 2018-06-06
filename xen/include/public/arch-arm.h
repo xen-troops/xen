@@ -434,8 +434,8 @@ typedef uint64_t xen_callback_t;
 
 #define GUEST_RAM_BANKS   2
 
-#define GUEST_RAM0_BASE   xen_mk_ullong(0x40000000) /* 3GB of low RAM @ 1GB */
-#define GUEST_RAM0_SIZE   xen_mk_ullong(0xc0000000)
+#define GUEST_RAM0_BASE   xen_mk_ullong(0x40000000) /* 2GB of low RAM @ 1GB */
+#define GUEST_RAM0_SIZE   xen_mk_ullong(0x80000000)
 
 #define GUEST_RAM1_BASE   xen_mk_ullong(0x0200000000) /* 1016GB of RAM @ 8GB */
 #define GUEST_RAM1_SIZE   xen_mk_ullong(0xfe00000000)
