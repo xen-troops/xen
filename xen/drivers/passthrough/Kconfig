@@ -20,4 +20,15 @@ config RCAR_IPMMU
 	  Support for implementations of the Renesas IPMMU found in RCAR SoCs.
 
 	  Say Y here if you are using Renesas RCAR SoC.
+
+config RCAR_IPMMU_PGT_IS_SHARED
+	bool "Renesas R-Car's IPMMU shared page tables support"
+	depends on HAS_PASSTHROUGH && ARM_64 && RCAR_IPMMU
+	default y
+	help
+	  Enable this for Renesas R-Car's H3 v3.0 and M3N boards
+	  which have the IPMMU that does handle stage 2 translation
+	  table format and as the result is able to share P2M with the CPU.
+
 endif
+
