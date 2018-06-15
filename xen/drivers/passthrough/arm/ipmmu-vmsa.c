@@ -42,13 +42,6 @@
  *
  */
 
-/*
- * Set this config when the IPMMU does handle stage 2
- * translation table format and as the result is able
- * to share P2M with the CPU.
- */
-/*#define CONFIG_PGT_IS_SHARED	1*/
-
 /* This one came from Linux drivers/iommu/Kconfig */
 #define CONFIG_IPMMU_VMSA_CTX_NUM	8
 
@@ -669,6 +662,7 @@ static void ipmmu_ctx_write1(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 static void ipmmu_ctx_write2(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 			     u32 data)
 {
+#ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(domain->d)->arch.priv;
 	struct iommu_domain *io_domain;
 
@@ -676,6 +670,7 @@ static void ipmmu_ctx_write2(struct ipmmu_vmsa_domain *domain, unsigned int reg,
 		ipmmu_ctx_write1(to_vmsa_domain(io_domain), reg, data);
 
 	ipmmu_ctx_write(domain, reg, data);
+#endif
 }
 
 /* -----------------------------------------------------------------------------
@@ -749,7 +744,7 @@ static void ipmmu_utlb_disable(struct ipmmu_vmsa_domain *domain,
 	ipmmu_write(mmu, offset, 0);
 }
 
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 static void ipmmu_tlb_flush_all(void *cookie)
 {
 	struct ipmmu_vmsa_domain *domain = cookie;
@@ -800,7 +795,7 @@ static int ipmmu_domain_allocate_context(struct ipmmu_vmsa_device *mmu,
 
 static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 {
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	u64 ttbr;
 	u32 tmp;
 	int ret;
@@ -1335,7 +1330,7 @@ static phys_addr_t ipmmu_iova_to_phys(struct iommu_domain *io_domain,
 }
 #endif
 
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 static size_t ipmmu_pgsize(struct iommu_domain *io_domain,
 		unsigned long addr_merge, size_t size)
 {
@@ -2374,7 +2369,7 @@ MODULE_LICENSE("GPL v2");
 
 static int __must_check ipmmu_vmsa_iotlb_flush_all(struct domain *d)
 {
-#ifdef CONFIG_PGT_IS_SHARED
+#ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
 
 	if (!xen_domain || !xen_domain->base_context)
@@ -2390,7 +2385,7 @@ static int __must_check ipmmu_vmsa_iotlb_flush_all(struct domain *d)
 static int __must_check ipmmu_vmsa_iotlb_flush(struct domain *d,
 		unsigned long gfn, unsigned int page_count)
 {
-#ifdef CONFIG_PGT_IS_SHARED
+#ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	/* The hardware doesn't support selective TLB flush. */
 	return ipmmu_vmsa_iotlb_flush_all(d);
 #endif
@@ -2436,7 +2431,7 @@ static void ipmmu_vmsa_destroy_domain(struct iommu_domain *io_domain)
 		 * been detached.
 		 */
 		ipmmu_domain_destroy_context(domain);
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 		/*
 		 * Pass root page table for this domain as an argument.
 		 * This call will lead to start deallocation sequence.
@@ -2463,7 +2458,7 @@ static int ipmmu_vmsa_assign_dev(struct domain *d, u8 devfn,
 		return -EINVAL;
 
 	if (!xen_domain->base_context) {
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 		/*
 		 * Page table must be already allocated as we always allocate
 		 * it in advance for non-shared IOMMU.
@@ -2634,7 +2629,7 @@ static int ipmmu_vmsa_domain_init(struct domain *d, bool use_iommu)
 
 	dom_iommu(d)->arch.priv = xen_domain;
 
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	/* We allocate page table in advance only for non-shared IOMMU. */
 	if (use_iommu) {
 		int ret = ipmmu_vmsa_alloc_page_table(d);
@@ -2656,7 +2651,7 @@ static int ipmmu_vmsa_domain_init(struct domain *d, bool use_iommu)
  */
 static void ipmmu_vmsa_free_page_table(struct page_info *page)
 {
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	struct io_pgtable_ops *ops = (struct io_pgtable_ops *)page->pad;
 
 	free_io_pgtable_ops(ops, page);
@@ -2698,7 +2693,7 @@ static int __must_check ipmmu_vmsa_map_pages(struct domain *d,
 		unsigned long gfn, unsigned long mfn, unsigned int order,
 		unsigned int flags)
 {
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
 	size_t size = PAGE_SIZE * (1UL << order);
 	int ret, prot = 0;
@@ -2748,7 +2743,7 @@ static int __must_check ipmmu_vmsa_map_pages(struct domain *d,
 static int __must_check ipmmu_vmsa_unmap_pages(struct domain *d,
 		unsigned long gfn, unsigned int order)
 {
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
 	size_t ret, size = PAGE_SIZE * (1UL << order);
 
@@ -2782,7 +2777,7 @@ static int __must_check ipmmu_vmsa_unmap_pages(struct domain *d,
 
 static void ipmmu_vmsa_dump_p2m_table(struct domain *d)
 {
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	/* TODO: This platform callback should be implemented. */
 #endif
 }
@@ -2847,7 +2842,7 @@ static __init int ipmmu_vmsa_init(struct dt_device_node *dev,
 	 */
 	dt_device_set_used_by(dev, DOMID_XEN);
 
-#ifndef CONFIG_PGT_IS_SHARED
+#ifndef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	/*
 	 * The IPMMU can't utilize P2M table since it doesn't use the same
 	 * page-table format as the CPU.
