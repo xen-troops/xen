@@ -1,3 +1,12 @@
 
 config HAS_PASSTHROUGH
 	bool
+
+config RCAR_IPMMU_PGT_IS_SHARED
+	bool "Renesas R-Car's IPMMU shared page tables support"
+	depends on HAS_PASSTHROUGH && ARM_64
+	default y
+	help
+	  Enable this for Renesas R-Car's H3 v3.0 and M3N boards
+	  which have the IPMMU that does handle stage 2 translation
+	  table format and as the result is able to share P2M with the CPU.
