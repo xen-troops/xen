@@ -25,6 +25,7 @@
 #include <xen/cpufreq.h>
 #include <xen/pmstat.h>
 #include <xen/guest_access.h>
+#include <xen/keyhandler.h>
 
 #include "scpi_protocol.h"
 
@@ -464,6 +465,14 @@ static void scpi_cpufreq_deinit(void)
 
 }
 
+bool cpufreq_debug = false;
+
+void cpufreq_debug_toggle(unsigned char key)
+{
+    cpufreq_debug = !cpufreq_debug;
+    printk("CPUFreq debug is %s\n", cpufreq_debug ? "enabled" : "disabled");
+}
+
 static int __init cpufreq_driver_init(void)
 {
     int ret;
@@ -508,6 +517,9 @@ out:
         scpi_cpufreq_deinit();
         return ret;
     }
+
+    register_keyhandler('C', cpufreq_debug_toggle,
+                        "enable debug for CPUFreq", 0);
 
     printk("initialized SCPI based CPUFreq\n");
 

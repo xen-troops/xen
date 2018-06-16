@@ -33,6 +33,8 @@
 
 #include "scpi_protocol.h"
 
+extern bool cpufreq_debug;
+
 extern struct device *get_cpu_device(unsigned int cpu);
 
 struct scpi_cpufreq_data
@@ -173,6 +175,9 @@ static int scpi_cpufreq_target(struct cpufreq_policy *policy,
     result = scpi_cpufreq_set(policy->cpu, freqs.new);
     if ( result < 0 )
         return result;
+
+    if (cpufreq_debug)
+        printk("Switch CPU freq: %u kHz --> %u kHz\n", freqs.old, freqs.new);
 
     for_each_cpu( j, &online_policy_cpus )
         cpufreq_statistic_update(j, perf->state, next_perf_state);
