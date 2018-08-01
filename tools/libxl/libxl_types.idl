@@ -247,12 +247,6 @@ libxl_vuart_type = Enumeration("vuart_type", [
     (1, "sbsa_uart"),
     ])
 
-libxl_vkb_backend = Enumeration("vkb_backend", [
-    (0, "UNKNOWN"),
-    (1, "QEMU"),
-    (2, "LINUX"),
-    ])
-
 #
 # Complex libxl types
 #
@@ -628,7 +622,6 @@ libxl_device_vkb = Struct("device_vkb", [
     ("backend_domid", libxl_domid),
     ("backend_domname", string),
     ("devid", libxl_devid),
-    ("backend_type", libxl_vkb_backend)
     ])
 
 libxl_device_disk = Struct("device_disk", [

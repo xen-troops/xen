@@ -2111,8 +2111,6 @@ skip_nic:
             vkb = ARRAY_EXTEND_INIT(d_config->vkbs, d_config->num_vkbs,
                                     libxl_device_vkb_init);
 
-            vkb->backend_type = LIBXL_VKB_BACKEND_QEMU;
-
             p = strtok(buf2, ",");
             if (!p)
                 goto skip_vfb;
@@ -2441,8 +2439,6 @@ skip_usbdev:
 
             vkb = ARRAY_EXTEND_INIT(d_config->vkbs, d_config->num_vkbs,
                                     libxl_device_vkb_init);
-
-            vkb->backend_type = LIBXL_VKB_BACKEND_QEMU;
 
             parse_top_level_vnc_options(config, &vfb->vnc);
             parse_top_level_sdl_options(config, &vfb->sdl);
