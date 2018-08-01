@@ -866,8 +866,6 @@ int parse_vkb_config(libxl_device_vkb *vkb, char *token)
             return -1;
         }
         vkb->backend_type = backend_type;
-    } else if (MATCH_OPTION("id", token, oparg)) {
-        vkb->id = strdup(oparg);
     }
     else {
         fprintf(stderr, "Unknown string \"%s\" in vkb spec\n", token);
