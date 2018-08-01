@@ -852,76 +852,6 @@ out:
     return rc;
 }
 
-int parse_vkb_config(libxl_device_vkb *vkb, char *token)
-{
-    char *oparg;
-
-    if (MATCH_OPTION("backend", token, oparg)) {
-        vkb->backend_domname = strdup(oparg);
-    } else if (MATCH_OPTION("backend-type", token, oparg)) {
-        libxl_vkb_backend backend_type;
-        if (libxl_vkb_backend_from_string(oparg, &backend_type)) {
-            fprintf(stderr, "Unknown backend_type \"%s\" in vkb spec\n",
-                            oparg);
-            return -1;
-        }
-        vkb->backend_type = backend_type;
-    }
-    else {
-        fprintf(stderr, "Unknown string \"%s\" in vkb spec\n", token);
-        return -1;
-    }
-
-    return 0;
-}
-
-static void parse_vkb_list(const XLU_Config *config,
-                           libxl_domain_config *d_config)
-{
-    XLU_ConfigList *vkbs;
-    const char *item;
-    char *buf = NULL;
-    int rc;
-
-    if (!xlu_cfg_get_list (config, "vkb", &vkbs, 0, 0)) {
-        int entry = 0;
-        while ((item = xlu_cfg_get_listitem(vkbs, entry)) != NULL) {
-            libxl_device_vkb *vkb;
-            char *p;
-
-            vkb = ARRAY_EXTEND_INIT(d_config->vkbs,
-                                    d_config->num_vkbs,
-                                    libxl_device_vkb_init);
-
-            buf = strdup(item);
-
-            p = strtok (buf, ",");
-            while (p != NULL)
-            {
-                while (*p == ' ') p++;
-
-                rc = parse_vkb_config(vkb, p);
-                if (rc) goto out;
-
-                p = strtok (NULL, ",");
-            }
-
-            if (vkb->backend_type == LIBXL_VKB_BACKEND_UNKNOWN) {
-                fprintf(stderr, "backend-type should be set in vkb spec\n");
-                rc = ERROR_FAIL; goto out;
-            }
-
-            entry++;
-        }
-    }
-
-    rc = 0;
-
-out:
-    free(buf);
-    if (rc) exit(EXIT_FAILURE);
-}
-
 static int parse_vgsx_config(libxl_device_vgsx *vgsx, char *token)
 {
     char *oparg;
@@ -2663,9 +2593,7 @@ skip_usbdev:
                     "Unknown gic_version \"%s\" specified\n", buf);
             exit(-ERROR_FAIL);
         }
-    }
-
-    parse_vkb_list(config, d_config);
+     }
 
     parse_vgsx_list(config, d_config);
 
