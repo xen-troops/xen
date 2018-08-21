@@ -26,3 +26,12 @@ VERS_1.1 {
     global:
         xengnttab_grant_copy;
 } VERS_1.0;
+
+VERS_1.2 {
+	global:
+		xengnttab_dmabuf_exp_from_refs;
+		xengnttab_dmabuf_exp_wait_released;
+		xengnttab_dmabuf_imp_to_refs;
+		xengnttab_dmabuf_imp_release;
+} VERS_1.1;
+
