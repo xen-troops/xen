@@ -649,6 +649,10 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     if ( (rc = domain_vtimer_init(d, config)) != 0 )
         goto fail;
 
+    if ( config->tee_enabled )
+        if ( (rc = tee_enable(d)) != 0 )
+            goto fail;
+
     update_domain_wallclock_time(d);
 
     /*

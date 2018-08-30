@@ -13,6 +13,7 @@
 #include <xen/sched.h>
 #include <xen/types.h>
 #include <xsm/xsm.h>
+#include <asm-arm/tee/tee.h>
 #include <public/domctl.h>
 
 void arch_get_domain_info(const struct domain *d,

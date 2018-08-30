@@ -328,6 +328,9 @@ struct xen_arch_domainconfig {
      * IOMMU is expected to be used for this domain.
      */
     uint8_t use_iommu;
+
+    /* IN */
+    uint8_t tee_enabled;
 };
 #endif /* __XEN__ || __XEN_TOOLS__ */
 
