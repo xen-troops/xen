@@ -97,6 +97,19 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     LOG(DEBUG, "IOMMU %s expected to be used for this domain",
         config->arch.use_iommu ? "is" : "isn't");
 
+    switch (d_config->b_info.arch_arm.tee) {
+    case LIBXL_TEE_TYPE_NONE:
+        config->arch.tee_type = XEN_DOMCTL_CONFIG_TEE_NONE;
+        break;
+    case LIBXL_TEE_TYPE_NATIVE:
+        config->arch.tee_type = XEN_DOMCTL_CONFIG_TEE_NATIVE;
+        break;
+    default:
+        LOG(ERROR, "Unknown TEE type %d",
+            d_config->b_info.arch_arm.tee);
+        return ERROR_FAIL;
+    }
+
     return 0;
 }
 
