@@ -2754,6 +2754,12 @@ vuart = "sbsa_uart"
 
 Currently, only the "sbsa_uart" model is supported for ARM.
 
+=item B<tee=BOOLEAN>
+
+Enable TEE support for the guest. Currently only OP-TEE is supported. If this
+option is enabled, xl will create guest, which can access TEE. Also
+OP-TEE node will be emitted into guest's device tree.
+
 =back
 
 =head3 x86

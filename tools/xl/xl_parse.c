@@ -2696,6 +2696,8 @@ skip_usbdev:
         }
     }
 
+    xlu_cfg_get_defbool(config, "tee", &b_info->tee, 0);
+
     parse_vkb_list(config, d_config);
 
     parse_vgsx_list(config, d_config);

@@ -113,6 +113,8 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     LOG(DEBUG, "IOMMU %s expected to be used for this domain",
         xc_config->use_iommu ? "is" : "isn't");
 
+    xc_config->tee_enabled = libxl_defbool_val(d_config->b_info.tee);
+
     return 0;
 }
 

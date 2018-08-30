@@ -218,6 +218,8 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
     libxl__arch_domain_build_info_acpi_setdefault(b_info);
     libxl_defbool_setdefault(&b_info->dm_restrict, false);
 
+    libxl_defbool_setdefault(&b_info->tee, false);
+
     switch (b_info->type) {
     case LIBXL_DOMAIN_TYPE_HVM:
         if (b_info->shadow_memkb == LIBXL_MEMKB_DEFAULT)
