@@ -305,6 +305,56 @@ struct optee_smc_disable_shm_cache_result {
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_ENABLE_SHM_CACHE)
 
 /*
+ * Inform OP-TEE about a new virtual machine
+ *
+ * Hypervisor issues this call during virtual machine (guest) creation.
+ * OP-TEE records VM_ID of new virtual machine and makes self ready
+ * to receive requests from it.
+ *
+ * Call requests usage:
+ * a0	SMC Function ID, OPTEE_SMC_VM_CREATED
+ * a1	VM_ID of newly created virtual machine
+ * a2-6 Not used
+ * a7	Hypervisor Client ID register. Must be 0, because only hypervisor
+ *      can issue this call
+ *
+ * Normal return register usage:
+ * a0	OPTEE_SMC_RETURN_OK
+ * a1-7	Preserved
+ *
+ * Error return:
+ * a0	OPTEE_SMC_RETURN_ENOTAVAIL	OP-TEE has no resources for
+ *					another VM
+ * a1-7	Preserved
+ *
+ */
+#define OPTEE_SMC_FUNCID_VM_CREATED	13
+#define OPTEE_SMC_VM_CREATED \
+	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_VM_CREATED)
+
+/*
+ * Inform OP-TEE about shutdown of a virtual machine
+ *
+ * Hypervisor issues this call during virtual machine (guest) destruction.
+ * OP-TEE will clean up all resources associated with this VM.
+ *
+ * Call requests usage:
+ * a0	SMC Function ID, OPTEE_SMC_VM_DESTROYED
+ * a1	VM_ID of virtual machine being shutted down
+ * a2-6 Not used
+ * a7	Hypervisor Client ID register. Must be 0, because only hypervisor
+ *      can issue this call
+ *
+ * Normal return register usage:
+ * a0	OPTEE_SMC_RETURN_OK
+ * a1-7	Preserved
+ *
+ */
+#define OPTEE_SMC_FUNCID_VM_DESTROYED	14
+#define OPTEE_SMC_VM_DESTROYED \
+	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_VM_DESTROYED)
+
+/*
  * Resume from RPC (for example after processing a foreign interrupt)
  *
  * Call register usage:

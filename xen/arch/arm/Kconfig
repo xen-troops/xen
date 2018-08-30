@@ -182,3 +182,5 @@ endmenu
 source "common/Kconfig"
 
 source "drivers/Kconfig"
+
+source "arch/arm/tee/Kconfig"
