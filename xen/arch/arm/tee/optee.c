@@ -24,6 +24,11 @@
 /* Client ID 0 is reserved for hypervisor itself */
 #define OPTEE_CLIENT_ID(domain) ((domain)->domain_id + 1)
 
+#define OPTEE_KNOWN_NSEC_CAPS OPTEE_SMC_NSEC_CAP_UNIPROCESSOR
+#define OPTEE_KNOWN_SEC_CAPS (OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM | \
+                              OPTEE_SMC_SEC_CAP_UNREGISTERED_SHM | \
+                              OPTEE_SMC_SEC_CAP_DYNAMIC_SHM)
+
 static bool optee_probe(void)
 {
     struct dt_device_node *node;
@@ -99,6 +104,18 @@ static void forward_call(struct cpu_user_regs *regs)
     set_user_reg(regs, 7, 0);
 }
 
+static void set_return(struct cpu_user_regs *regs, uint32_t ret)
+{
+    set_user_reg(regs, 0, ret);
+    set_user_reg(regs, 1, 0);
+    set_user_reg(regs, 2, 0);
+    set_user_reg(regs, 3, 0);
+    set_user_reg(regs, 4, 0);
+    set_user_reg(regs, 5, 0);
+    set_user_reg(regs, 6, 0);
+    set_user_reg(regs, 7, 0);
+}
+
 static int optee_relinquish_resources(struct domain *d)
 {
     return 0;
@@ -124,6 +141,37 @@ static void optee_domain_destroy(struct domain *d)
                   &resp);
 }
 
+static void handle_exchange_capabilities(struct cpu_user_regs *regs)
+{
+    uint32_t caps;
+
+    /* Filter out unknown guest caps */
+    caps = get_user_reg(regs, 1);
+    caps &= OPTEE_KNOWN_NSEC_CAPS;
+    set_user_reg(regs, 1, caps);
+
+    forward_call(regs);
+    if ( get_user_reg(regs, 0) != OPTEE_SMC_RETURN_OK )
+        return;
+
+    caps = get_user_reg(regs, 1);
+
+    /* Filter out unknown OP-TEE caps */
+    caps &= OPTEE_KNOWN_SEC_CAPS;
+
+    /* Drop static SHM_RPC cap */
+    caps &= ~OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM;
+
+    /* Don't allow guests to work without dynamic SHM */
+    if ( !(caps & OPTEE_SMC_SEC_CAP_DYNAMIC_SHM) )
+    {
+        set_return(regs, OPTEE_SMC_RETURN_ENOTAVAIL);
+        return;
+    }
+
+    set_user_reg(regs, 1, caps);
+}
+
 static bool optee_handle_call(struct cpu_user_regs *regs)
 {
     if ( !current->domain->arch.tee )
@@ -138,11 +186,16 @@ static bool optee_handle_call(struct cpu_user_regs *regs)
     case OPTEE_SMC_FUNCID_GET_OS_REVISION:
     case OPTEE_SMC_ENABLE_SHM_CACHE:
     case OPTEE_SMC_DISABLE_SHM_CACHE:
-    case OPTEE_SMC_GET_SHM_CONFIG:
-    case OPTEE_SMC_EXCHANGE_CAPABILITIES:
     case OPTEE_SMC_CALL_WITH_ARG:
     case OPTEE_SMC_CALL_RETURN_FROM_RPC:
         forward_call(regs);
+        return true;
+    case OPTEE_SMC_GET_SHM_CONFIG:
+        /* No static SHM available for guests */
+        set_return(regs, OPTEE_SMC_RETURN_ENOTAVAIL);
+        return true;
+    case OPTEE_SMC_EXCHANGE_CAPABILITIES:
+        handle_exchange_capabilities(regs);
         return true;
     default:
         return false;
