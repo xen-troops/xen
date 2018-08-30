@@ -2749,6 +2749,15 @@ skip_usbdev:
         }
     }
 
+    if (!xlu_cfg_get_string (config, "tee", &buf, 1)) {
+        e = libxl_tee_type_from_string(buf, &b_info->arch_arm.tee);
+        if (e) {
+            fprintf(stderr,
+                    "Unknown tee \"%s\" specified\n", buf);
+            exit(-ERROR_FAIL);
+        }
+    }
+
     parse_vkb_list(config, d_config);
     parse_vgsx_list(config, d_config);
 

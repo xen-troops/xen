@@ -2725,6 +2725,18 @@ Currently, only the "sbsa_uart" model is supported for ARM.
 
 =back
 
+=over 4
+
+=item B<tee=["none", "native"]>
+
+Set TEE type for the guest. Currently only OP-TEE is supported. If
+this option is set to "native", xl will create guest, which can access
+native TEE on your system (just make sure that you are using OP-TEE
+with virtualization support endabled). Also OP-TEE node will be
+emitted into guest's device tree.
+
+=back
+
 =head3 x86
 
 =over 4
