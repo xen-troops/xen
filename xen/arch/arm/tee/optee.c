@@ -31,6 +31,9 @@
  */
 #define TEEC_ORIGIN_COMMS 0x00000002
 
+/* "Non-specific cause" */
+#define TEEC_ERROR_GENERIC 0xFFFF0000
+
 /*
  * "Input parameters were invalid" as described
  * in GP TEE Client API Specification.
@@ -79,6 +82,7 @@ struct optee_std_call {
     paddr_t guest_arg_ipa;
     int optee_thread_id;
     int rpc_op;
+    uint64_t rpc_data_cookie;
     bool in_flight;
     register_t rpc_params[2];
 };
@@ -87,6 +91,9 @@ struct optee_std_call {
 struct shm_rpc {
     struct list_head list;
     struct page_info *guest_page;
+    struct page_info *xen_arg_pg;
+    struct optee_msg_arg *xen_arg;
+    gfn_t gfn;
     uint64_t cookie;
 };
 
@@ -349,11 +356,19 @@ static struct shm_rpc *allocate_and_pin_shm_rpc(struct optee_domain *ctx,
     if ( !shm_rpc )
         return ERR_PTR(-ENOMEM);
 
+    shm_rpc->xen_arg_pg = alloc_domheap_page(current->domain, 0);
+    if ( !shm_rpc->xen_arg_pg )
+    {
+        xfree(shm_rpc);
+        return ERR_PTR(-ENOMEM);
+    }
+
     /* This page will be shared with OP-TEE, so we need to pin it. */
     shm_rpc->guest_page = get_page_from_gfn(current->domain, gfn_x(gfn), &t,
                                             P2M_ALLOC);
     if ( !shm_rpc->guest_page || t != p2m_ram_rw )
         goto err;
+    shm_rpc->gfn = gfn;
 
     shm_rpc->cookie = cookie;
 
@@ -376,8 +391,11 @@ static struct shm_rpc *allocate_and_pin_shm_rpc(struct optee_domain *ctx,
     return shm_rpc;
 
 err:
+    free_domheap_page(shm_rpc->xen_arg_pg);
+
     if ( shm_rpc->guest_page )
         put_page(shm_rpc->guest_page);
+
     xfree(shm_rpc);
 
     return ERR_PTR(-EINVAL);
@@ -404,10 +422,30 @@ static void free_shm_rpc(struct optee_domain *ctx, uint64_t cookie)
     if ( !found )
         return;
 
+    free_domheap_page(shm_rpc->xen_arg_pg);
+
     ASSERT(shm_rpc->guest_page);
     put_page(shm_rpc->guest_page);
 
     xfree(shm_rpc);
+}
+
+static struct shm_rpc *find_shm_rpc(struct optee_domain *ctx, uint64_t cookie)
+{
+    struct shm_rpc *shm_rpc;
+
+    spin_lock(&ctx->lock);
+    list_for_each_entry( shm_rpc, &ctx->shm_rpc_list, list )
+    {
+        if ( shm_rpc->cookie == cookie )
+        {
+                spin_unlock(&ctx->lock);
+                return shm_rpc;
+        }
+    }
+    spin_unlock(&ctx->lock);
+
+    return NULL;
 }
 
 static struct optee_shm_buf *allocate_optee_shm_buf(struct optee_domain *ctx,
@@ -912,13 +950,59 @@ static void free_shm_buffers(struct optee_domain *ctx,
 }
 
 /* Handle RPC return from OP-TEE */
-static void handle_rpc_return(struct cpu_user_regs *regs,
-                              struct optee_std_call *call)
+static int handle_rpc_return(struct optee_domain *ctx,
+                             struct cpu_user_regs *regs,
+                             struct optee_std_call *call)
 {
+    int ret = 0;
+
     call->rpc_params[0] = get_user_reg(regs, 1);
     call->rpc_params[1] = get_user_reg(regs, 2);
     call->optee_thread_id = get_user_reg(regs, 3);
     call->rpc_op = OPTEE_SMC_RETURN_GET_RPC_FUNC(get_user_reg(regs, 0));
+
+    if ( call->rpc_op == OPTEE_SMC_RPC_FUNC_CMD )
+    {
+        /* Copy RPC request from shadowed buffer to guest */
+        uint64_t cookie = regpair_to_uint64(regs, 1);
+        struct shm_rpc *shm_rpc = find_shm_rpc(ctx, cookie);
+        if ( !shm_rpc )
+        {
+            /*
+             * This is a very exceptional situation: OP-TEE used
+             * cookie for unknown shared buffer. Something is very
+             * wrong there. We can't even report error back to OP-TEE,
+             * because there is no buffer where we can write return
+             * code. Luckily, OP-TEE sets default error code into that
+             * buffer before the call, expecting that normal world
+             * will overwrite it with actual result. So we can just
+             * continue the call.
+             */
+            gprintk(XENLOG_ERR, "Can't find SHM-RPC with cookie %lx\n", cookie);
+
+            return -ERESTART;
+        }
+
+        shm_rpc->xen_arg = __map_domain_page(shm_rpc->xen_arg_pg);
+
+        if ( access_guest_memory_by_ipa(current->domain,
+                        gfn_to_gaddr(shm_rpc->gfn),
+                        shm_rpc->xen_arg,
+                        OPTEE_MSG_GET_ARG_SIZE(shm_rpc->xen_arg->num_params),
+                        true) )
+        {
+            /*
+             * We were unable to propagate request to guest, so let's return
+             * back to OP-TEE.
+             */
+            shm_rpc->xen_arg->ret = TEEC_ERROR_GENERIC;
+            ret = -ERESTART;
+        }
+
+        unmap_domain_page(shm_rpc->xen_arg);
+    }
+
+    return ret;
 }
 
 /*
@@ -931,6 +1015,9 @@ static void handle_rpc_return(struct cpu_user_regs *regs,
  * If call is complete - we need to return results with copy_std_request_back()
  * and then we will destroy the call context as it is not needed anymore.
  *
+ * In some rare cases we can't propagate RPC request back to guest, so we will
+ * restart the call, telling OP-TEE that request had failed.
+ *
  * Shared buffers should be handled in a special way.
  */
 static void execute_std_call(struct optee_domain *ctx,
@@ -939,15 +1026,23 @@ static void execute_std_call(struct optee_domain *ctx,
 {
     register_t optee_ret;
 
-    forward_call(regs);
-
-    optee_ret = get_user_reg(regs, 0);
-    if ( OPTEE_SMC_RETURN_IS_RPC(optee_ret) )
+    while ( true )
     {
-        handle_rpc_return(regs, call);
-        put_std_call(ctx, call);
+        forward_call(regs);
 
-        return;
+        optee_ret = get_user_reg(regs, 0);
+        if ( OPTEE_SMC_RETURN_IS_RPC(optee_ret) )
+        {
+            if ( handle_rpc_return(ctx, regs, call)  == -ERESTART )
+            {
+                set_user_reg(regs, 0, OPTEE_SMC_CALL_RETURN_FROM_RPC);
+                continue;
+            }
+
+            put_std_call(ctx, call);
+            return;
+        }
+        break;
     }
 
     copy_std_request_back(ctx, regs, call);
@@ -1024,6 +1119,117 @@ err:
     return;
 }
 
+static void handle_rpc_cmd_alloc(struct optee_domain *ctx,
+                                 struct cpu_user_regs *regs,
+                                 struct optee_std_call *call,
+                                 struct shm_rpc *shm_rpc)
+{
+    if ( shm_rpc->xen_arg->ret || shm_rpc->xen_arg->num_params != 1 )
+        return;
+
+    if ( shm_rpc->xen_arg->params[0].attr != (OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
+                                              OPTEE_MSG_ATTR_NONCONTIG) )
+    {
+        gdprintk(XENLOG_WARNING, "Invalid attrs for shared mem buffer: %lx\n",
+                 shm_rpc->xen_arg->params[0].attr);
+        return;
+    }
+
+    /* Free pg list for buffer */
+    if ( call->rpc_data_cookie )
+        free_optee_shm_buf_pg_list(ctx, call->rpc_data_cookie);
+
+    if ( !translate_noncontig(ctx, call, &shm_rpc->xen_arg->params[0]) )
+    {
+        call->rpc_data_cookie =
+            shm_rpc->xen_arg->params[0].u.tmem.shm_ref;
+    }
+    else
+    {
+        call->rpc_data_cookie = 0;
+        /*
+         * Okay, so there was problem with guest's buffer and we need
+         * to tell about this to OP-TEE.
+         */
+        shm_rpc->xen_arg->ret = TEEC_ERROR_GENERIC;
+        shm_rpc->xen_arg->num_params = 0;
+        /*
+         * TODO: With current implementation, OP-TEE will not issue
+         * RPC to free this buffer. Guest and OP-TEE will be out of
+         * sync: guest believes that it provided buffer to OP-TEE,
+         * while OP-TEE thinks of opposite. Ideally, we need to
+         * emulate RPC with OPTEE_MSG_RPC_CMD_SHM_FREE command.
+         */
+    }
+}
+
+static void handle_rpc_cmd(struct optee_domain *ctx, struct cpu_user_regs *regs,
+                           struct optee_std_call *call)
+{
+    struct shm_rpc *shm_rpc;
+    uint64_t cookie;
+    size_t arg_size;
+
+    cookie = regpair_to_uint64(regs, 1);
+
+    shm_rpc = find_shm_rpc(ctx, cookie);
+
+    if ( !shm_rpc )
+    {
+        gdprintk(XENLOG_ERR, "Can't find SHM-RPC with cookie %lx\n", cookie);
+        return;
+    }
+
+    shm_rpc->xen_arg = __map_domain_page(shm_rpc->xen_arg_pg);
+
+    /* First, copy only header to read number of arguments */
+    if ( access_guest_memory_by_ipa(current->domain,
+                                    gfn_to_gaddr(shm_rpc->gfn),
+                                    shm_rpc->xen_arg,
+                                    sizeof(struct optee_msg_arg),
+                                    false) )
+    {
+        shm_rpc->xen_arg->ret = TEEC_ERROR_GENERIC;
+        goto out;
+    }
+
+    arg_size = OPTEE_MSG_GET_ARG_SIZE(shm_rpc->xen_arg->num_params);
+    if ( arg_size > OPTEE_MSG_NONCONTIG_PAGE_SIZE )
+    {
+        shm_rpc->xen_arg->ret = TEEC_ERROR_GENERIC;
+        goto out;
+    }
+
+    /* Read the whole command structure */
+    if ( access_guest_memory_by_ipa(current->domain, gfn_to_gaddr(shm_rpc->gfn),
+                                    shm_rpc->xen_arg, arg_size, false) )
+    {
+        shm_rpc->xen_arg->ret = TEEC_ERROR_GENERIC;
+        goto out;
+    }
+
+    switch (shm_rpc->xen_arg->cmd)
+    {
+    case OPTEE_MSG_RPC_CMD_GET_TIME:
+    case OPTEE_MSG_RPC_CMD_WAIT_QUEUE:
+    case OPTEE_MSG_RPC_CMD_SUSPEND:
+        break;
+    case OPTEE_MSG_RPC_CMD_SHM_ALLOC:
+        handle_rpc_cmd_alloc(ctx, regs, call, shm_rpc);
+        break;
+    case OPTEE_MSG_RPC_CMD_SHM_FREE:
+        free_optee_shm_buf(ctx, shm_rpc->xen_arg->params[0].u.value.b);
+        if ( call->rpc_data_cookie == shm_rpc->xen_arg->params[0].u.value.b )
+            call->rpc_data_cookie = 0;
+        break;
+    default:
+        break;
+    }
+
+out:
+    unmap_domain_page(shm_rpc->xen_arg);
+}
+
 static void handle_rpc_func_alloc(struct optee_domain *ctx,
                                   struct cpu_user_regs *regs)
 {
@@ -1051,7 +1257,7 @@ static void handle_rpc_func_alloc(struct optee_domain *ctx,
         ptr = 0;
     }
     else
-        ptr = page_to_maddr(shm_rpc->guest_page);
+        ptr = page_to_maddr(shm_rpc->xen_arg_pg);
 
 out:
     uint64_to_regpair(regs, 1, ptr);
@@ -1092,7 +1298,7 @@ static void handle_rpc(struct optee_domain *ctx, struct cpu_user_regs *regs)
     case OPTEE_SMC_RPC_FUNC_FOREIGN_INTR:
         break;
     case OPTEE_SMC_RPC_FUNC_CMD:
-        /* TODO: Add handling */
+        handle_rpc_cmd(ctx, regs, call);
         break;
     }
 
