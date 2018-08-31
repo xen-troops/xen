@@ -67,6 +67,8 @@ struct optee_std_call {
 struct shm_rpc {
     struct list_head list;
     struct page_info *guest_page;
+    struct optee_msg_arg *xen_arg;
+    paddr_t guest_ipa;
     uint64_t cookie;
 };
 
@@ -290,6 +292,11 @@ static struct shm_rpc *allocate_and_pin_shm_rpc(struct optee_domain *ctx,
                                             P2M_ALLOC);
     if ( !shm_rpc->guest_page )
         goto err;
+    shm_rpc->guest_ipa = gaddr;
+
+    shm_rpc->xen_arg = alloc_xenheap_page();
+    if ( !shm_rpc->xen_arg )
+        goto err;
 
     shm_rpc->cookie = cookie;
 
@@ -313,6 +320,7 @@ static struct shm_rpc *allocate_and_pin_shm_rpc(struct optee_domain *ctx,
 err:
     atomic_dec(&ctx->shm_rpc_count);
     put_page(shm_rpc->guest_page);
+    free_xenheap_page(shm_rpc->xen_arg);
     xfree(shm_rpc);
 
     return NULL;
@@ -339,10 +347,30 @@ static void free_shm_rpc(struct optee_domain *ctx, uint64_t cookie)
     if ( !found )
         return;
 
+    free_xenheap_page(shm_rpc->xen_arg);
+
     ASSERT(shm_rpc->guest_page);
     put_page(shm_rpc->guest_page);
 
     xfree(shm_rpc);
+}
+
+static struct shm_rpc *find_shm_rpc(struct optee_domain *ctx, uint64_t cookie)
+{
+    struct shm_rpc *shm_rpc;
+
+    spin_lock(&ctx->lock);
+    list_for_each_entry( shm_rpc, &ctx->shm_rpc_list, list )
+    {
+        if ( shm_rpc->cookie == cookie )
+        {
+                spin_unlock(&ctx->lock);
+                return shm_rpc;
+        }
+    }
+    spin_unlock(&ctx->lock);
+
+    return NULL;
 }
 
 static struct optee_shm_buf *allocate_optee_shm_buf(struct optee_domain *ctx,
@@ -712,6 +740,33 @@ static void copy_std_request_back(struct optee_domain *ctx,
     put_page(page);
 }
 
+static void handle_rpc_return(struct optee_domain *ctx,
+                             struct cpu_user_regs *regs,
+                             struct optee_std_call *call)
+{
+    call->rpc_params[0] = get_user_reg(regs, 1);
+    call->rpc_params[1] = get_user_reg(regs, 2);
+    call->optee_thread_id = get_user_reg(regs, 3);
+    call->rpc_op = OPTEE_SMC_RETURN_GET_RPC_FUNC(get_user_reg(regs, 0));
+
+    if ( call->rpc_op == OPTEE_SMC_RPC_FUNC_CMD )
+    {
+        /* Copy RPC request from shadowed buffer to guest */
+        uint64_t cookie = get_user_reg(regs, 1) << 32 | get_user_reg(regs, 2);
+        struct shm_rpc *shm_rpc = find_shm_rpc(ctx, cookie);
+        if ( !shm_rpc )
+        {
+            gprintk(XENLOG_ERR, "Can't find SHM-RPC with cookie %lx\n", cookie);
+            return;
+        }
+        access_guest_memory_by_ipa(current->domain,
+                        shm_rpc->guest_ipa,
+                        shm_rpc->xen_arg,
+                        OPTEE_MSG_GET_ARG_SIZE(shm_rpc->xen_arg->num_params),
+                        true);
+    }
+}
+
 static void execute_std_call(struct optee_domain *ctx,
                              struct cpu_user_regs *regs,
                              struct optee_std_call *call)
@@ -723,10 +778,7 @@ static void execute_std_call(struct optee_domain *ctx,
     optee_ret = get_user_reg(regs, 0);
     if ( OPTEE_SMC_RETURN_IS_RPC(optee_ret) )
     {
-        call->rpc_params[0] = get_user_reg(regs, 1);
-        call->rpc_params[1] = get_user_reg(regs, 2);
-        call->optee_thread_id = get_user_reg(regs, 3);
-        call->rpc_op = OPTEE_SMC_RETURN_GET_RPC_FUNC(optee_ret);
+        handle_rpc_return(ctx, regs, call);
         put_std_call(ctx, call);
         return;
     }
@@ -787,6 +839,78 @@ err:
     return false;
 }
 
+static void handle_rpc_cmd_alloc(struct optee_domain *ctx,
+                                 struct cpu_user_regs *regs,
+                                 struct optee_std_call *call,
+                                 struct shm_rpc *shm_rpc)
+{
+    if ( shm_rpc->xen_arg->params[0].attr != (OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
+                                            OPTEE_MSG_ATTR_NONCONTIG) )
+    {
+        gprintk(XENLOG_WARNING, "Invalid attrs for shared mem buffer\n");
+        return;
+    }
+
+    /* Last entry in non_contig array is used to hold RPC-allocated buffer */
+    if ( call->non_contig[MAX_NONCONTIG_ENTRIES - 1] )
+    {
+        free_xenheap_pages(call->non_contig[MAX_NONCONTIG_ENTRIES - 1],
+                           call->non_contig_order[MAX_NONCONTIG_ENTRIES - 1]);
+        call->non_contig[MAX_NONCONTIG_ENTRIES - 1] = NULL;
+    }
+    translate_noncontig(ctx, call, shm_rpc->xen_arg->params + 0,
+                        MAX_NONCONTIG_ENTRIES - 1);
+}
+
+static void handle_rpc_cmd(struct optee_domain *ctx, struct cpu_user_regs *regs,
+                           struct optee_std_call *call)
+{
+    struct shm_rpc *shm_rpc;
+    uint64_t cookie;
+    size_t arg_size;
+
+    cookie = get_user_reg(regs, 1) << 32 | get_user_reg(regs, 2);
+
+    shm_rpc = find_shm_rpc(ctx, cookie);
+
+    if ( !shm_rpc )
+    {
+        gprintk(XENLOG_ERR, "Can't find SHM-RPC with cookie %lx\n", cookie);
+        return;
+    }
+
+    /* First, copy only header to read number of arguments */
+    access_guest_memory_by_ipa(current->domain, shm_rpc->guest_ipa,
+                               shm_rpc->xen_arg, sizeof(struct optee_msg_arg),
+                               false);
+
+    arg_size = OPTEE_MSG_GET_ARG_SIZE(shm_rpc->xen_arg->num_params);
+    if ( arg_size > OPTEE_MSG_NONCONTIG_PAGE_SIZE )
+        return;
+
+    /* Read the whole command structure */
+    access_guest_memory_by_ipa(current->domain, shm_rpc->guest_ipa,
+                               shm_rpc->xen_arg, arg_size, false);
+
+    switch (shm_rpc->xen_arg->cmd)
+    {
+    case OPTEE_MSG_RPC_CMD_GET_TIME:
+        break;
+    case OPTEE_MSG_RPC_CMD_WAIT_QUEUE:
+        break;
+    case OPTEE_MSG_RPC_CMD_SUSPEND:
+        break;
+    case OPTEE_MSG_RPC_CMD_SHM_ALLOC:
+        handle_rpc_cmd_alloc(ctx, regs, call, shm_rpc);
+        break;
+    case OPTEE_MSG_RPC_CMD_SHM_FREE:
+        free_optee_shm_buf(ctx, shm_rpc->xen_arg->params[0].u.value.b);
+        break;
+    default:
+        break;
+    }
+}
+
 static void handle_rpc_func_alloc(struct optee_domain *ctx,
                                   struct cpu_user_regs *regs)
 {
@@ -807,7 +931,7 @@ static void handle_rpc_func_alloc(struct optee_domain *ctx,
             ptr = 0;
         }
         else
-            ptr = page_to_maddr(shm_rpc->guest_page);
+            ptr = virt_to_maddr(shm_rpc->xen_arg);
 
         set_user_reg(regs, 1, ptr >> 32);
         set_user_reg(regs, 2, ptr & 0xFFFFFFFF);
@@ -839,7 +963,7 @@ static bool handle_rpc(struct optee_domain *ctx, struct cpu_user_regs *regs)
     case OPTEE_SMC_RPC_FUNC_FOREIGN_INTR:
         break;
     case OPTEE_SMC_RPC_FUNC_CMD:
-        /* TODO: Add handling */
+        handle_rpc_cmd(ctx, regs, call);
         break;
     }
 
