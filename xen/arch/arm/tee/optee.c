@@ -18,6 +18,7 @@
 #include <xen/mm.h>
 #include <xen/sched.h>
 
+#include <asm/event.h>
 #include <asm/smccc.h>
 #include <asm/tee/tee.h>
 #include <asm/tee/optee_msg.h>
@@ -54,11 +55,20 @@ struct optee_std_call {
     int optee_thread_id;
     int rpc_op;
     bool in_flight;
+    register_t rpc_params[2];
+};
+
+/* Pre-allocated SHM buffer for RPC commands */
+struct shm_rpc {
+    struct list_head list;
+    struct page_info *guest_page;
+    uint64_t cookie;
 };
 
 /* Domain context */
 struct optee_domain {
     struct list_head call_list;
+    struct list_head shm_rpc_list;
     atomic_t call_count;
     spinlock_t lock;
 };
@@ -125,6 +135,7 @@ static int optee_domain_init(struct domain *d)
     }
 
     INIT_LIST_HEAD(&ctx->call_list);
+    INIT_LIST_HEAD(&ctx->shm_rpc_list);
     atomic_set(&ctx->call_count, 0);
     spin_lock_init(&ctx->lock);
 
@@ -281,9 +292,81 @@ static void put_std_call(struct optee_domain *ctx, struct optee_std_call *call)
     spin_unlock(&ctx->lock);
 }
 
+static struct shm_rpc *allocate_and_pin_shm_rpc(struct optee_domain *ctx,
+                                                gfn_t gfn, uint64_t cookie)
+{
+    struct shm_rpc *shm_rpc, *shm_rpc_tmp;
+    p2m_type_t t;
+
+    shm_rpc = xzalloc(struct shm_rpc);
+    if ( !shm_rpc )
+        return ERR_PTR(-ENOMEM);
+
+    /* This page will be shared with OP-TEE, so we need to pin it. */
+    shm_rpc->guest_page = get_page_from_gfn(current->domain, gfn_x(gfn), &t,
+                                            P2M_ALLOC);
+    if ( !shm_rpc->guest_page || t != p2m_ram_rw )
+        goto err;
+
+    shm_rpc->cookie = cookie;
+
+    spin_lock(&ctx->lock);
+    /* Check if there is existing SHM with the same cookie. */
+    list_for_each_entry( shm_rpc_tmp, &ctx->shm_rpc_list, list )
+    {
+        if ( shm_rpc_tmp->cookie == cookie )
+        {
+            spin_unlock(&ctx->lock);
+            gdprintk(XENLOG_WARNING, "Guest tries to use the same RPC SHM cookie %lx\n",
+                     cookie);
+            goto err;
+        }
+    }
+
+    list_add_tail(&shm_rpc->list, &ctx->shm_rpc_list);
+    spin_unlock(&ctx->lock);
+
+    return shm_rpc;
+
+err:
+    if ( shm_rpc->guest_page )
+        put_page(shm_rpc->guest_page);
+    xfree(shm_rpc);
+
+    return ERR_PTR(-EINVAL);
+}
+
+static void free_shm_rpc(struct optee_domain *ctx, uint64_t cookie)
+{
+    struct shm_rpc *shm_rpc;
+    bool found = false;
+
+    spin_lock(&ctx->lock);
+
+    list_for_each_entry( shm_rpc, &ctx->shm_rpc_list, list )
+    {
+        if ( shm_rpc->cookie == cookie )
+        {
+            found = true;
+            list_del(&shm_rpc->list);
+            break;
+        }
+    }
+    spin_unlock(&ctx->lock);
+
+    if ( !found )
+        return;
+
+    ASSERT(shm_rpc->guest_page);
+    put_page(shm_rpc->guest_page);
+
+    xfree(shm_rpc);
+}
+
 static int optee_relinquish_resources(struct domain *d)
 {
     struct optee_std_call *call, *call_tmp;
+    struct shm_rpc *shm_rpc, *shm_rpc_tmp;
     struct optee_domain *ctx = d->arch.tee;
 
     if ( !ctx )
@@ -291,6 +374,12 @@ static int optee_relinquish_resources(struct domain *d)
 
     list_for_each_entry_safe( call, call_tmp, &ctx->call_list, list )
         free_std_call(ctx, call);
+
+    if ( hypercall_preempt_check() )
+        return -ERESTART;
+
+    list_for_each_entry_safe( shm_rpc, shm_rpc_tmp, &ctx->shm_rpc_list, list )
+        free_shm_rpc(ctx, shm_rpc->cookie);
 
     return 0;
 }
@@ -317,6 +406,7 @@ static void optee_domain_destroy(struct domain *d)
 
     ASSERT(!spin_is_locked(&ctx->lock));
     ASSERT(!atomic_read(&ctx->call_count));
+    ASSERT(list_empty(&ctx->shm_rpc_list));
 
     XFREE(d->arch.tee);
 }
@@ -451,6 +541,8 @@ static void copy_std_request_back(struct optee_domain *ctx,
 static void handle_rpc_return(struct cpu_user_regs *regs,
                               struct optee_std_call *call)
 {
+    call->rpc_params[0] = get_user_reg(regs, 1);
+    call->rpc_params[1] = get_user_reg(regs, 2);
     call->optee_thread_id = get_user_reg(regs, 3);
     call->rpc_op = OPTEE_SMC_RETURN_GET_RPC_FUNC(get_user_reg(regs, 0));
 }
@@ -528,6 +620,39 @@ err:
     return;
 }
 
+static void handle_rpc_func_alloc(struct optee_domain *ctx,
+                                  struct cpu_user_regs *regs)
+{
+    struct shm_rpc *shm_rpc;
+    paddr_t ptr = regpair_to_uint64(regs, 1);
+    uint64_t cookie = regpair_to_uint64(regs, 4);
+
+    if ( ptr & (OPTEE_MSG_NONCONTIG_PAGE_SIZE - 1) )
+    {
+        gdprintk(XENLOG_WARNING, "Domain returned invalid RPC command buffer\n");
+        /*
+         * OP-TEE is waiting for a response to the RPC. We can't just
+         * return error to the guest. We need to provide some invalid
+         * value to OP-TEE, so it can handle error on its side.
+         */
+        ptr = 0;
+        goto out;
+    }
+
+    shm_rpc = allocate_and_pin_shm_rpc(ctx, gaddr_to_gfn(ptr), cookie);
+    if ( IS_ERR(shm_rpc) )
+    {
+        gdprintk(XENLOG_WARNING, "Failed to allocate shm_rpc object: %ld\n",
+                 PTR_ERR(shm_rpc));
+        ptr = 0;
+    }
+    else
+        ptr = page_to_maddr(shm_rpc->guest_page);
+
+out:
+    uint64_to_regpair(regs, 1, ptr);
+}
+
 static void handle_rpc(struct optee_domain *ctx, struct cpu_user_regs *regs)
 {
     struct optee_std_call *call;
@@ -551,11 +676,15 @@ static void handle_rpc(struct optee_domain *ctx, struct cpu_user_regs *regs)
     switch ( call->rpc_op )
     {
     case OPTEE_SMC_RPC_FUNC_ALLOC:
-        /* TODO: Add handling */
+        handle_rpc_func_alloc(ctx, regs);
         break;
     case OPTEE_SMC_RPC_FUNC_FREE:
-        /* TODO: Add handling */
+    {
+        uint64_t cookie = (uint64_t)call->rpc_params[0] << 32 |
+                          (uint32_t)call->rpc_params[1];
+        free_shm_rpc(ctx, cookie);
         break;
+    }
     case OPTEE_SMC_RPC_FUNC_FOREIGN_INTR:
         break;
     case OPTEE_SMC_RPC_FUNC_CMD:
