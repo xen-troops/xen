@@ -12,6 +12,8 @@
  */
 
 #include <xen/device_tree.h>
+#include <xen/domain_page.h>
+#include <xen/guest_access.h>
 #include <xen/sched.h>
 #include <asm/smccc.h>
 #include <asm/tee/tee.h>
@@ -22,10 +24,37 @@
 /* Client ID 0 is reserved for hypervisor itself */
 #define OPTEE_CLIENT_ID(domain) (domain->domain_id + 1)
 
+/*
+ * Maximal number of concurrent standard calls from one guest. This
+ * corresponds to OPTEE configuration option CFG_NUM_THREADS, because
+ * OP-TEE spawns a thread for every standard call.
+ */
+#define MAX_STD_CALLS   16
+
 #define OPTEE_KNOWN_NSEC_CAPS OPTEE_SMC_NSEC_CAP_UNIPROCESSOR
 #define OPTEE_KNOWN_SEC_CAPS (OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM | \
                               OPTEE_SMC_SEC_CAP_UNREGISTERED_SHM |  \
                               OPTEE_SMC_SEC_CAP_DYNAMIC_SHM)
+
+/*
+ * Call context. OP-TEE can issue multiple RPC returns during one call.
+ * We need to preserve context during them.
+ */
+struct optee_std_call {
+    struct list_head list;
+    struct optee_msg_arg *xen_arg;
+    paddr_t guest_arg_ipa;
+    int optee_thread_id;
+    int rpc_op;
+    bool in_flight;
+};
+
+/* Domain context */
+struct optee_domain {
+    struct list_head call_list;
+    atomic_t call_count;
+    spinlock_t lock;
+};
 
 static bool optee_probe(void)
 {
@@ -52,6 +81,11 @@ static bool optee_probe(void)
 static int optee_enable(struct domain *d)
 {
     struct arm_smccc_res resp;
+    struct optee_domain *ctx;
+
+    ctx = xzalloc(struct optee_domain);
+    if ( !ctx )
+        return -ENOMEM;
 
     /*
      * Inform OP-TEE about a new guest.
@@ -69,8 +103,15 @@ static int optee_enable(struct domain *d)
     {
         gprintk(XENLOG_WARNING, "Unable to create OPTEE client: rc = 0x%X\n",
                 (uint32_t)resp.a0);
+        xfree(ctx);
         return -ENODEV;
     }
+
+    INIT_LIST_HEAD(&ctx->call_list);
+    atomic_set(&ctx->call_count, 0);
+    spin_lock_init(&ctx->lock);
+
+    d->arch.tee = ctx;
 
     return 0;
 }
@@ -111,9 +152,86 @@ static void set_return(struct cpu_user_regs *regs, uint32_t ret)
     set_user_reg(regs, 7, 0);
 }
 
+static struct optee_std_call *allocate_std_call(struct optee_domain *ctx)
+{
+    struct optee_std_call *call;
+    int count;
+
+    /* Make sure that guest does not execute more than MAX_STD_CALLS */
+    count = atomic_add_unless(&ctx->call_count, 1, MAX_STD_CALLS);
+    if ( count == MAX_STD_CALLS )
+        return NULL;
+
+    call = xzalloc(struct optee_std_call);
+    if ( !call )
+    {
+        atomic_dec(&ctx->call_count);
+        return NULL;
+    }
+
+    call->optee_thread_id = -1;
+    call->in_flight = true;
+
+    spin_lock(&ctx->lock);
+    list_add_tail(&call->list, &ctx->call_list);
+    spin_unlock(&ctx->lock);
+
+    return call;
+}
+
+static void free_std_call(struct optee_domain *ctx,
+                          struct optee_std_call *call)
+{
+    atomic_dec(&ctx->call_count);
+
+    spin_lock(&ctx->lock);
+    list_del(&call->list);
+    spin_unlock(&ctx->lock);
+
+    ASSERT(!call->in_flight);
+    xfree(call->xen_arg);
+    xfree(call);
+}
+
+static struct optee_std_call *get_std_call(struct optee_domain *ctx,
+                                           int thread_id)
+{
+    struct optee_std_call *call;
+
+    spin_lock(&ctx->lock);
+    list_for_each_entry( call, &ctx->call_list, list )
+    {
+        if ( call->optee_thread_id == thread_id )
+        {
+            if ( call->in_flight )
+            {
+                gprintk(XENLOG_WARNING, "Guest tries to execute call which is already in flight");
+                goto out;
+            }
+            call->in_flight = true;
+            spin_unlock(&ctx->lock);
+            return call;
+        }
+    }
+out:
+    spin_unlock(&ctx->lock);
+
+    return NULL;
+}
+
+static void put_std_call(struct optee_domain *ctx, struct optee_std_call *call)
+{
+    spin_lock(&ctx->lock);
+    ASSERT(call->in_flight);
+    call->in_flight = false;
+    spin_unlock(&ctx->lock);
+}
+
 static void optee_domain_destroy(struct domain *d)
 {
     struct arm_smccc_res resp;
+    struct optee_std_call *call, *call_tmp;
+    struct optee_domain *ctx = d->arch.tee;
 
     /* At this time all domain VCPUs should be stopped */
 
@@ -124,6 +242,199 @@ static void optee_domain_destroy(struct domain *d)
      */
     arm_smccc_smc(OPTEE_SMC_VM_DESTROYED, OPTEE_CLIENT_ID(d), 0, 0, 0, 0, 0, 0,
                   &resp);
+    ASSERT(!spin_is_locked(&ctx->lock));
+
+    list_for_each_entry_safe( call, call_tmp, &ctx->call_list, list )
+        free_std_call(ctx, call);
+
+    ASSERT(!atomic_read(&ctx->call_count));
+
+    xfree(d->arch.tee);
+}
+
+/*
+ * Copy command buffer into xen memory to:
+ * 1) Hide translated addresses from guest
+ * 2) Make sure that guest wouldn't change data in command buffer during call
+ */
+static bool copy_std_request(struct cpu_user_regs *regs,
+                             struct optee_std_call *call)
+{
+    paddr_t xen_addr;
+
+    call->guest_arg_ipa = (paddr_t)get_user_reg(regs, 1) << 32 |
+                            get_user_reg(regs, 2);
+
+    /*
+     * Command buffer should start at page boundary.
+     * This is OP-TEE ABI requirement.
+     */
+    if ( call->guest_arg_ipa & (OPTEE_MSG_NONCONTIG_PAGE_SIZE - 1) )
+        return false;
+
+    call->xen_arg = _xmalloc(OPTEE_MSG_NONCONTIG_PAGE_SIZE,
+                             OPTEE_MSG_NONCONTIG_PAGE_SIZE);
+    if ( !call->xen_arg )
+        return false;
+
+    BUILD_BUG_ON(OPTEE_MSG_NONCONTIG_PAGE_SIZE > PAGE_SIZE);
+
+    access_guest_memory_by_ipa(current->domain, call->guest_arg_ipa,
+                               call->xen_arg, OPTEE_MSG_NONCONTIG_PAGE_SIZE,
+                               false);
+
+    xen_addr = virt_to_maddr(call->xen_arg);
+
+    set_user_reg(regs, 1, xen_addr >> 32);
+    set_user_reg(regs, 2, xen_addr & 0xFFFFFFFF);
+
+    return true;
+}
+
+static void copy_std_request_back(struct optee_domain *ctx,
+                                  struct cpu_user_regs *regs,
+                                  struct optee_std_call *call)
+{
+    struct optee_msg_arg *guest_arg;
+    struct page_info *page;
+    unsigned int i;
+    uint32_t attr;
+
+    /* copy_std_request() validated IPA for us */
+    page = get_page_from_gfn(current->domain, paddr_to_pfn(call->guest_arg_ipa),
+                             NULL, P2M_ALLOC);
+    if ( !page )
+        return;
+
+    guest_arg = map_domain_page(page_to_mfn(page));
+
+    guest_arg->ret = call->xen_arg->ret;
+    guest_arg->ret_origin = call->xen_arg->ret_origin;
+    guest_arg->session = call->xen_arg->session;
+    for ( i = 0; i < call->xen_arg->num_params; i++ )
+    {
+        attr = call->xen_arg->params[i].attr;
+
+        switch ( attr & OPTEE_MSG_ATTR_TYPE_MASK )
+        {
+        case OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT:
+        case OPTEE_MSG_ATTR_TYPE_TMEM_INOUT:
+            guest_arg->params[i].u.tmem.size =
+                call->xen_arg->params[i].u.tmem.size;
+            continue;
+        case OPTEE_MSG_ATTR_TYPE_VALUE_OUTPUT:
+        case OPTEE_MSG_ATTR_TYPE_VALUE_INOUT:
+            guest_arg->params[i].u.value.a =
+                call->xen_arg->params[i].u.value.a;
+            guest_arg->params[i].u.value.b =
+                call->xen_arg->params[i].u.value.b;
+            continue;
+        case OPTEE_MSG_ATTR_TYPE_RMEM_OUTPUT:
+        case OPTEE_MSG_ATTR_TYPE_RMEM_INOUT:
+            guest_arg->params[i].u.rmem.size =
+                call->xen_arg->params[i].u.rmem.size;
+            continue;
+        case OPTEE_MSG_ATTR_TYPE_NONE:
+        case OPTEE_MSG_ATTR_TYPE_RMEM_INPUT:
+        case OPTEE_MSG_ATTR_TYPE_TMEM_INPUT:
+            continue;
+        }
+    }
+
+    unmap_domain_page(guest_arg);
+    put_page(page);
+}
+
+static void execute_std_call(struct optee_domain *ctx,
+                             struct cpu_user_regs *regs,
+                             struct optee_std_call *call)
+{
+    register_t optee_ret;
+
+    forward_call(regs);
+
+    optee_ret = get_user_reg(regs, 0);
+    if ( OPTEE_SMC_RETURN_IS_RPC(optee_ret) )
+    {
+        call->optee_thread_id = get_user_reg(regs, 3);
+        call->rpc_op = OPTEE_SMC_RETURN_GET_RPC_FUNC(optee_ret);
+        put_std_call(ctx, call);
+        return;
+    }
+
+    copy_std_request_back(ctx, regs, call);
+
+    put_std_call(ctx, call);
+    free_std_call(ctx, call);
+}
+
+static bool handle_std_call(struct optee_domain *ctx,
+                            struct cpu_user_regs *regs)
+{
+    struct optee_std_call *call = allocate_std_call(ctx);
+
+    if ( !call )
+        return false;
+
+    if ( !copy_std_request(regs, call) )
+        goto err;
+
+    /* Now we can safely examine contents of command buffer */
+    if ( OPTEE_MSG_GET_ARG_SIZE(call->xen_arg->num_params) >
+         OPTEE_MSG_NONCONTIG_PAGE_SIZE )
+        goto err;
+
+    switch ( call->xen_arg->cmd )
+    {
+    case OPTEE_MSG_CMD_OPEN_SESSION:
+    case OPTEE_MSG_CMD_CLOSE_SESSION:
+    case OPTEE_MSG_CMD_INVOKE_COMMAND:
+    case OPTEE_MSG_CMD_CANCEL:
+    case OPTEE_MSG_CMD_REGISTER_SHM:
+    case OPTEE_MSG_CMD_UNREGISTER_SHM:
+        break;
+    default:
+        goto err;
+    }
+
+    execute_std_call(ctx, regs, call);
+
+    return true;
+
+err:
+    put_std_call(ctx, call);
+    free_std_call(ctx, call);
+
+    return false;
+}
+
+static bool handle_rpc(struct optee_domain *ctx, struct cpu_user_regs *regs)
+{
+    struct optee_std_call *call;
+    int optee_thread_id = get_user_reg(regs, 3);
+
+    call = get_std_call(ctx, optee_thread_id);
+
+    if ( !call )
+        return false;
+
+    switch ( call->rpc_op )
+    {
+    case OPTEE_SMC_RPC_FUNC_ALLOC:
+        /* TODO: Add handling */
+        break;
+    case OPTEE_SMC_RPC_FUNC_FREE:
+        /* TODO: Add handling */
+        break;
+    case OPTEE_SMC_RPC_FUNC_FOREIGN_INTR:
+        break;
+    case OPTEE_SMC_RPC_FUNC_CMD:
+        /* TODO: Add handling */
+        break;
+    }
+
+    execute_std_call(ctx, regs, call);
+    return true;
 }
 
 static bool handle_exchange_capabilities(struct cpu_user_regs *regs)
@@ -161,6 +472,8 @@ static bool handle_exchange_capabilities(struct cpu_user_regs *regs)
 
 static bool optee_handle_call(struct cpu_user_regs *regs)
 {
+    struct optee_domain *ctx = current->domain->arch.tee;
+
     switch ( get_user_reg(regs, 0) )
     {
     case OPTEE_SMC_CALLS_COUNT:
@@ -170,8 +483,6 @@ static bool optee_handle_call(struct cpu_user_regs *regs)
     case OPTEE_SMC_FUNCID_GET_OS_REVISION:
     case OPTEE_SMC_ENABLE_SHM_CACHE:
     case OPTEE_SMC_DISABLE_SHM_CACHE:
-    case OPTEE_SMC_CALL_WITH_ARG:
-    case OPTEE_SMC_CALL_RETURN_FROM_RPC:
         forward_call(regs);
         return true;
     case OPTEE_SMC_GET_SHM_CONFIG:
@@ -180,6 +491,10 @@ static bool optee_handle_call(struct cpu_user_regs *regs)
         return true;
     case OPTEE_SMC_EXCHANGE_CAPABILITIES:
         return handle_exchange_capabilities(regs);
+    case OPTEE_SMC_CALL_WITH_ARG:
+        return handle_std_call(ctx, regs);
+    case OPTEE_SMC_CALL_RETURN_FROM_RPC:
+        return handle_rpc(ctx, regs);
     default:
         return false;
     }
