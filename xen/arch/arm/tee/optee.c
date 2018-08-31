@@ -24,6 +24,22 @@
 #include <asm/tee/optee_msg.h>
 #include <asm/tee/optee_smc.h>
 
+/*
+ * "The return code is an error that originated within the underlying
+ * communications stack linking the rich OS with the TEE" as described
+ * in GP TEE Client API Specification.
+ */
+#define TEEC_ORIGIN_COMMS 0x00000002
+
+/*
+ * "Input parameters were invalid" as described
+ * in GP TEE Client API Specification.
+ */
+#define TEEC_ERROR_BAD_PARAMETERS 0xFFFF0006
+
+/* "System ran out of resources" */
+#define TEEC_ERROR_OUT_OF_MEMORY 0xFFFF000C
+
 /* Client ID 0 is reserved for hypervisor itself */
 #define OPTEE_CLIENT_ID(domain) ((domain)->domain_id + 1)
 
@@ -32,6 +48,15 @@
  * This limits number of standard calls that guest can have.
  */
 #define DEF_MAX_OPTEE_THREADS 16
+
+/*
+ * Maximum total number of pages that guest can share with
+ * OP-TEE. Currently value is selected arbitrary. Actual number of
+ * pages depends on free heap in OP-TEE. As we can't do any
+ * assumptions about OP-TEE heap usage, we limit number of pages
+ * arbitrary.
+ */
+#define MAX_TOTAL_SMH_BUF_PG    16384
 
 #define OPTEE_KNOWN_NSEC_CAPS OPTEE_SMC_NSEC_CAP_UNIPROCESSOR
 #define OPTEE_KNOWN_SEC_CAPS (OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM | \
@@ -65,11 +90,31 @@ struct shm_rpc {
     uint64_t cookie;
 };
 
+/* Shared memory buffer for arbitrary data */
+struct optee_shm_buf {
+    struct list_head list;
+    uint64_t cookie;
+    unsigned int page_cnt;
+    /*
+     * Shadowed container for list of pages that guest tries to share
+     * with OP-TEE. This is not the list of pages that guest shared
+     * with OP-TEE, but container for list of those pages. Check
+     * OPTEE_MSG_ATTR_NONCONTIG definition in optee_msg.h for more
+     * information.
+     */
+    struct page_info *pg_list;
+    unsigned int pg_list_order;
+    /* Pinned guest pages that are shared with OP-TEE */
+    struct page_info *pages[];
+};
+
 /* Domain context */
 struct optee_domain {
     struct list_head call_list;
     struct list_head shm_rpc_list;
+    struct list_head optee_shm_buf_list;
     atomic_t call_count;
+    atomic_t optee_shm_buf_pages;
     spinlock_t lock;
 };
 
@@ -136,7 +181,9 @@ static int optee_domain_init(struct domain *d)
 
     INIT_LIST_HEAD(&ctx->call_list);
     INIT_LIST_HEAD(&ctx->shm_rpc_list);
+    INIT_LIST_HEAD(&ctx->optee_shm_buf_list);
     atomic_set(&ctx->call_count, 0);
+    atomic_set(&ctx->optee_shm_buf_pages, 0);
     spin_lock_init(&ctx->lock);
 
     d->arch.tee = ctx;
@@ -363,10 +410,134 @@ static void free_shm_rpc(struct optee_domain *ctx, uint64_t cookie)
     xfree(shm_rpc);
 }
 
+static struct optee_shm_buf *allocate_optee_shm_buf(struct optee_domain *ctx,
+                                                    uint64_t cookie,
+                                                    unsigned int pages_cnt,
+                                                    struct page_info *pg_list,
+                                                    unsigned int pg_list_order)
+{
+    struct optee_shm_buf *optee_shm_buf, *optee_shm_buf_tmp;
+    int old, new;
+    int err_code;
+
+    do
+    {
+        old = atomic_read(&ctx->optee_shm_buf_pages);
+        new = old + pages_cnt;
+        if ( new >= MAX_TOTAL_SMH_BUF_PG )
+            return ERR_PTR(-ENOMEM);
+    }
+    while ( unlikely(old != atomic_cmpxchg(&ctx->optee_shm_buf_pages,
+                                           old, new)) );
+
+    optee_shm_buf = xzalloc_bytes(sizeof(struct optee_shm_buf) +
+                                  pages_cnt * sizeof(struct page *));
+    if ( !optee_shm_buf )
+    {
+        err_code = -ENOMEM;
+        goto err;
+    }
+
+    optee_shm_buf->cookie = cookie;
+    optee_shm_buf->pg_list = pg_list;
+    optee_shm_buf->pg_list_order = pg_list_order;
+
+    spin_lock(&ctx->lock);
+    /* Check if there is already SHM with the same cookie */
+    list_for_each_entry( optee_shm_buf_tmp, &ctx->optee_shm_buf_list, list )
+    {
+        if ( optee_shm_buf_tmp->cookie == cookie )
+        {
+            spin_unlock(&ctx->lock);
+            gdprintk(XENLOG_WARNING, "Guest tries to use the same SHM buffer cookie %lx\n",
+                     cookie);
+            err_code = -EINVAL;
+            goto err;
+        }
+    }
+
+    list_add_tail(&optee_shm_buf->list, &ctx->optee_shm_buf_list);
+    spin_unlock(&ctx->lock);
+
+    return optee_shm_buf;
+
+err:
+    xfree(optee_shm_buf);
+    atomic_sub(pages_cnt, &ctx->optee_shm_buf_pages);
+
+    return ERR_PTR(err_code);
+}
+
+static void free_pg_list(struct optee_shm_buf *optee_shm_buf)
+{
+    if ( optee_shm_buf->pg_list )
+    {
+        free_domheap_pages(optee_shm_buf->pg_list,
+                           optee_shm_buf->pg_list_order);
+        optee_shm_buf->pg_list = NULL;
+    }
+}
+
+static void free_optee_shm_buf(struct optee_domain *ctx, uint64_t cookie)
+{
+    struct optee_shm_buf *optee_shm_buf;
+    bool found = false;
+
+    spin_lock(&ctx->lock);
+    list_for_each_entry( optee_shm_buf, &ctx->optee_shm_buf_list, list )
+    {
+        if ( optee_shm_buf->cookie == cookie )
+        {
+            found = true;
+            list_del(&optee_shm_buf->list);
+            break;
+        }
+    }
+    spin_unlock(&ctx->lock);
+
+    if ( !found )
+        return;
+
+    for ( int i = 0; i < optee_shm_buf->page_cnt; i++ )
+        if ( optee_shm_buf->pages[i] )
+            put_page(optee_shm_buf->pages[i]);
+
+    free_pg_list(optee_shm_buf);
+
+    atomic_sub(optee_shm_buf->page_cnt, &ctx->optee_shm_buf_pages);
+
+    xfree(optee_shm_buf);
+}
+
+static void free_optee_shm_buf_pg_list(struct optee_domain *ctx,
+                                       uint64_t cookie)
+{
+    struct optee_shm_buf *optee_shm_buf;
+    bool found = false;
+
+    spin_lock(&ctx->lock);
+    list_for_each_entry( optee_shm_buf, &ctx->optee_shm_buf_list, list )
+    {
+        if ( optee_shm_buf->cookie == cookie )
+        {
+            found = true;
+            break;
+        }
+    }
+    spin_unlock(&ctx->lock);
+
+    if ( found )
+        free_pg_list(optee_shm_buf);
+    else
+        gdprintk(XENLOG_ERR, "Can't find pagelist for SHM buffer with cookie %lx to free it\n",
+                 cookie);
+}
+
 static int optee_relinquish_resources(struct domain *d)
 {
     struct optee_std_call *call, *call_tmp;
     struct shm_rpc *shm_rpc, *shm_rpc_tmp;
+    struct optee_shm_buf *optee_shm_buf, *optee_shm_buf_tmp;
     struct optee_domain *ctx = d->arch.tee;
 
     if ( !ctx )
@@ -380,6 +551,13 @@ static int optee_relinquish_resources(struct domain *d)
 
     list_for_each_entry_safe( shm_rpc, shm_rpc_tmp, &ctx->shm_rpc_list, list )
         free_shm_rpc(ctx, shm_rpc->cookie);
+
+    if ( hypercall_preempt_check() )
+        return -ERESTART;
+
+    list_for_each_entry_safe( optee_shm_buf, optee_shm_buf_tmp,
+                              &ctx->optee_shm_buf_list, list )
+        free_optee_shm_buf(ctx, optee_shm_buf->cookie);
 
     return 0;
 }
@@ -406,9 +584,184 @@ static void optee_domain_destroy(struct domain *d)
 
     ASSERT(!spin_is_locked(&ctx->lock));
     ASSERT(!atomic_read(&ctx->call_count));
+    ASSERT(!atomic_read(&ctx->optee_shm_buf_pages));
     ASSERT(list_empty(&ctx->shm_rpc_list));
 
     XFREE(d->arch.tee);
+}
+
+#define PAGELIST_ENTRIES_PER_PAGE                       \
+    ((OPTEE_MSG_NONCONTIG_PAGE_SIZE / sizeof(u64)) - 1)
+
+static size_t get_pages_list_size(size_t num_entries)
+{
+    int pages = DIV_ROUND_UP(num_entries, PAGELIST_ENTRIES_PER_PAGE);
+
+    return pages * OPTEE_MSG_NONCONTIG_PAGE_SIZE;
+}
+
+static int translate_noncontig(struct optee_domain *ctx,
+                               struct optee_std_call *call,
+                               struct optee_msg_param *param)
+{
+    uint64_t size;
+    unsigned int page_offset;
+    unsigned int num_pages;
+    unsigned int order;
+    unsigned int entries_on_page = 0;
+    gfn_t gfn;
+    p2m_type_t p2m;
+    struct page_info *guest_page, *xen_pages;
+    struct optee_shm_buf *optee_shm_buf;
+    /*
+     * This is memory layout for page list. Basically list consists of 4k pages,
+     * every page store 511 page addresses of user buffer and page address of
+     * the next page of list.
+     *
+     * Refer to OPTEE_MSG_ATTR_NONCONTIG description in optee_msg.h for details.
+     */
+    struct {
+        uint64_t pages_list[PAGELIST_ENTRIES_PER_PAGE];
+        uint64_t next_page_data;
+    } *pages_data_guest, *pages_data_xen;
+
+    /* Offset of user buffer withing page */
+    page_offset = param->u.tmem.buf_ptr & (OPTEE_MSG_NONCONTIG_PAGE_SIZE - 1);
+
+    /* Size of the user buffer in bytes */
+    size = ROUNDUP(param->u.tmem.size + page_offset,
+                   OPTEE_MSG_NONCONTIG_PAGE_SIZE);
+
+    num_pages = DIV_ROUND_UP(size, OPTEE_MSG_NONCONTIG_PAGE_SIZE);
+
+    order = get_order_from_bytes(get_pages_list_size(num_pages));
+
+    xen_pages = alloc_domheap_pages(current->domain, order, 0);
+    if ( !xen_pages )
+        return -ENOMEM;
+
+    optee_shm_buf = allocate_optee_shm_buf(ctx, param->u.tmem.shm_ref,
+                                           num_pages, xen_pages, order);
+    if ( IS_ERR(optee_shm_buf) )
+        return PTR_ERR(optee_shm_buf);
+
+    gfn = gaddr_to_gfn(param->u.tmem.buf_ptr &
+                       ~(OPTEE_MSG_NONCONTIG_PAGE_SIZE - 1));
+
+    guest_page = get_page_from_gfn(current->domain, gfn_x(gfn), &p2m, P2M_ALLOC);
+    if ( !guest_page || p2m != p2m_ram_rw )
+        return -EINVAL;
+
+    pages_data_guest = __map_domain_page(guest_page);
+    pages_data_xen = __map_domain_page(xen_pages);
+
+    while ( num_pages )
+    {
+        struct page_info *page;
+        page = get_page_from_gfn(current->domain,
+                  paddr_to_pfn(pages_data_guest->pages_list[entries_on_page]),
+                  &p2m, P2M_ALLOC);
+
+        if ( !page || p2m != p2m_ram_rw )
+            goto err_unmap;
+
+        optee_shm_buf->pages[optee_shm_buf->page_cnt++] = page;
+        pages_data_xen->pages_list[entries_on_page] = page_to_maddr(page);
+        entries_on_page++;
+
+        if ( entries_on_page == PAGELIST_ENTRIES_PER_PAGE )
+        {
+            pages_data_xen->next_page_data = page_to_maddr(xen_pages + 1);
+            unmap_domain_page(pages_data_xen);
+            xen_pages++;
+
+            gfn = gaddr_to_gfn(pages_data_guest->next_page_data);
+
+            unmap_domain_page(pages_data_guest);
+            put_page(guest_page);
+
+            guest_page = get_page_from_gfn(current->domain, gfn_x(gfn), &p2m,
+                                           P2M_ALLOC);
+            if ( !guest_page || p2m != p2m_ram_rw )
+                return -EINVAL;
+
+            pages_data_guest = __map_domain_page(guest_page);
+            pages_data_xen = __map_domain_page(xen_pages);
+            /* Roll over to the next page */
+            entries_on_page = 0;
+        }
+        num_pages--;
+    }
+
+    unmap_domain_page(pages_data_guest);
+    unmap_domain_page(pages_data_xen);
+    put_page(guest_page);
+
+    param->u.tmem.buf_ptr = page_to_maddr(optee_shm_buf->pg_list) |
+                            page_offset;
+
+    return 0;
+
+err_unmap:
+    unmap_domain_page(pages_data_guest);
+    unmap_domain_page(pages_data_xen);
+    put_page(guest_page);
+    free_optee_shm_buf(ctx, optee_shm_buf->cookie);
+
+    return -EINVAL;
+}
+
+static int translate_params(struct optee_domain *ctx,
+                            struct optee_std_call *call)
+{
+    unsigned int i;
+    uint32_t attr;
+    int ret = 0;
+
+    for ( i = 0; i < call->xen_arg->num_params; i++ )
+    {
+        attr = call->xen_arg->params[i].attr;
+
+        switch ( attr & OPTEE_MSG_ATTR_TYPE_MASK )
+        {
+        case OPTEE_MSG_ATTR_TYPE_TMEM_INPUT:
+        case OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT:
+        case OPTEE_MSG_ATTR_TYPE_TMEM_INOUT:
+            if ( attr & OPTEE_MSG_ATTR_NONCONTIG )
+            {
+                ret = translate_noncontig(ctx, call, call->xen_arg->params + i);
+                if ( ret )
+                    goto out;
+            }
+            else
+            {
+                gdprintk(XENLOG_WARNING, "Guest tries to use old tmem arg\n");
+                ret = -EINVAL;
+                goto out;
+            }
+            break;
+        case OPTEE_MSG_ATTR_TYPE_NONE:
+        case OPTEE_MSG_ATTR_TYPE_VALUE_INPUT:
+        case OPTEE_MSG_ATTR_TYPE_VALUE_OUTPUT:
+        case OPTEE_MSG_ATTR_TYPE_VALUE_INOUT:
+        case OPTEE_MSG_ATTR_TYPE_RMEM_INPUT:
+        case OPTEE_MSG_ATTR_TYPE_RMEM_OUTPUT:
+        case OPTEE_MSG_ATTR_TYPE_RMEM_INOUT:
+            continue;
+        }
+    }
+
+out:
+    if ( ret )
+    {
+        call->xen_arg->ret_origin = TEEC_ORIGIN_COMMS;
+        if ( ret == -ENOMEM )
+            call->xen_arg->ret = TEEC_ERROR_OUT_OF_MEMORY;
+        else
+            call->xen_arg->ret = TEEC_ERROR_BAD_PARAMETERS;
+    }
+
+    return ret;
 }
 
 /*
@@ -537,6 +890,27 @@ static void copy_std_request_back(struct optee_domain *ctx,
     put_page(page);
 }
 
+
+static void free_shm_buffers(struct optee_domain *ctx,
+                             struct optee_msg_arg *arg)
+{
+    unsigned int i;
+
+    for ( i = 0; i < arg->num_params; i ++ )
+    {
+        switch ( arg->params[i].attr & OPTEE_MSG_ATTR_TYPE_MASK )
+        {
+        case OPTEE_MSG_ATTR_TYPE_TMEM_INPUT:
+        case OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT:
+        case OPTEE_MSG_ATTR_TYPE_TMEM_INOUT:
+            free_optee_shm_buf(ctx, arg->params[i].u.tmem.shm_ref);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
 /* Handle RPC return from OP-TEE */
 static void handle_rpc_return(struct cpu_user_regs *regs,
                               struct optee_std_call *call)
@@ -556,6 +930,8 @@ static void handle_rpc_return(struct cpu_user_regs *regs,
  * If this is RPC - we need to store call context and return back to guest.
  * If call is complete - we need to return results with copy_std_request_back()
  * and then we will destroy the call context as it is not needed anymore.
+ *
+ * Shared buffers should be handled in a special way.
  */
 static void execute_std_call(struct optee_domain *ctx,
                              struct cpu_user_regs *regs,
@@ -575,6 +951,23 @@ static void execute_std_call(struct optee_domain *ctx,
     }
 
     copy_std_request_back(ctx, regs, call);
+
+    switch ( call->xen_arg->cmd )
+    {
+    case OPTEE_MSG_CMD_REGISTER_SHM:
+        if ( call->xen_arg->ret == 0 )
+            free_optee_shm_buf_pg_list(ctx,
+                                   call->xen_arg->params[0].u.tmem.shm_ref);
+        else
+            free_optee_shm_buf(ctx, call->xen_arg->params[0].u.tmem.shm_ref);
+        break;
+    case OPTEE_MSG_CMD_UNREGISTER_SHM:
+        if ( call->xen_arg->ret == 0 )
+            free_optee_shm_buf(ctx, call->xen_arg->params[0].u.rmem.shm_ref);
+        break;
+    default:
+        free_shm_buffers(ctx, call->xen_arg);
+    }
 
     put_std_call(ctx, call);
     free_std_call(ctx, call);
@@ -606,6 +999,17 @@ static void handle_std_call(struct optee_domain *ctx,
     case OPTEE_MSG_CMD_CANCEL:
     case OPTEE_MSG_CMD_REGISTER_SHM:
     case OPTEE_MSG_CMD_UNREGISTER_SHM:
+        if( translate_params(ctx, call) )
+        {
+            /*
+             * translate_params() sets xen_arg->ret value to non-zero.
+             * So, technically, SMC was successful, but there was an error
+             * during handling standard call encapsulated into this SMC.
+             */
+            copy_std_request_back(ctx, regs, call);
+            set_return(regs, OPTEE_SMC_RETURN_OK);
+            goto err;
+        }
         execute_std_call(ctx, regs, call);
         return;
     default:
