@@ -32,11 +32,17 @@ const unsigned int nr_irqs = NR_IRQS;
 static unsigned int local_irqs_type[NR_LOCAL_IRQS];
 static DEFINE_SPINLOCK(local_irqs_type_lock);
 
+const int gsx_irq_num = 151;
+
+/* Total context count is 8, but the 8th context is always used by host */
+#define GSX_GUESTS_CNT    7
+
 /* Describe an IRQ assigned to a guest */
 struct irq_guest
 {
     struct domain *d;
     unsigned int virq;
+    struct domain *gsx_guests[GSX_GUESTS_CNT];
 };
 
 static void ack_none(struct irq_desc *irq)
@@ -203,6 +209,76 @@ int request_irq(unsigned int irq, unsigned int irqflags,
     return retval;
 }
 
+void remove_gsx_guest(struct domain *d)
+{
+    struct irq_desc *desc = irq_to_desc(gsx_irq_num);
+    struct irq_guest *info;
+    unsigned long flags;
+    int i;
+
+    if ( !desc->action )
+        return;
+
+    spin_lock_irqsave(&desc->lock, flags);
+
+    info = irq_get_guest_info(desc);
+
+    /* clear a slot occupied by gsx guest */
+    for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
+    {
+        if ( !info->gsx_guests[i] )
+            continue;
+
+        if ( info->gsx_guests[i] == d )
+        {
+            info->gsx_guests[i] = NULL;
+            printk("Removed GSX guest domain %u\n", d->domain_id);
+            break;
+        }
+    }
+
+    spin_unlock_irqrestore(&desc->lock, flags);
+}
+
+/* called with desc->lock held */
+static void add_gsx_guest(struct domain *d, struct irq_guest *info)
+{
+    int i;
+
+    /* find an empty slot to put gsx guest in it */
+    for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
+    {
+        if ( info->gsx_guests[i] )
+           continue;
+
+        info->gsx_guests[i] = d;
+        printk("Added GSX guest domain %u\n", d->domain_id);
+        break;
+    }
+
+    BUG_ON(i == ARRAY_SIZE(info->gsx_guests));
+}
+
+/* called with desc->lock held */
+static void init_gsx_guests(struct domain *d, struct irq_guest *info)
+{
+    memset(info->gsx_guests, 0, sizeof(info->gsx_guests));
+}
+
+/* called with desc->lock held */
+static void inject_to_gsx_guests(struct irq_guest *info)
+{
+    int i;
+
+    /* inject irq to all gsx guests */
+    for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
+    {
+        if ( !info->gsx_guests[i] )
+            continue;
+        vgic_inject_irq(info->gsx_guests[i], NULL, info->virq, true);
+    }
+}
+
 /* Dispatch an interrupt */
 void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
 {
@@ -248,6 +324,9 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
          * guests.
          */
         vgic_inject_irq(info->d, NULL, info->virq, true);
+        if ( irq == gsx_irq_num )
+            inject_to_gsx_guests(info);
+
         goto out_no_end;
     }
 
@@ -490,12 +569,18 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
         if ( test_bit(_IRQ_GUEST, &desc->status) )
         {
             struct domain *ad = irq_get_domain(desc);
+            struct irq_guest *ainfo = irq_get_guest_info(desc);
 
             if ( d != ad )
             {
-                printk(XENLOG_G_ERR "IRQ %u is already used by domain %u\n",
-                       irq, ad->domain_id);
-                retval = -EBUSY;
+                if ( irq != gsx_irq_num )
+                {
+                    printk(XENLOG_G_ERR "IRQ %u is already used by domain %u\n",
+                           irq, ad->domain_id);
+                    retval = -EBUSY;
+                }
+                else
+                    add_gsx_guest(d, ainfo);
             }
             else if ( irq_get_guest_info(desc)->virq != virq )
             {
@@ -511,6 +596,11 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
             retval = -EBUSY;
         }
         goto out;
+    }
+    else
+    {
+        if ( irq == gsx_irq_num )
+            init_gsx_guests(d, info);
     }
 
     retval = __setup_irq(desc, 0, action);
