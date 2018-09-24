@@ -182,6 +182,8 @@ int request_irq(unsigned int irq, unsigned int irqflags,
     return retval;
 }
 
+#define GSX_IRQ_NUM    151
+
 /* Dispatch an interrupt */
 void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
 {
@@ -223,7 +225,25 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
          * The irq cannot be a PPI, we only support delivery of SPIs to
          * guests.
 	 */
-        vgic_vcpu_inject_spi(info->d, info->virq);
+        if ( irq != GSX_IRQ_NUM )
+            vgic_vcpu_inject_spi(info->d, info->virq);
+        else
+        {
+            struct domain *d;
+
+            vgic_vcpu_inject_irq(info->d->vcpu[0], GSX_IRQ_NUM);
+
+            for_each_domain ( d )
+            {
+                if ( d->domain_id < 2 )
+                    continue;
+
+                if ( likely(d->vcpu != NULL) && likely(d->vcpu[0] != NULL) )
+                    vgic_vcpu_inject_irq(d->vcpu[0], GSX_IRQ_NUM);
+                break;
+            }
+        }
+
         goto out_no_end;
     }
 
@@ -482,9 +502,12 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
 
             if ( d != ad )
             {
-                printk(XENLOG_G_ERR "IRQ %u is already used by domain %u\n",
-                       irq, ad->domain_id);
-                retval = -EBUSY;
+                if ( irq != GSX_IRQ_NUM )
+                {
+                    printk(XENLOG_G_ERR "IRQ %u is already used by domain %u\n",
+                           irq, ad->domain_id);
+                    retval = -EBUSY;
+                }
             }
             else if ( irq_get_guest_info(desc)->virq != virq )
             {
