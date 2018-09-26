@@ -26,6 +26,7 @@
 
 #include <asm/gic.h>
 #include <asm/vgic.h>
+#include <asm/io.h>
 
 static unsigned int local_irqs_type[NR_LOCAL_IRQS];
 static DEFINE_SPINLOCK(local_irqs_type_lock);
@@ -182,6 +183,17 @@ int request_irq(unsigned int irq, unsigned int irqflags,
     return retval;
 }
 
+#define GSX_IRQ_NUM                151
+#define GSX_REG_BASE               0xfd000000
+#define GSX_REG_SIZE               0x00002000
+#define GSX_IRQ_CNTS_REQ           0x00001238
+#define GSX_IRQ_CNTS_SHIFT         12
+#define GSX_GUEST_IRQ_CNT_SHIFT    14
+
+static void __iomem *gsx_reg_base = NULL;
+
+static u16 guest_irq_cnt;
+
 /* Dispatch an interrupt */
 void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
 {
@@ -223,7 +235,39 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
          * The irq cannot be a PPI, we only support delivery of SPIs to
          * guests.
 	 */
-        vgic_vcpu_inject_spi(info->d, info->virq);
+        if ( irq != GSX_IRQ_NUM )
+            vgic_vcpu_inject_spi(info->d, info->virq);
+        else
+        {
+            struct domain *d;
+            u32 irq_cnts;
+
+            if ( !gsx_reg_base )
+            {
+                gsx_reg_base = ioremap_nocache(GSX_REG_BASE, GSX_REG_SIZE);
+                if ( !gsx_reg_base )
+                    printk("failed to map GSX MMIO range\n");
+            }
+
+            irq_cnts = readq_relaxed(gsx_reg_base + GSX_IRQ_CNTS_REQ) >> GSX_IRQ_CNTS_SHIFT;
+
+            vgic_vcpu_inject_irq(info->d->vcpu[0], GSX_IRQ_NUM);
+
+            if ( guest_irq_cnt != (irq_cnts >> GSX_GUEST_IRQ_CNT_SHIFT) )
+            {
+                for_each_domain ( d )
+                {
+                    if ( d->domain_id < 2 )
+                        continue;
+
+                    if ( likely(d->vcpu != NULL) && likely(d->vcpu[0] != NULL) )
+                        vgic_vcpu_inject_irq(d->vcpu[0], GSX_IRQ_NUM);
+                    break;
+                }
+                guest_irq_cnt = irq_cnts >> GSX_GUEST_IRQ_CNT_SHIFT;
+            }
+        }
+
         goto out_no_end;
     }
 
@@ -482,9 +526,12 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
 
             if ( d != ad )
             {
-                printk(XENLOG_G_ERR "IRQ %u is already used by domain %u\n",
-                       irq, ad->domain_id);
-                retval = -EBUSY;
+                if ( irq != GSX_IRQ_NUM )
+                {
+                    printk(XENLOG_G_ERR "IRQ %u is already used by domain %u\n",
+                           irq, ad->domain_id);
+                    retval = -EBUSY;
+                }
             }
             else if ( irq_get_guest_info(desc)->virq != virq )
             {
