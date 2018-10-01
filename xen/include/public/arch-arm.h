@@ -454,6 +454,7 @@ typedef uint64_t xen_callback_t;
 #define GUEST_EVTCHN_PPI        31
 
 #define GUEST_VPL011_SPI        32
+#define GUEST_COORD_SUSPEND_SPI 33
 
 /* PSCI functions */
 #define PSCI_cpu_suspend 0
