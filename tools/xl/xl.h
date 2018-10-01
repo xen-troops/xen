@@ -132,6 +132,7 @@ int main_save(int argc, char **argv);
 int main_migrate(int argc, char **argv);
 #endif
 int main_dump_core(int argc, char **argv);
+int main_suspend(int argc, char **argv);
 int main_pause(int argc, char **argv);
 int main_unpause(int argc, char **argv);
 int main_destroy(int argc, char **argv);

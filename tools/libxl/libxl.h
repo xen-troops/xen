@@ -1568,6 +1568,7 @@ int libxl_domain_rename(libxl_ctx *ctx, uint32_t domid,
    * transactionally that the domain has the old old name; if
    * trans is not 0 we use caller's transaction and caller must do retries */
 
+int libxl_domain_suspend_trigger(libxl_ctx *ctx, uint32_t domid);
 int libxl_domain_pause(libxl_ctx *ctx, uint32_t domid);
 int libxl_domain_unpause(libxl_ctx *ctx, uint32_t domid);
 

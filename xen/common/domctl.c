@@ -27,6 +27,7 @@
 #include <xen/vm_event.h>
 #include <xen/monitor.h>
 #include <asm/current.h>
+#include <asm/coord_suspend.h>
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/p2m.h>
@@ -475,6 +476,11 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         free_vcpu_guest_context(c.nat);
         break;
     }
+
+    case XEN_DOMCTL_suspenddomain:
+        if (d != current->domain && !d->is_shut_down)
+            coord_suspend_trigger(d);
+        break;
 
     case XEN_DOMCTL_pausedomain:
         ret = -EINVAL;

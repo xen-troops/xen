@@ -674,6 +674,11 @@ static inline void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
 
 void arch_vcpu_regs_init(struct vcpu *v);
 
+static inline void coord_suspend_trigger(struct domain *d)
+{
+    /* Intentional stub for compilation purposes; implemented in ARM */
+}
+
 struct vcpu_hvm_context;
 int arch_set_info_hvm_guest(struct vcpu *v, const struct vcpu_hvm_context *ctx);
 
