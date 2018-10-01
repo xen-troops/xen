@@ -126,6 +126,11 @@ struct cmd_spec cmd_table[] = {
       "Suspend a domain by triggering coord_susp IRQ",
       "<Domain>",
     },
+    { "wakeup",
+      &main_wakeup, 0, 1,
+      "Wakeup a suspended domain"
+      "<Domain>",
+    },
     { "pause",
       &main_pause, 0, 1,
       "Pause execution of a domain",

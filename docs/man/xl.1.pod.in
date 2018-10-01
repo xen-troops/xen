@@ -818,6 +818,12 @@ Pass the VNC password to vncviewer via stdin.
 
 =back
 
+=item B<wakeup> I<domain-id>
+
+Wakeup a domain that has been suspended to memory. A Linux
+guest with no devices set as wake sources may return from a
+suspended state with this command.
+
 =back
 
 =head1 XEN HOST SUBCOMMANDS
