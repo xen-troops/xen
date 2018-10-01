@@ -482,6 +482,15 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             coord_suspend_trigger(d);
         break;
 
+    case XEN_DOMCTL_wakeupdomain:
+        if ( d->is_shut_down && (d->shutdown_code == SHUTDOWN_suspend) ) {
+            vcpu_unblock(d->vcpu[0]);
+            ret = 0;
+        }
+        else
+            ret = -EINVAL;
+        break;
+
     case XEN_DOMCTL_pausedomain:
         ret = -EINVAL;
         if ( d != current->domain )

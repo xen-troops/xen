@@ -562,6 +562,11 @@ int libxl_domain_suspend_trigger(libxl_ctx *ctx, uint32_t domid)
     return xc_domain_suspend(ctx->xch, domid);
 }
 
+int libxl_domain_wakeup(libxl_ctx *ctx, uint32_t domid)
+{
+    return xc_domain_wakeup(ctx->xch, domid);
+}
+
 int libxl_domain_pause(libxl_ctx *ctx, uint32_t domid)
 {
     int ret;
