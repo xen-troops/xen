@@ -711,6 +711,13 @@ in response to this event.
 
 =back
 
+=item B<suspend> I<domain-id>
+
+Suspend a domain. A domain suspended in this way will trigger a
+virtual interrupt, causing supported Linux guests to initiate a suspend
+to memory. Note that guests must have CONFIG_XEN_COORD_SUSPEND enabled
+to properly use this command.
+
 =item B<sysrq> I<domain-id> I<letter>
 
 Send a <Magic System Request> to the domain, each type of request is

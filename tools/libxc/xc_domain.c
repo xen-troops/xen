@@ -66,6 +66,15 @@ int xc_domain_cacheflush(xc_interface *xch, uint32_t domid,
 #endif
 }
 
+int xc_domain_suspend(xc_interface *xch,
+                      uint32_t domid)
+{
+    DECLARE_DOMCTL;
+    domctl.cmd = XEN_DOMCTL_suspenddomain;
+    domctl.domain = domid;
+    return do_domctl(xch, &domctl);
+}
+
 int xc_domain_pause(xc_interface *xch,
                     uint32_t domid)
 {

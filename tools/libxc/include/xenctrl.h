@@ -544,6 +544,17 @@ int xc_domain_max_vcpus(xc_interface *xch,
                         unsigned int max);
 
 /**
+ * This function initiates the suspend of a domain. It triggers an
+ * interrupt that causes the domain to initiate a suspend to RAM.
+ *
+ * @parm xch a handle to an open hypervisor interface
+ * @parm domid the domain id to suspend
+ * @return 0 on success, -1 on failure.
+ */
+int xc_domain_suspend(xc_interface *xch,
+                      uint32_t domid);
+
+/**
  * This function pauses a domain. A paused domain still exists in memory
  * however it does not receive any timeslices from the hypervisor.
  *
