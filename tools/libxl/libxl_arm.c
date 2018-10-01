@@ -40,6 +40,12 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         vuart_enabled = true;
     }
 
+    /*
+     * Increment nr_spis to take into account coord_suspend IRQ, always enabled.
+     * We use the first unused interrupt, i.e. 33.
+     */
+    nr_spis += 1;
+
     for (i = 0; i < d_config->b_info.num_irqs; i++) {
         uint32_t irq = d_config->b_info.irqs[i];
         uint32_t spi;
@@ -628,6 +634,26 @@ static int make_vpl011_uart_node(libxl__gc *gc, void *fdt,
     return 0;
 }
 
+static int make_coord_susp_node(libxl__gc *gc, void *fdt)
+{
+    int res;
+    gic_interrupt intr;
+
+    res = fdt_begin_node(fdt, "coord_suspend");
+    if (res) return res;
+
+    res = fdt_property_compat(gc, fdt, 1, "xen,coord-suspend");
+    if (res) return res;
+
+    set_interrupt(intr, GUEST_COORD_SUSPEND_SPI, 0xf, DT_IRQ_TYPE_LEVEL_HIGH);
+
+    res = fdt_property_interrupts(gc, fdt, &intr, 1);
+    if (res) return res;
+
+    res = fdt_end_node(fdt);
+    return res;
+}
+
 static const struct arch_info *get_arch_info(libxl__gc *gc,
                                              const struct xc_dom_image *dom)
 {
@@ -903,6 +929,7 @@ next_resize:
         FDT( make_chosen_node(gc, fdt, !!dom->modules[0].blob, state, info) );
         FDT( make_cpus_node(gc, fdt, info->max_vcpus, ainfo) );
         FDT( make_psci_node(gc, fdt) );
+        FDT( make_coord_susp_node(gc, fdt) );
 
         FDT( make_memory_nodes(gc, fdt, dom) );
 
