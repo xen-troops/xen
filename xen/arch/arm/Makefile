@@ -8,6 +8,7 @@ endif
 
 obj-$(CONFIG_HAS_ALTERNATIVE) += alternative.o
 obj-y += bootfdt.init.o
+obj-y += coord_suspend.o
 obj-y += cpuerrata.o
 obj-y += cpufeature.o
 obj-y += decode.o
