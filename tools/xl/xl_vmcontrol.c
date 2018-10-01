@@ -32,6 +32,11 @@
 
 static int fd_lock = -1;
 
+static void suspend_domain(uint32_t domid)
+{
+    libxl_domain_suspend_trigger(ctx, domid);
+}
+
 static void pause_domain(uint32_t domid)
 {
     libxl_domain_pause(ctx, domid);
@@ -54,6 +59,19 @@ static void destroy_domain(uint32_t domid, int force)
     }
     rc = libxl_domain_destroy(ctx, domid, 0);
     if (rc) { fprintf(stderr,"destroy failed (rc=%d)\n",rc); exit(EXIT_FAILURE); }
+}
+
+int main_suspend(int argc, char **argv)
+{
+    int opt;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "suspend", 1) {
+        /* No options */
+    }
+
+    suspend_domain(find_domain(argv[optind]));
+
+    return EXIT_SUCCESS;
 }
 
 int main_pause(int argc, char **argv)
