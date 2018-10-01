@@ -37,6 +37,11 @@ static void suspend_domain(uint32_t domid)
     libxl_domain_suspend_trigger(ctx, domid);
 }
 
+static int wakeup_domain(uint32_t domid)
+{
+    return libxl_domain_wakeup(ctx, domid);
+}
+
 static void pause_domain(uint32_t domid)
 {
     libxl_domain_pause(ctx, domid);
@@ -70,6 +75,24 @@ int main_suspend(int argc, char **argv)
     }
 
     suspend_domain(find_domain(argv[optind]));
+
+    return EXIT_SUCCESS;
+}
+
+int main_wakeup(int argc, char **argv)
+{
+    int opt, rc;
+
+    SWITCH_FOREACH_OPT(opt, "", NULL, "wakeup", 1) {
+        /* No options */
+    }
+
+    rc = wakeup_domain(find_domain(argv[optind]));
+
+    if (rc) {
+        fprintf(stderr, "Domain must be suspended to be woken. Wake failed.\n");
+        return EXIT_FAILURE;
+    }
 
     return EXIT_SUCCESS;
 }

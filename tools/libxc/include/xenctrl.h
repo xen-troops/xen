@@ -554,6 +554,9 @@ int xc_domain_max_vcpus(xc_interface *xch,
 int xc_domain_suspend(xc_interface *xch,
                       uint32_t domid);
 
+int xc_domain_wakeup(xc_interface *xch,
+                     uint32_t domid);
+
 /**
  * This function pauses a domain. A paused domain still exists in memory
  * however it does not receive any timeslices from the hypervisor.

@@ -75,6 +75,15 @@ int xc_domain_suspend(xc_interface *xch,
     return do_domctl(xch, &domctl);
 }
 
+int xc_domain_wakeup(xc_interface *xch,
+                     uint32_t domid)
+{
+    DECLARE_DOMCTL;
+    domctl.cmd = XEN_DOMCTL_wakeupdomain;
+    domctl.domain = domid;
+    return do_domctl(xch, &domctl);
+}
+
 int xc_domain_pause(xc_interface *xch,
                     uint32_t domid)
 {
