@@ -314,6 +314,38 @@ out_no_end:
     irq_exit();
 }
 
+void do_ppi(struct cpu_user_regs *regs, unsigned int irq)
+{
+    struct irq_desc *desc = irq_to_desc(irq);
+    struct irqaction *action;
+
+    irq_enter();
+
+    desc->handler->ack(desc);
+
+    if ( unlikely(!desc->action) )
+    {
+        printk("Unknown %s %#3.3x\n",
+               "IRQ", irq);
+        goto out;
+    }
+
+    if ( test_bit(_IRQ_DISABLED, &desc->status) )
+        goto out;
+
+    action = desc->action;
+
+    do
+    {
+        action->handler(irq, action->dev_id, regs);
+        action = action->next;
+    } while ( action );
+
+out:
+    desc->handler->end(desc);
+    irq_exit();
+}
+
 void release_irq(unsigned int irq, const void *dev_id)
 {
     struct irq_desc *desc;
