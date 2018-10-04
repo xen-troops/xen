@@ -259,16 +259,15 @@ bool vgic_migrate_irq(struct vcpu *old, struct vcpu *new, unsigned int irq)
     ASSERT(!is_lpi(irq));
 #endif
 
-    spin_lock_irqsave(&old->arch.vgic.lock, flags);
-
     p = irq_to_pending(old, irq);
 
     /* nothing to do for virtual interrupts */
     if ( p->desc == NULL )
     {
-        spin_unlock_irqrestore(&old->arch.vgic.lock, flags);
         return true;
     }
+
+    spin_lock_irqsave(&old->arch.vgic.lock, flags);
 
     /* migration already in progress, no need to do anything */
     if ( test_bit(GIC_IRQ_GUEST_MIGRATING, &p->status) )
@@ -427,7 +426,7 @@ void vgic_enable_irqs(struct vcpu *v, uint32_t r, int n)
         }
 out:
         if ( !list_empty(&p->inflight) && !test_bit(GIC_IRQ_GUEST_VISIBLE, &p->status) )
-            gic_raise_guest_irq(v_target, irq, p->priority);
+            gic_raise_guest_irq(v_target, p);
         spin_unlock_irqrestore(&v_target->arch.vgic.lock, flags);
         if ( p->desc != NULL )
         {
@@ -549,24 +548,22 @@ void vgic_vcpu_inject_irq(struct vcpu *v, unsigned int virq)
     unsigned long flags;
     bool running;
 
-    spin_lock_irqsave(&v->arch.vgic.lock, flags);
+    /* vcpu offline */
+    if ( unlikely(test_bit(_VPF_down, &v->pause_flags)) )
+    {
+        return;
+    }
 
     n = irq_to_pending(v, virq);
+
+    spin_lock_irqsave(&v->arch.vgic.lock, flags);
 #ifdef CONFIG_HAS_GICV3
     /* If an LPI has been removed, there is nothing to inject here. */
     if ( unlikely(!n) )
     {
-        spin_unlock_irqrestore(&v->arch.vgic.lock, flags);
         return;
     }
 #endif
-
-    /* vcpu offline */
-    if ( test_bit(_VPF_down, &v->pause_flags) )
-    {
-        spin_unlock_irqrestore(&v->arch.vgic.lock, flags);
-        return;
-    }
 
     set_bit(GIC_IRQ_GUEST_QUEUED, &n->status);
 
@@ -578,14 +575,14 @@ void vgic_vcpu_inject_irq(struct vcpu *v, unsigned int virq)
 
     if ( !list_empty(&n->inflight) )
     {
-        gic_raise_inflight_irq(v, virq);
+        gic_raise_inflight_irq(v, n);
         goto out;
     }
 
     priority = vgic_get_virq_priority(v, virq);
     n->priority = priority;
 
-    gic_raise_guest_irq(v, virq, priority);
+    gic_raise_guest_irq(v, n);
 
     list_for_each_entry ( iter, &v->arch.vgic.inflight_irqs, inflight )
     {
