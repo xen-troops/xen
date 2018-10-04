@@ -148,7 +148,9 @@ int gic_route_irq_to_guest(struct domain *d, unsigned int virq,
     /* Caller has already checked that the IRQ is an SPI */
     ASSERT(virq >= 32);
     ASSERT(virq < vgic_num_irqs(d));
+#ifdef CONFIG_HAS_GICV3
     ASSERT(!is_lpi(virq));
+#endif
 
     vgic_lock_rank(v_target, rank, flags);
 
@@ -185,7 +187,9 @@ int gic_remove_irq_from_guest(struct domain *d, unsigned int virq,
     ASSERT(spin_is_locked(&desc->lock));
     ASSERT(test_bit(_IRQ_GUEST, &desc->status));
     ASSERT(p->desc == desc);
+#ifdef CONFIG_HAS_GICV3
     ASSERT(!is_lpi(virq));
+#endif
 
     vgic_lock_rank(v_target, rank, flags);
 
@@ -375,7 +379,9 @@ static inline void gic_set_lr(int lr, struct pending_irq *p,
 {
     ASSERT(!local_irq_is_enabled());
 
+#ifdef CONFIG_HAS_GICV3
     clear_bit(GIC_IRQ_GUEST_PRISTINE_LPI, &p->status);
+#endif
 
     gic_hw_ops->update_lr(lr, p, state);
 
@@ -424,10 +430,11 @@ void gic_raise_inflight_irq(struct vcpu *v, unsigned int virtual_irq)
 {
     struct pending_irq *n = irq_to_pending(v, virtual_irq);
 
+#ifdef CONFIG_HAS_GICV3
     /* If an LPI has been removed meanwhile, there is nothing left to raise. */
     if ( unlikely(!n) )
         return;
-
+#endif
     ASSERT(spin_is_locked(&v->arch.vgic.lock));
 
     /* Don't try to update the LR if the interrupt is disabled */
@@ -459,13 +466,14 @@ static unsigned int gic_find_unused_lr(struct vcpu *v,
 {
     unsigned int nr_lrs = gic_hw_ops->info->nr_lrs;
     unsigned long *lr_mask = (unsigned long *) &this_cpu(lr_mask);
-    struct gic_lr lr_val;
 
     ASSERT(spin_is_locked(&v->arch.vgic.lock));
 
+#ifdef CONFIG_HAS_GICV3
     if ( unlikely(test_bit(GIC_IRQ_GUEST_PRISTINE_LPI, &p->status)) )
     {
         unsigned int used_lr;
+        struct gic_lr lr_val;
 
         for_each_set_bit(used_lr, lr_mask, nr_lrs)
         {
@@ -474,6 +482,7 @@ static unsigned int gic_find_unused_lr(struct vcpu *v,
                 return used_lr;
         }
     }
+#endif
 
     lr = find_next_zero_bit(lr_mask, nr_lrs, lr);
 
@@ -489,9 +498,11 @@ void gic_raise_guest_irq(struct vcpu *v, unsigned int virtual_irq,
 
     ASSERT(spin_is_locked(&v->arch.vgic.lock));
 
+#ifdef CONFIG_HAS_GICV3
     if ( unlikely(!p) )
         /* An unmapped LPI does not need to be raised. */
         return;
+#endif
 
     if ( v == current && list_empty(&v->arch.vgic.lr_pending) )
     {
@@ -519,6 +530,8 @@ static void gic_update_one_lr(struct vcpu *v, int i)
     gic_hw_ops->read_lr(i, &lr_val);
     irq = lr_val.virq;
     p = irq_to_pending(v, irq);
+
+#ifdef CONFIG_HAS_GICV3
     /*
      * An LPI might have been unmapped, in which case we just clean up here.
      * If that LPI is marked as PRISTINE, the information in the LR is bogus,
@@ -535,6 +548,7 @@ static void gic_update_one_lr(struct vcpu *v, int i)
 
         return;
     }
+#endif
 
     if ( lr_val.state & GICH_LR_ACTIVE )
     {
@@ -779,13 +793,15 @@ void gic_interrupt(struct cpu_user_regs *regs, int is_fiq)
             do_IRQ(regs, irq, is_fiq);
             local_irq_disable();
         }
+#ifdef CONFIG_HAS_GICV3
         else if ( is_lpi(irq) )
         {
             local_irq_enable();
             gic_hw_ops->do_LPI(irq);
             local_irq_disable();
         }
-        else if ( unlikely(irq < 16) )
+#endif
+        else if ( irq < 16 )
         {
             do_sgi(regs, irq);
         }

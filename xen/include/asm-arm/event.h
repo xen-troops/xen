@@ -19,8 +19,10 @@ static inline int local_events_need_delivery_nomask(void)
     struct pending_irq *p = irq_to_pending(current,
                                            current->domain->arch.evtchn_irq);
 
+#ifdef CONFIG_HAS_GICV3
     /* Does not work for LPIs. */
     ASSERT(!is_lpi(current->domain->arch.evtchn_irq));
+#endif
 
     /* XXX: if the first interrupt has already been delivered, we should
      * check whether any other interrupts with priority higher than the

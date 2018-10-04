@@ -44,10 +44,12 @@ struct irq_desc *__irq_to_desc(int irq);
 
 void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq);
 
+#ifdef CONFIG_HAS_GICV3
 static inline bool is_lpi(unsigned int irq)
 {
     return irq >= LPI_OFFSET;
 }
+#endif
 
 #define domain_pirq_to_irq(d, pirq) (pirq)
 

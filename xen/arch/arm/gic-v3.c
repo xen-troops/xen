@@ -46,6 +46,8 @@
 #include <asm/cpufeature.h>
 #include <asm/acpi.h>
 
+#error "The current gic/vgic/domain code does not support GICv3"
+
 /* Global state */
 static struct {
     void __iomem *map_dbase;  /* Mapped address of distributor registers */
