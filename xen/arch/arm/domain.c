@@ -183,9 +183,6 @@ static void ctxt_switch_to(struct vcpu *n)
     WRITE_SYSREG32(n->domain->arch.vpidr, VPIDR_EL2);
     WRITE_SYSREG(n->arch.vmpidr, VMPIDR_EL2);
 
-    /* VGIC */
-    gic_restore_state(n);
-
     /* VFP */
     vfp_restore_state(n);
 
@@ -259,11 +256,6 @@ static void ctxt_switch_to(struct vcpu *n)
     WRITE_SYSREG(n->arch.csselr, CSSELR_EL1);
 
     isb();
-
-    /* This is could trigger an hardware interrupt from the virtual
-     * timer. The interrupt needs to be injected into the guest. */
-    WRITE_SYSREG32(n->arch.cntkctl, CNTKCTL_EL1);
-    virt_timer_restore(n);
 }
 
 /* Update per-VCPU guest runstate shared memory area (if registered). */
@@ -298,8 +290,17 @@ static void update_runstate_area(struct vcpu *v)
 static void schedule_tail(struct vcpu *prev)
 {
     ctxt_switch_from(prev);
-
-    ctxt_switch_to(current);
+    if ( !(is_idle_vcpu(prev) && (prev->prev == current)) )
+        ctxt_switch_to(current);
+    /* VGIC */
+    if ( !is_idle_vcpu(current) )
+    {
+        gic_restore_state(current);
+        WRITE_SYSREG32(current->arch.cntkctl, CNTKCTL_EL1);
+        virt_timer_restore(current);
+    }
+    else
+        current->prev = prev;
 
     local_irq_enable();
 
