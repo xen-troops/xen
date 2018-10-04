@@ -46,6 +46,7 @@
 #include <asm/vgic.h>
 #include <asm/vgic-emul.h>
 
+#error "The current gic/vgic/domain code does not support GICv3"
 /*
  * Data structure to describe a virtual ITS.
  * If both the vcmd_lock and the its_lock are required, the vcmd_lock must

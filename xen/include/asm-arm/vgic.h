@@ -60,27 +60,32 @@ struct pending_irq
      * GIC_IRQ_GUEST_MIGRATING: the irq is being migrated to a different
      * vcpu while it is still inflight and on an GICH_LR register on the
      * old vcpu.
-     *
-     * GIC_IRQ_GUEST_PRISTINE_LPI: the IRQ is a newly mapped LPI, which
-     * has never been in an LR before. This means that any trace of an
-     * LPI with the same number in an LR must be from an older LPI, which
-     * has been unmapped before.
-     *
      */
 #define GIC_IRQ_GUEST_QUEUED   0
 #define GIC_IRQ_GUEST_ACTIVE   1
 #define GIC_IRQ_GUEST_VISIBLE  2
 #define GIC_IRQ_GUEST_ENABLED  3
 #define GIC_IRQ_GUEST_MIGRATING   4
+#ifdef CONFIG_HAS_GICV3
+    /*
+     * GIC_IRQ_GUEST_PRISTINE_LPI: the IRQ is a newly mapped LPI, which
+     * has never been in an LR before. This means that any trace of an
+     * LPI with the same number in an LR must be from an older LPI, which
+     * has been unmapped before.
+     * Valid for GICV3 only.
+     */
 #define GIC_IRQ_GUEST_PRISTINE_LPI  5
+#endif
     unsigned long status;
     struct irq_desc *desc; /* only set it the irq corresponds to a physical irq */
     unsigned int irq;
 #define GIC_INVALID_LR         (uint8_t)~0
     uint8_t lr;
     uint8_t priority;
+#ifdef CONFIG_HAS_GICV3
     uint8_t lpi_priority;       /* Caches the priority if this is an LPI. */
     uint8_t lpi_vcpu_id;        /* The VCPU for an LPI. */
+#endif
     /* inflight is used to append instances of pending_irq to
      * vgic.inflight_irqs */
     struct list_head inflight;
