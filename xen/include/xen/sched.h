@@ -265,6 +265,7 @@ struct vcpu
     struct evtchn_fifo_vcpu *evtchn_fifo;
 
     struct arch_vcpu arch;
+    struct vcpu *prev;
 };
 
 /* Per-domain lock can be recursively acquired in fault handlers. */
