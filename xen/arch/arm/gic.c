@@ -853,10 +853,10 @@ void init_maintenance_interrupt(void)
 static void __iomem *gsx_reg_base = NULL;
 
 static u16 guest_irq_cnt, host_irq_cnt;
+struct vcpu *guest_vcpu0 = NULL, *host_vcpu0 = NULL;
 
 static void gsx_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
 {
-    struct domain *d;
     uint32_t irq_cnts, irq_status;
 
     irq_status = readl_relaxed(gsx_reg_base + GSX_IRQ_STATUS_REG);
@@ -867,21 +867,15 @@ static void gsx_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
 
     if ( host_irq_cnt != (irq_cnts & GSX_HOST_IRQ_CNT_MASK) )
     {
-        d = get_domain_by_id(1);
-        vgic_vcpu_inject_irq(d->vcpu[0], irq);
+        if ( host_vcpu0 )
+            vgic_vcpu_inject_irq(host_vcpu0, irq);
         host_irq_cnt = irq_cnts & GSX_HOST_IRQ_CNT_MASK;
     }
 
     if ( guest_irq_cnt != (irq_cnts >> GSX_GUEST_IRQ_CNT_SHIFT) )
     {
-        for_each_domain ( d )
-        {
-            if ( d->domain_id < 2 )
-                continue;
-
-            vgic_vcpu_inject_irq(d->vcpu[0], irq);
-            break;
-        }
+        if ( guest_vcpu0 )
+            vgic_vcpu_inject_irq(guest_vcpu0, irq);
         guest_irq_cnt = irq_cnts >> GSX_GUEST_IRQ_CNT_SHIFT;
     }
 }
