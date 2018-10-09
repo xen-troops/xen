@@ -43,7 +43,7 @@ ALL_OBJS-$(CONFIG_CRYPTO)   += $(BASEDIR)/crypto/built_in.o
 ifeq ($(CONFIG_DEBUG),y)
 CFLAGS += -O1
 else
-CFLAGS += -O2 -fomit-frame-pointer
+CFLAGS += -O3 -fomit-frame-pointer
 endif
 
 CFLAGS += -nostdinc -fno-builtin -fno-common
