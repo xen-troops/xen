@@ -27,7 +27,6 @@
 #include <xen/list.h>
 #include <xen/device_tree.h>
 #include <xen/acpi.h>
-#include <xen/vmap.h>
 #include <asm/p2m.h>
 #include <asm/domain.h>
 #include <asm/platform.h>
@@ -836,73 +835,6 @@ void init_maintenance_interrupt(void)
 {
     request_irq(gic_hw_ops->info->maintenance_irq, 0, maintenance_interrupt,
                 "irq-maintenance", NULL);
-}
-
-#define GSX_IRQ_NUM                151
-#define GSX_REG_BASE               0xfd000000
-#define GSX_REG_SIZE               0x00002000
-#define GSX_IRQ_CNTS_REG           0x00001238
-#define GSX_IRQ_CNTS_SHIFT         12
-#define GSX_GUEST_IRQ_CNT_SHIFT    14
-#define GSX_HOST_IRQ_CNT_MASK      0x3fff
-#define GSX_IRQ_STATUS_REG         0x00000ac8
-#define GSX_IRQ_STATUS_EVENT_MASK  0x00000004
-#define GSX_IRQ_CLEAR_REG          0x00000ac8
-#define GSX_IRQ_CLEAR_MASK         0xfffffffb
-
-static void __iomem *gsx_reg_base = NULL;
-
-static u16 guest_irq_cnt, host_irq_cnt;
-
-static void gsx_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
-{
-    struct domain *d;
-    uint32_t irq_cnts, irq_status;
-
-    irq_status = readl_relaxed(gsx_reg_base + GSX_IRQ_STATUS_REG);
-    irq_cnts = readq_relaxed(gsx_reg_base + GSX_IRQ_CNTS_REG) >> GSX_IRQ_CNTS_SHIFT;
-
-    if ( irq_status & GSX_IRQ_STATUS_EVENT_MASK )
-        writel_relaxed(GSX_IRQ_CLEAR_MASK, gsx_reg_base + GSX_IRQ_CLEAR_REG);
-
-    if ( host_irq_cnt != (irq_cnts & GSX_HOST_IRQ_CNT_MASK) )
-    {
-        d = get_domain_by_id(1);
-        vgic_vcpu_inject_irq(d->vcpu[0], irq);
-        host_irq_cnt = irq_cnts & GSX_HOST_IRQ_CNT_MASK;
-    }
-
-    if ( guest_irq_cnt != (irq_cnts >> GSX_GUEST_IRQ_CNT_SHIFT) )
-    {
-        for_each_domain ( d )
-        {
-            if ( d->domain_id < 2 )
-                continue;
-
-            vgic_vcpu_inject_irq(d->vcpu[0], irq);
-            break;
-        }
-        guest_irq_cnt = irq_cnts >> GSX_GUEST_IRQ_CNT_SHIFT;
-    }
-}
-
-void init_gsx_interrupt(void)
-{
-    int ret;
-
-    gsx_reg_base = ioremap_nocache(GSX_REG_BASE, GSX_REG_SIZE);
-    if ( !gsx_reg_base )
-    {
-        printk("failed to map GSX MMIO range\n");
-        return;
-    }
-
-    ret = request_irq(GSX_IRQ_NUM, 0, gsx_interrupt, "gsx irq", NULL);
-    if ( ret )
-    {
-        iounmap(gsx_reg_base);
-        printk("failed to request GSX IRQ\n");
-    }
 }
 
 int gic_make_hwdom_dt_node(const struct domain *d,
