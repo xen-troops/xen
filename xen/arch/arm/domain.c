@@ -514,6 +514,8 @@ void free_vcpu_struct(struct vcpu *v)
     free_xenheap_page(v);
 }
 
+extern struct vcpu *guest_vcpu0, *host_vcpu0;
+
 int vcpu_initialise(struct vcpu *v)
 {
     int rc = 0;
@@ -552,6 +554,14 @@ int vcpu_initialise(struct vcpu *v)
     if ( (rc = vcpu_vtimer_init(v)) != 0 )
         goto fail;
 
+    if ( v->vcpu_id == 0 )
+    {
+        if ( v->domain->domain_id == 1 )
+            host_vcpu0 = v;
+        else if ( v->domain->domain_id > 1 )
+            guest_vcpu0 = v;
+    }
+
     return rc;
 
 fail:
@@ -561,6 +571,14 @@ fail:
 
 void vcpu_destroy(struct vcpu *v)
 {
+    if ( v->vcpu_id == 0 )
+    {
+        if ( v->domain->domain_id == 1 )
+            host_vcpu0 = NULL;
+        else if ( v->domain->domain_id > 1 )
+            guest_vcpu0 = NULL;
+    }
+
     vcpu_timer_destroy(v);
     vcpu_vgic_free(v);
     free_xenheap_pages(v->arch.stack, STACK_ORDER);

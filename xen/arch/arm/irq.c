@@ -184,6 +184,8 @@ int request_irq(unsigned int irq, unsigned int irqflags,
 
 #define GSX_IRQ_NUM    151
 
+struct vcpu *guest_vcpu0 = NULL, *host_vcpu0 = NULL;
+
 /* Dispatch an interrupt */
 void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
 {
@@ -229,19 +231,11 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
             vgic_vcpu_inject_spi(info->d, info->virq);
         else
         {
-            struct domain *d;
+            if ( host_vcpu0 )
+                vgic_vcpu_inject_irq(host_vcpu0, GSX_IRQ_NUM);
 
-            vgic_vcpu_inject_irq(info->d->vcpu[0], GSX_IRQ_NUM);
-
-            for_each_domain ( d )
-            {
-                if ( d->domain_id < 2 )
-                    continue;
-
-                if ( likely(d->vcpu != NULL) && likely(d->vcpu[0] != NULL) )
-                    vgic_vcpu_inject_irq(d->vcpu[0], GSX_IRQ_NUM);
-                break;
-            }
+            if ( guest_vcpu0 )
+                vgic_vcpu_inject_irq(guest_vcpu0, GSX_IRQ_NUM);
         }
 
         goto out_no_end;
