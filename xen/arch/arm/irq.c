@@ -185,6 +185,14 @@ int request_irq(unsigned int irq, unsigned int irqflags,
 #define GSX_IRQ_NUM    151
 
 struct vcpu *guest_vcpu0 = NULL, *host_vcpu0 = NULL;
+static s_time_t gsx_irq_time = 0;
+bool vcpu0_wfi_trap = true;
+
+void update_wfi_trap(void *data)
+{
+    if ( !is_idle_vcpu(current) )
+        WRITE_SYSREG(current->arch.hcr_el2, HCR_EL2);
+}
 
 /* Dispatch an interrupt */
 void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
@@ -223,6 +231,19 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
 
         set_bit(_IRQ_INPROGRESS, &desc->status);
 
+        if ( host_vcpu0 )
+        {
+            if ( vcpu0_wfi_trap == false && (NOW() - gsx_irq_time > MILLISECS(10)) )
+            {
+                vcpu0_wfi_trap = true;
+                host_vcpu0->arch.hcr_el2 |= (HCR_TWI | HCR_TWE);
+                if ( smp_processor_id() == host_vcpu0->processor )
+                    update_wfi_trap(NULL);
+                else if ( host_vcpu0->is_running )
+                    on_selected_cpus(cpumask_of(host_vcpu0->processor), update_wfi_trap, NULL, 0);
+            }
+        }
+
         /*
          * The irq cannot be a PPI, we only support delivery of SPIs to
          * guests.
@@ -232,7 +253,20 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
         else
         {
             if ( host_vcpu0 )
+            {
+                if ( vcpu0_wfi_trap == true && (NOW() - gsx_irq_time < MICROSECS(500)) )
+                {
+                    vcpu0_wfi_trap = false;
+                    host_vcpu0->arch.hcr_el2 &= ~(HCR_TWI | HCR_TWE);
+                    if ( smp_processor_id() == host_vcpu0->processor )
+                        update_wfi_trap(NULL);
+                    else if ( host_vcpu0->is_running )
+                        on_selected_cpus(cpumask_of(host_vcpu0->processor), update_wfi_trap, NULL, 0);
+                }
+                gsx_irq_time = NOW();
+
                 vgic_vcpu_inject_irq(host_vcpu0, GSX_IRQ_NUM);
+            }
 
             if ( guest_vcpu0 )
                 vgic_vcpu_inject_irq(guest_vcpu0, GSX_IRQ_NUM);
