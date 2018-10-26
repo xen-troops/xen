@@ -32,6 +32,22 @@
 #include <asm/gic.h>
 #include <asm/vgic.h>
 
+#undef set_bit
+#define set_bit(nr, addr) (*(addr) |= (1<<nr))
+
+#undef clear_bit
+#define clear_bit(nr, addr) (*(addr) &= ~(1<<nr))
+
+#undef test_bit
+#define test_bit(nr,addr) (*(addr) & (1<<nr))
+
+#undef test_and_clear_bit
+#define test_and_clear_bit(nr,addr) ({                    \
+    bool _x = (*(addr) & (1<<nr));                        \
+    (*(addr) &= ~(1<<nr));                                \
+    return (_x);                                                 \
+})
+
 static inline struct vgic_irq_rank *vgic_get_rank(struct vcpu *v, int rank)
 {
     if ( rank == 0 )
