@@ -36,6 +36,22 @@
 #include <asm/vgic.h>
 #include <asm/acpi.h>
 
+#undef set_bit
+#define set_bit(nr, addr) (*(addr) |= (1<<nr))
+
+#undef clear_bit
+#define clear_bit(nr, addr) (*(addr) &= ~(1<<nr))
+
+#undef test_bit
+#define test_bit(nr,addr) (*(addr) & (1<<nr))
+
+#undef test_and_clear_bit
+#define test_and_clear_bit(nr,addr) ({                    \
+    bool _x; \
+    _x = (*(addr) & (1<<nr));                        \
+    (*(addr) &= ~(1<<nr));                                \
+    (_x);})
+
 static DEFINE_PER_CPU(uint64_t, lr_mask);
 
 #define lr_all_full() (this_cpu(lr_mask) == ((1 << gic_hw_ops->info->nr_lrs) - 1))
