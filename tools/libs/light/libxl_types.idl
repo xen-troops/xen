@@ -941,6 +941,24 @@ libxl_device_vgsx = Struct("device_vgsx", [
     ("osid", uint32)
     ])
 
+libxl_vcamera_format = Struct("vcamera_format", [
+    ("fourcc", string),
+    ("width", uint32),
+    ("height", uint32),
+    ("frame_rates", string)
+    ])
+
+libxl_device_vcamera = Struct("device_vcamera", [
+    ("backend_domid", libxl_domid),
+    ("backend_domname", string),
+    ("devid", libxl_devid),
+    ("be_alloc", bool),
+    ("unique_id", string),
+    ("controls", string),
+    ("max_buffers", uint32),
+    ("formats", Array(libxl_vcamera_format, "num_vcamera_formats"))
+    ])
+
 libxl_domain_config = Struct("domain_config", [
     ("c_info", libxl_domain_create_info),
     ("b_info", libxl_domain_build_info),
@@ -958,6 +976,7 @@ libxl_domain_config = Struct("domain_config", [
     ("vdispls", Array(libxl_device_vdispl, "num_vdispls")),
     ("vsnds", Array(libxl_device_vsnd, "num_vsnds")),
     ("vgsxs", Array(libxl_device_vgsx, "num_vgsxs")),
+    ("vcameras", Array(libxl_device_vcamera, "num_vcameras")),
     # a channel manifests as a console with a name,
     # see docs/misc/channels.txt
     ("channels", Array(libxl_device_channel, "num_channels")),
@@ -1108,6 +1127,19 @@ libxl_vkbinfo = Struct("vkbinfo", [
     ("state", integer),
     ("evtch", integer),
     ("rref", integer)
+    ], dir=DIR_OUT)
+
+libxl_vcamerainfo = Struct("vcamerainfo", [
+    ("backend", string),
+    ("backend_id", uint32),
+    ("frontend", string),
+    ("frontend_id", uint32),
+    ("devid", libxl_devid),
+    ("state", integer),
+    ("req_evtch", integer),
+    ("req_rref", integer),
+    ("evt_evtch", integer),
+    ("evt_rref", integer)
     ], dir=DIR_OUT)
 
 # NUMA node characteristics: size and free are how much memory it has, and how
