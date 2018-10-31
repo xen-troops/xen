@@ -21,6 +21,7 @@
 #include <xen/hvm/params.h>
 #include <xen/io/sndif.h>
 #include <xen/io/kbdif.h>
+#include <xen/io/cameraif.h>
 
 #include <libxl.h>
 #include <libxl_utils.h>
@@ -1267,6 +1268,249 @@ out:
     if (rc) exit(EXIT_FAILURE);
 }
 
+static char *vcamera_replace_list_separator(char *string)
+{
+    char *p = string;
+
+    /*
+     * Replace ';' with list separator which is a single char, but
+     * protocol defines it as a string.
+     */
+    while (*p) {
+        if (*p == ';')
+            *p = XENCAMERA_LIST_SEPARATOR[0];
+        p++;
+    }
+
+    return string;
+}
+
+static int parse_vcamera_format(libxl_vcamera_format *format,
+                                char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("format", token, oparg)) {
+        char *p;
+        size_t len;
+
+        /*
+         * Must be 4 octets long or + strlen(XENCAMERA_FOURCC_BIGENDIAN_STR)
+         * if this is a bigendian value.
+         */
+        len = strlen(oparg);
+        if ((len != sizeof(uint32_t)) &&
+            (len != sizeof(uint32_t) + strlen(XENCAMERA_FOURCC_BIGENDIAN_STR)))
+            return -1;
+
+        p = oparg;
+        while (*p) {
+            *p = toupper(*p);
+            p++;
+        }
+
+        if (len != sizeof(uint32_t)) {
+            /*
+             * This is a big-endian value, must end with
+             * XENCAMERA_FOURCC_BIGENDIAN_STR then.
+             */
+            if (strcmp(&oparg[sizeof(uint32_t)],
+                       XENCAMERA_FOURCC_BIGENDIAN_STR))
+                return -1;
+        }
+        format->fourcc = strdup(oparg);
+    } else if (MATCH_OPTION("resolution", token, oparg)) {
+        int rc, used;
+
+        rc = sscanf(oparg, "%u" XENCAMERA_RESOLUTION_SEPARATOR "%u%n",
+                   &format->width, &format->height, &used);
+
+        if (rc < 2 || oparg[used] != '\0') {
+            fprintf(stderr, "Can't parse resolution\n");
+            return -1;
+        }
+    } else if (MATCH_OPTION(XENCAMERA_FIELD_FRAME_RATES, token, oparg)) {
+        /*
+         * Check that the frame rates are valid integer numerator
+         * and denominator.
+         */
+        char *p, *buf;
+
+        buf = strdup(oparg);
+        p = strtok(buf, ";");
+        while (p)
+        {
+            uint32_t num, denom;
+            int rc, used;
+
+            while (*p == ' ') p++;
+
+            rc = sscanf(p, "%u" XENCAMERA_FRACTION_SEPARATOR "%u%n",
+                        &num, &denom, &used);
+
+            if (rc < 2 || p[used] != '\0') {
+                fprintf(stderr, "Cant parse frame rate: %s\n", p);
+                free(buf);
+                return -1;
+            }
+
+            p = strtok(NULL, ";");
+        }
+
+        free(buf);
+        format->frame_rates = vcamera_replace_list_separator(strdup(oparg));
+    } else {
+        fprintf(stderr,
+                "Unknown string \"%s\" in " XENCAMERA_DRIVER_NAME " spec\n",
+                token);
+        return -1;
+    }
+
+    return 0;
+}
+
+static int parse_vcamera_device(libxl_device_vcamera *vcamera,
+                                char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("backend", token, oparg)) {
+        vcamera->backend_domname = strdup(oparg);
+    } else if (MATCH_OPTION(XENCAMERA_FIELD_BE_ALLOC, token, oparg)) {
+        vcamera->be_alloc = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENCAMERA_FIELD_UNIQUE_ID, token, oparg)) {
+        vcamera->unique_id = strdup(oparg);
+    } else if (MATCH_OPTION(XENCAMERA_FIELD_CONTROLS, token, oparg)) {
+        /* Check that controls are valid strings. */
+        char *p, *buf;
+
+        buf = strdup(oparg);
+        p = strtok(buf, ";");
+        while (p)
+        {
+            while (*p == ' ') p++;
+
+            if (strcasecmp(p, XENCAMERA_CTRL_BRIGHTNESS_STR) &&
+                strcasecmp(p, XENCAMERA_CTRL_CONTRAST_STR) &&
+                strcasecmp(p, XENCAMERA_CTRL_SATURATION_STR) &&
+                strcasecmp(p, XENCAMERA_CTRL_HUE_STR)) {
+                free(buf);
+                fprintf(stderr, "Unknown " XENCAMERA_DRIVER_NAME
+                        " control: %s\n", p);
+                return -1;
+            }
+
+            p = strtok(NULL, ";");
+        }
+
+        free(buf);
+        vcamera->controls = vcamera_replace_list_separator(strdup(oparg));
+        /* Make all controls lower case strings. */
+        p = vcamera->controls;
+        while (*p) {
+            *p = tolower(*p);
+            p++;
+        }
+    } else if (MATCH_OPTION(XENCAMERA_FIELD_MAX_BUFFERS, token, oparg)) {
+        vcamera->max_buffers = strtoul(oparg, NULL, 0);
+    } else {
+        fprintf(stderr,
+                "Unknown string \"%s\" in " XENCAMERA_DRIVER_NAME " spec\n",
+                token);
+        return -1;
+    }
+
+    return 0;
+}
+
+static int parse_vcamera_item(libxl_device_vcamera *vcamera, const char *item)
+{
+    libxl_vcamera_format *format = NULL;
+    char *buf = NULL, *p, *strtok_ptr = NULL;
+    int rc;
+
+    /* Formats must start from 'format' field. */
+    if (MATCH_OPTION("format", (char *)item, p)) {
+        format = ARRAY_EXTEND_INIT_NODEVID(vcamera->formats,
+                                           vcamera->num_vcamera_formats,
+                                           libxl_vcamera_format_init);
+    }
+
+    buf = strdup(item);
+    p = strtok_r(buf, ",", &strtok_ptr);
+    while (p)
+    {
+        while (*p == ' ') p++;
+
+        if (format)
+            rc = parse_vcamera_format(format, p);
+        else
+            rc = parse_vcamera_device(vcamera, p);
+        if (rc) goto out;
+
+        p = strtok_r(NULL, ",", &strtok_ptr);
+    }
+
+    rc = 0;
+
+out:
+    free(buf);
+    if (rc) exit(EXIT_FAILURE);
+
+    return 0;
+}
+
+static void parse_vcamera_device_config(const XLU_Config *config,
+                                        libxl_domain_config *d_config,
+                                        XLU_ConfigValue *value)
+{
+    int ret;
+    XLU_ConfigList *list;
+    libxl_device_vcamera *vcamera;
+    const char *item;
+    int item_idx = 0;
+
+    ret = xlu_cfg_value_get_list(config, value,  &list, 0);
+
+    if (ret) {
+        fprintf(stderr, "Failed to get " XENCAMERA_DRIVER_NAME " list: %s\n",
+                strerror(ret));
+        goto out;
+    }
+
+    vcamera = ARRAY_EXTEND_INIT(d_config->vcameras,
+                                d_config->num_vcameras,
+                                libxl_device_vcamera_init);
+
+    while ((item = xlu_cfg_get_listitem(list, item_idx++)) != NULL) {
+        ret = parse_vcamera_item(vcamera, item);
+        if (ret) goto out;
+    }
+
+    ret = 0;
+
+out:
+
+    if (ret) exit(EXIT_FAILURE);
+}
+
+static void parse_vcamera_list(const XLU_Config *config,
+                               libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vcameras;
+
+    if (!xlu_cfg_get_list(config, XENCAMERA_DRIVER_NAME, &vcameras, 0, 0)) {
+        XLU_ConfigValue *value;
+
+        d_config->num_vcameras = 0;
+        d_config->vcameras = NULL;
+
+        while ((value = xlu_cfg_get_listitem2(vcameras, d_config->num_vcameras))
+               != NULL) {
+            parse_vcamera_device_config(config, d_config, value);
+        }
+    }
+}
 
 void parse_config_data(const char *config_source,
                        const char *config_data,
@@ -2798,6 +3042,7 @@ skip_usbdev:
 
     parse_vkb_list(config, d_config);
     parse_vgsx_list(config, d_config);
+    parse_vcamera_list(config, d_config);
 
     xlu_cfg_get_defbool(config, "xend_suspend_evtchn_compat",
                         &c_info->xend_suspend_evtchn_compat, 0);

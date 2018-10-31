@@ -142,6 +142,7 @@ LIBXL_OBJS = flexarray.o libxl.o libxl_create.o libxl_dm.o libxl_pci.o \
 			libxl_cpupool.o libxl_mem.o libxl_sched.o libxl_tmem.o \
 			libxl_9pfs.o libxl_domain.o libxl_vdispl.o \
 			libxl_pvcalls.o libxl_vsnd.o libxl_vkb.o libxl_vgsx.o \
+			libxl_vcamera.o \
 			$(LIBXL_OBJS-y)
 
 LIBXL_OBJS += libxl_genid.o
