@@ -919,6 +919,13 @@ extern void dump_runq(unsigned char key);
 
 void arch_do_physinfo(struct xen_sysctl_physinfo *pi);
 
+struct gsx_domain
+{
+    struct vcpu *vcpu0;
+    s_time_t irq_time;
+    bool wfi_trap;
+};
+
 #endif /* __SCHED_H__ */
 
 /*

@@ -182,6 +182,8 @@ int request_irq(unsigned int irq, unsigned int irqflags,
     return retval;
 }
 
+extern void consider_setting_wfi_trap_all(void);
+
 /* Dispatch an interrupt */
 void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
 {
@@ -218,6 +220,8 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
         desc->handler->end(desc);
 
         set_bit(_IRQ_INPROGRESS, &desc->status);
+
+        consider_setting_wfi_trap_all();
 
         /*
          * The irq cannot be a PPI, we only support delivery of SPIs to

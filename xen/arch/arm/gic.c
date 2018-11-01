@@ -853,7 +853,49 @@ void init_maintenance_interrupt(void)
 static void __iomem *gsx_reg_base = NULL;
 
 static u16 guest_irq_cnt, host_irq_cnt;
-struct vcpu *guest_vcpu0 = NULL, *host_vcpu0 = NULL;
+
+struct gsx_domain gsx_host = { .vcpu0 = NULL, .irq_time = 0, .wfi_trap = true },
+                 gsx_guest = { .vcpu0 = NULL, .irq_time = 0, .wfi_trap = true };
+
+void update_wfi_trap(void *data)
+{
+    if ( !is_idle_vcpu(current) )
+        WRITE_SYSREG(current->arch.hcr_el2, HCR_EL2);
+}
+
+static inline void consider_setting_wfi_trap(struct gsx_domain *gsx_domain)
+{
+    if ( (gsx_domain->wfi_trap == false) && (NOW() - gsx_domain->irq_time > MILLISECS(10)) )
+    {
+        gsx_domain->wfi_trap = true;
+        gsx_domain->vcpu0->arch.hcr_el2 |= (HCR_TWI | HCR_TWE);
+        if ( smp_processor_id() == gsx_domain->vcpu0->processor )
+            update_wfi_trap(NULL);
+        else if ( gsx_domain->vcpu0->is_running )
+            on_selected_cpus(cpumask_of(gsx_domain->vcpu0->processor), update_wfi_trap, NULL, 0);
+    }
+}
+
+static inline void consider_clearing_wfi_trap(struct gsx_domain *gsx_domain)
+{
+    if ( (gsx_domain->wfi_trap == true) && (NOW() - gsx_domain->irq_time < MICROSECS(500)) )
+    {
+        gsx_domain->wfi_trap = false;
+        gsx_domain->vcpu0->arch.hcr_el2 &= ~(HCR_TWI | HCR_TWE);
+        if ( smp_processor_id() == gsx_domain->vcpu0->processor )
+            update_wfi_trap(NULL);
+        else if ( gsx_domain->vcpu0->is_running )
+            on_selected_cpus(cpumask_of(gsx_domain->vcpu0->processor), update_wfi_trap, NULL, 0);
+    }
+}
+
+void consider_setting_wfi_trap_all(void)
+{
+    if ( gsx_host.vcpu0 )
+        consider_setting_wfi_trap(&gsx_host);
+    if ( gsx_guest.vcpu0 )
+        consider_setting_wfi_trap(&gsx_guest);
+}
 
 static void gsx_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
 {
@@ -867,15 +909,23 @@ static void gsx_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
 
     if ( host_irq_cnt != (irq_cnts & GSX_HOST_IRQ_CNT_MASK) )
     {
-        if ( host_vcpu0 )
-            vgic_vcpu_inject_irq(host_vcpu0, irq);
+        if ( gsx_host.vcpu0 )
+        {
+            consider_clearing_wfi_trap(&gsx_host);
+            gsx_host.irq_time = NOW();
+            vgic_vcpu_inject_irq(gsx_host.vcpu0, irq);
+        }
         host_irq_cnt = irq_cnts & GSX_HOST_IRQ_CNT_MASK;
     }
 
     if ( guest_irq_cnt != (irq_cnts >> GSX_GUEST_IRQ_CNT_SHIFT) )
     {
-        if ( guest_vcpu0 )
-            vgic_vcpu_inject_irq(guest_vcpu0, irq);
+        if ( gsx_guest.vcpu0 )
+        {
+            consider_clearing_wfi_trap(&gsx_guest);
+            gsx_guest.irq_time = NOW();
+            vgic_vcpu_inject_irq(gsx_guest.vcpu0, irq);
+        }
         guest_irq_cnt = irq_cnts >> GSX_GUEST_IRQ_CNT_SHIFT;
     }
 }

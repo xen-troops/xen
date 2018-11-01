@@ -514,7 +514,7 @@ void free_vcpu_struct(struct vcpu *v)
     free_xenheap_page(v);
 }
 
-extern struct vcpu *guest_vcpu0, *host_vcpu0;
+extern struct gsx_domain gsx_host, gsx_guest;
 
 int vcpu_initialise(struct vcpu *v)
 {
@@ -557,9 +557,9 @@ int vcpu_initialise(struct vcpu *v)
     if ( v->vcpu_id == 0 )
     {
         if ( v->domain->domain_id == 1 )
-            host_vcpu0 = v;
+            gsx_host.vcpu0 = v;
         else if ( v->domain->domain_id > 1 )
-            guest_vcpu0 = v;
+            gsx_guest.vcpu0 = v;
     }
 
     return rc;
@@ -574,9 +574,9 @@ void vcpu_destroy(struct vcpu *v)
     if ( v->vcpu_id == 0 )
     {
         if ( v->domain->domain_id == 1 )
-            host_vcpu0 = NULL;
+            gsx_host.vcpu0 = NULL;
         else if ( v->domain->domain_id > 1 )
-            guest_vcpu0 = NULL;
+            gsx_guest.vcpu0 = NULL;
     }
 
     vcpu_timer_destroy(v);
