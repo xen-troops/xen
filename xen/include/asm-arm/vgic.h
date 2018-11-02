@@ -96,6 +96,7 @@ struct pending_irq
      * TODO: when implementing irq migration, taking only the current
      * vgic lock is not going to be enough. */
     struct list_head lr_queue;
+    uint64_t padding;
 };
 
 #define NR_INTERRUPT_PER_RANK   32

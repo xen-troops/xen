@@ -158,6 +158,15 @@ int domain_vgic_init(struct domain *d, unsigned int nr_spis)
 
     d->arch.vgic.pending_irqs =
         xzalloc_array(struct pending_irq, d->arch.vgic.nr_spis);
+
+    if ( sizeof(struct pending_irq) != cacheline_bytes )
+    {
+        printk ("sizeof(struct pending_irq) = %lu  is not equal to cacheline"
+                "size %lu. Is it expected?\n", sizeof(struct pending_irq),
+                cacheline_bytes);
+        WARN();
+    }
+
     if ( d->arch.vgic.pending_irqs == NULL )
         return -ENOMEM;
 
