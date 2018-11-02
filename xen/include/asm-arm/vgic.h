@@ -55,7 +55,8 @@ struct pending_irq
      * irq is enabled at the vgicd level:
      *
      * GIC_IRQ_GUEST_ENABLED: the guest IRQ is enabled at the VGICD
-     * level (GICD_ICENABLER/GICD_ISENABLER).
+     * level (GICD_ICENABLER/GICD_ISENABLER). Disabled guest IRQ do not appear
+     * in an inflight queue
      *
      * GIC_IRQ_GUEST_MIGRATING: the irq is being migrated to a different
      * vcpu while it is still inflight and on an GICH_LR register on the

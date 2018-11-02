@@ -357,6 +357,7 @@ void vgic_disable_irqs(struct vcpu *v, uint32_t r, int n)
         spin_lock_irqsave(&v_target->arch.vgic.lock, flags);
         p = irq_to_pending(v_target, irq);
         clear_bit(GIC_IRQ_GUEST_ENABLED, &p->status);
+        list_del_init(&p->inflight);
         gic_remove_from_lr_pending(v_target, p);
         desc = p->desc;
         spin_unlock_irqrestore(&v_target->arch.vgic.lock, flags);
@@ -408,6 +409,23 @@ void vgic_enable_irqs(struct vcpu *v, uint32_t r, int n)
         spin_lock_irqsave(&v_target->arch.vgic.lock, flags);
         p = irq_to_pending(v_target, irq);
         set_bit(GIC_IRQ_GUEST_ENABLED, &p->status);
+        if ( test_bit(GIC_IRQ_GUEST_VISIBLE, &p->status) ||
+             test_bit(GIC_IRQ_GUEST_QUEUED, &p->status) )
+        {
+            struct pending_irq *iter;
+            p->priority = vgic_get_virq_priority(v, irq);
+            list_for_each_entry( iter, &v_target->arch.vgic.inflight_irqs,
+                                 inflight )
+            {
+                if ( iter->priority > p->priority )
+                {
+                    list_add_tail(&p->inflight, &iter->inflight);
+                    goto out;
+                }
+            }
+            list_add_tail(&p->inflight, &v_target->arch.vgic.inflight_irqs);
+        }
+out:
         if ( !list_empty(&p->inflight) && !test_bit(GIC_IRQ_GUEST_VISIBLE, &p->status) )
             gic_raise_guest_irq(v_target, irq, p->priority);
         spin_unlock_irqrestore(&v_target->arch.vgic.lock, flags);
@@ -552,6 +570,12 @@ void vgic_vcpu_inject_irq(struct vcpu *v, unsigned int virq)
 
     set_bit(GIC_IRQ_GUEST_QUEUED, &n->status);
 
+    if ( !test_bit(GIC_IRQ_GUEST_ENABLED, &n->status) )
+    {/*Do not insert a disabled IRQ into any queue*/
+        spin_unlock_irqrestore(&v->arch.vgic.lock, flags);
+        return;
+    }
+
     if ( !list_empty(&n->inflight) )
     {
         gic_raise_inflight_irq(v, virq);
@@ -561,9 +585,7 @@ void vgic_vcpu_inject_irq(struct vcpu *v, unsigned int virq)
     priority = vgic_get_virq_priority(v, virq);
     n->priority = priority;
 
-    /* the irq is enabled */
-    if ( test_bit(GIC_IRQ_GUEST_ENABLED, &n->status) )
-        gic_raise_guest_irq(v, virq, priority);
+    gic_raise_guest_irq(v, virq, priority);
 
     list_for_each_entry ( iter, &v->arch.vgic.inflight_irqs, inflight )
     {
