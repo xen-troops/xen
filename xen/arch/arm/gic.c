@@ -433,10 +433,6 @@ void gic_raise_inflight_irq(struct vcpu *v, unsigned int virtual_irq)
 #endif
     ASSERT(spin_is_locked(&v->arch.vgic.lock));
 
-    /* Don't try to update the LR if the interrupt is disabled */
-    if ( !test_bit(GIC_IRQ_GUEST_ENABLED, &n->status) )
-        return;
-
     if ( list_empty(&n->lr_queue) )
     {
         if ( v == current )
@@ -703,32 +699,28 @@ int gic_events_need_delivery(void)
     const unsigned long apr = gic_hw_ops->read_apr(0);
     int mask_priority;
     int active_priority;
+    int effective_priority;
     int rc = 0;
 
     mask_priority = gic_hw_ops->read_vmcr_priority();
     active_priority = find_next_bit(&apr, 32, 0);
+    effective_priority = min(mask_priority, active_priority);
 
     spin_lock_irqsave(&v->arch.vgic.lock, flags);
 
     /* TODO: We order the guest irqs by priority, but we don't change
      * the priority of host irqs. */
 
-    /* find the first enabled non-active irq, the queue is already
-     * ordered by priority */
-    list_for_each_entry( p, &v->arch.vgic.inflight_irqs, inflight )
+    /* find the first non-active irq, the queue is already
+     * ordered by priority and has no disabled IRQs*/
+    if ( !list_empty(&v->arch.vgic.inflight_irqs) )
     {
-        if ( GIC_PRI_TO_GUEST(p->priority) >= mask_priority )
-            goto out;
-        if ( GIC_PRI_TO_GUEST(p->priority) >= active_priority )
-            goto out;
-        if ( test_bit(GIC_IRQ_GUEST_ENABLED, &p->status) )
-        {
+        p = container_of(v->arch.vgic.inflight_irqs.next, struct pending_irq,
+                          inflight);
+        if ( GIC_PRI_TO_GUEST(p->priority) < effective_priority )
             rc = 1;
-            goto out;
-        }
     }
 
-out:
     spin_unlock_irqrestore(&v->arch.vgic.lock, flags);
     return rc;
 }
