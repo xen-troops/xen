@@ -2097,7 +2097,7 @@ static void enter_hypervisor_head(struct cpu_user_regs *regs)
         if ( current->arch.hcr_el2 & HCR_VA )
             current->arch.hcr_el2 = READ_SYSREG(HCR_EL2);
 
-        gic_clear_lrs(current);
+        gic_clear_lrs();
     }
 }
 
