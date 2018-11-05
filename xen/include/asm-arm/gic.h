@@ -292,7 +292,7 @@ extern unsigned int gic_number_lines(void);
 /* IRQ translation function for the device tree */
 int gic_irq_xlate(const u32 *intspec, unsigned int intsize,
                   unsigned int *out_hwirq, unsigned int *out_type);
-void gic_clear_lrs(struct vcpu *v);
+void gic_clear_lrs(void);
 
 struct gic_info {
     /* GIC version */

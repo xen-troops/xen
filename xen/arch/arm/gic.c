@@ -595,17 +595,17 @@ static void gic_update_one_lr(struct vcpu *v, int i)
     }
 }
 
-void gic_clear_lrs(struct vcpu *v)
+void gic_clear_lrs(void)
 {
     int i = 0;
     unsigned long flags;
     unsigned int nr_lrs = gic_hw_ops->info->nr_lrs;
+    struct vcpu *v = current;
 
     /* The idle domain has no LRs to be cleared. Since gic_restore_state
      * doesn't write any LR registers for the idle domain they could be
      * non-zero. */
-    if ( is_idle_vcpu(v) )
-        return;
+    ASSERT(!is_idle_vcpu(v));
 
     gic_hw_ops->update_hcr_status(GICH_HCR_UIE, false);
 
