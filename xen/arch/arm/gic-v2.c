@@ -485,14 +485,17 @@ static void gicv2_write_lr(int lr, const struct gic_lr *lr_reg)
 
 static void gicv2_hcr_status(uint32_t flag, bool status)
 {
-    uint32_t hcr = readl_gich(GICH_HCR);
+    uint32_t hcr, ohcr;
+
+    ohcr = hcr = readl_gich(GICH_HCR);
 
     if ( status )
         hcr |= flag;
     else
         hcr &= (~flag);
 
-    writel_gich(hcr, GICH_HCR);
+    if ( hcr != ohcr )
+        writel_gich(hcr, GICH_HCR);
 }
 
 static unsigned int gicv2_read_vmcr_priority(void)
