@@ -25,6 +25,7 @@
 #include <xen/wait.h>
 #include <public/xen.h>
 #include <public/domctl.h>
+#include <public/sched.h>
 #include <public/sysctl.h>
 #include <public/vcpu.h>
 #include <public/vm_event.h>

@@ -97,6 +97,11 @@ static void ctxt_switch_from(struct vcpu *p)
     if ( is_idle_vcpu(p) )
         return;
 
+    /* VCPU's context should not be saved if its domain is suspended */
+    if ( p->domain->is_shut_down &&
+        (p->domain->shutdown_code == SHUTDOWN_suspend) )
+        return;
+
     p2m_save_state(p);
 
     /* CP 15 */
@@ -180,6 +185,14 @@ static void ctxt_switch_to(struct vcpu *n)
      */
     if ( is_idle_vcpu(n) )
         return;
+
+    /* If the domain was suspended, it is resuming now */
+    if ( n->domain->is_shut_down &&
+        (n->domain->shutdown_code == SHUTDOWN_suspend) )
+    {
+        n->domain->is_shut_down = 0;
+        n->domain->shutdown_code = SHUTDOWN_CODE_INVALID;
+    }
 
     vpidr = READ_SYSREG32(MIDR_EL1);
     WRITE_SYSREG32(vpidr, VPIDR_EL2);
