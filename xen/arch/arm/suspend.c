@@ -131,6 +131,8 @@ static long system_suspend(void *data)
         goto resume_nonboot_cpus;
     }
 
+    time_suspend();
+
     local_irq_save(flags);
     status = gic_suspend();
     if ( status )
@@ -145,6 +147,8 @@ static long system_suspend(void *data)
 
 resume_irqs:
     local_irq_restore(flags);
+
+    time_resume();
 
 resume_nonboot_cpus:
     rcu_barrier();
