@@ -97,6 +97,13 @@ static void ctxt_switch_from(struct vcpu *p)
     if ( is_idle_vcpu(p) )
         return;
 
+    /* VGIC */
+    gic_save_state(p);
+
+    /* Arch timer */
+    p->arch.cntkctl = READ_SYSREG32(CNTKCTL_EL1);
+    virt_timer_save(p);
+
     /* VCPU's context should not be saved if its domain is suspended */
     if ( p->domain->is_shut_down &&
         (p->domain->shutdown_code == SHUTDOWN_suspend) )
@@ -114,10 +121,6 @@ static void ctxt_switch_from(struct vcpu *p)
     p->arch.tpidr_el0 = READ_SYSREG(TPIDR_EL0);
     p->arch.tpidrro_el0 = READ_SYSREG(TPIDRRO_EL0);
     p->arch.tpidr_el1 = READ_SYSREG(TPIDR_EL1);
-
-    /* Arch timer */
-    p->arch.cntkctl = READ_SYSREG32(CNTKCTL_EL1);
-    virt_timer_save(p);
 
     if ( is_32bit_domain(p->domain) && cpu_has_thumbee )
     {
@@ -169,9 +172,6 @@ static void ctxt_switch_from(struct vcpu *p)
 
     /* VFP */
     vfp_save_state(p);
-
-    /* VGIC */
-    gic_save_state(p);
 
     isb();
 }
