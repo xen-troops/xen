@@ -1172,6 +1172,44 @@ void watchdog_domain_destroy(struct domain *d)
         kill_timer(&d->watchdog_timer[i]);
 }
 
+void watchdog_domain_suspend(struct domain *d)
+{
+    unsigned int i;
+
+    spin_lock(&d->watchdog_lock);
+
+    for ( i = 0; i < NR_DOMAIN_WATCHDOG_TIMERS; i++ )
+    {
+        if ( test_bit(i, &d->watchdog_inuse_map) )
+        {
+            struct timer *timer = &d->watchdog_timer[i];
+            timer->suspended = NOW();
+            stop_timer(timer);
+        }
+    }
+
+    spin_unlock(&d->watchdog_lock);
+}
+
+void watchdog_domain_resume(struct domain *d)
+{
+    unsigned int i;
+
+    spin_lock(&d->watchdog_lock);
+
+    for ( i = 0; i < NR_DOMAIN_WATCHDOG_TIMERS; i++ )
+    {
+        if ( test_bit(i, &d->watchdog_inuse_map) )
+        {
+            struct timer *timer = &d->watchdog_timer[i];
+            s_time_t sleep_interval = NOW() - timer->suspended;
+            set_timer(timer, timer->expires + sleep_interval);
+        }
+    }
+
+    spin_unlock(&d->watchdog_lock);
+}
+
 int vcpu_pin_override(struct vcpu *v, int cpu)
 {
     spinlock_t *lock;
