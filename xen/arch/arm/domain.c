@@ -822,6 +822,26 @@ static int is_guest_pv64_psr(uint32_t psr)
 #endif
 
 /*
+ * The actual VCPU initialization after all validations are passed.
+ */
+void _arch_set_info_guest(struct vcpu *v, struct vcpu_guest_context *ctxt)
+{
+    vcpu_regs_user_to_hyp(v, &ctxt->user_regs);
+
+    v->arch.sctlr = ctxt->sctlr;
+    v->arch.ttbr0 = ctxt->ttbr0;
+    v->arch.ttbr1 = ctxt->ttbr1;
+    v->arch.ttbcr = ctxt->ttbcr;
+
+    v->is_initialised = 1;
+
+    if ( ctxt->flags & VGCF_online )
+        clear_bit(_VPF_down, &v->pause_flags);
+    else
+        set_bit(_VPF_down, &v->pause_flags);
+}
+
+/*
  * Initialise VCPU state. The context can be supplied by either the
  * toolstack (XEN_DOMCTL_setvcpucontext) or the guest
  * (VCPUOP_initialise) and therefore must be properly validated.
@@ -859,19 +879,7 @@ int arch_set_info_guest(
     }
 #endif
 
-    vcpu_regs_user_to_hyp(v, regs);
-
-    v->arch.sctlr = ctxt->sctlr;
-    v->arch.ttbr0 = ctxt->ttbr0;
-    v->arch.ttbr1 = ctxt->ttbr1;
-    v->arch.ttbcr = ctxt->ttbcr;
-
-    v->is_initialised = 1;
-
-    if ( ctxt->flags & VGCF_online )
-        clear_bit(_VPF_down, &v->pause_flags);
-    else
-        set_bit(_VPF_down, &v->pause_flags);
+    _arch_set_info_guest(v, ctxt);
 
     return 0;
 }
