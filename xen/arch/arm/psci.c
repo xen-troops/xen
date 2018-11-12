@@ -25,6 +25,7 @@
 #include <asm/cpufeature.h>
 #include <asm/psci.h>
 #include <asm/acpi.h>
+#include <asm/suspend.h>
 
 /*
  * While a 64-bit OS can make calls with SMC32 calling conventions, for
@@ -66,6 +67,21 @@ void call_psci_cpu_off(void)
         panic("PSCI cpu off failed for CPU%d err=%d\n", smp_processor_id(),
               PSCI_RET(res));
     }
+}
+
+int call_psci_system_suspend(void)
+{
+#ifdef CONFIG_ARM_64
+    struct arm_smccc_res res;
+
+    /* 2nd argument (context ID) is not used */
+    arm_smccc_smc(PSCI_1_0_FN64_SYSTEM_SUSPEND, __pa(hyp_resume), &res);
+
+    return PSCI_RET(res);
+#else
+    /* not supported */
+    return 1;
+#endif
 }
 
 void call_psci_system_off(void)

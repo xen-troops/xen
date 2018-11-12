@@ -533,6 +533,9 @@ ENTRY(__context_switch)
         mov     sp, x9
         ret
 
+ENTRY(hyp_resume)
+        b .
+
 /*
  * Local variables:
  * mode: ASM
