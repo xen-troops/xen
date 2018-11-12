@@ -112,11 +112,20 @@ static void vcpu_suspend(register_t epoint, register_t cid)
     _arch_set_info_guest(v, &ctxt);
 }
 
+/* Xen suspend. Note: data is not used (suspend is the suspend to RAM) */
+static long system_suspend(void *data)
+{
+    BUG_ON(system_state != SYS_STATE_active);
+
+    return -ENOSYS;
+}
+
 int32_t domain_suspend(register_t epoint, register_t cid)
 {
     struct vcpu *v;
     struct domain *d = current->domain;
     bool is_thumb = epoint & 1;
+    int status;
 
     dprintk(XENLOG_DEBUG,
             "Dom%d suspend: epoint=0x%"PRIregister", cid=0x%"PRIregister"\n",
@@ -155,6 +164,31 @@ int32_t domain_suspend(register_t epoint, register_t cid)
      * but when scheduled in it will resume from the given entry point).
      */
     vcpu_block_unless_event_pending(current);
+
+    /* If this was dom0 the whole system should suspend: trigger Xen suspend */
+    if ( is_hardware_domain(d) )
+    {
+        /*
+         * system_suspend should be called when Dom0 finalizes the suspend
+         * procedure from its boot core (VCPU#0). However, Dom0's VCPU#0 could
+         * be mapped to any PCPU (this function could be executed by any PCPU).
+         * The suspend procedure has to be finalized by the PCPU#0 (non-boot
+         * PCPUs will be disabled during the suspend).
+         */
+        status = continue_hypercall_on_cpu(0, system_suspend, NULL);
+        /*
+         * If an error happened, there is nothing that needs to be done here
+         * because the system_suspend always returns in fully functional state
+         * no matter what the outcome of suspend procedure is. If the system
+         * suspended successfully the function will return 0 after the resume.
+         * Otherwise, if an error is returned it means Xen did not suspended,
+         * but it is still in the same state as if the system_suspend was never
+         * called. We dump a debug message in case of an error for debugging/
+         * logging purpose.
+         */
+        if ( status )
+            dprintk(XENLOG_ERR, "Failed to suspend, errno=%d\n", status);
+    }
 
     return PSCI_SUCCESS;
 }
