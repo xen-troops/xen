@@ -189,6 +189,9 @@ resume_nonboot_cpus:
     system_state = SYS_STATE_active;
     dsb(sy);
 
+    /* Wake-up hardware domain (should always resume after Xen) */
+    vcpu_unblock(hardware_domain->vcpu[0]);
+
     return status;
 }
 
