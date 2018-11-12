@@ -141,6 +141,10 @@ static long system_suspend(void *data)
         goto resume_irqs;
     }
 
+    status = call_psci_system_suspend();
+    if ( status )
+        dprintk(XENLOG_ERR, "PSCI system suspend failed, err=%d\n", status);
+
     system_state = SYS_STATE_resume;
 
     gic_resume();
