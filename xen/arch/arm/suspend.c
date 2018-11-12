@@ -147,6 +147,12 @@ static long system_suspend(void *data)
 
     system_state = SYS_STATE_resume;
 
+    /*
+     * SCTLR_WXN needs to be set to configure that a mapping cannot be both
+     * writable and executable. This is done by mmu_init_secondary_cpu.
+     */
+    mmu_init_secondary_cpu();
+
     gic_resume();
 
 resume_irqs:
