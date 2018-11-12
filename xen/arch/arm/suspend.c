@@ -117,6 +117,14 @@ static long system_suspend(void *data)
 {
     BUG_ON(system_state != SYS_STATE_active);
 
+    system_state = SYS_STATE_suspend;
+    freeze_domains();
+
+    system_state = SYS_STATE_resume;
+
+    thaw_domains();
+    system_state = SYS_STATE_active;
+
     return -ENOSYS;
 }
 
