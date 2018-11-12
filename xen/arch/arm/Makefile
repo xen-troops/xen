@@ -42,6 +42,7 @@ obj-y += setup.o
 obj-y += shutdown.o
 obj-y += smp.o
 obj-y += smpboot.o
+obj-y += suspend.o
 obj-y += sysctl.o
 obj-y += time.o
 obj-y += traps.o
