@@ -379,134 +379,10 @@ skip_bss:
          * than SP_EL0. */
         msr spsel, #1
 
-        /* Rebuild the boot pagetable's first-level entries. The structure
-         * is described in mm.c.
-         *
-         * After the CPU enables paging it will add the fixmap mapping
-         * to these page tables, however this may clash with the 1:1
-         * mapping. So each CPU must rebuild the page tables here with
-         * the 1:1 in place. */
+        /* If setting up page_tables are not successful, fail to boot */
+        bl    setup_page_tables
+        cbz   x25, fail
 
-        /* If Xen is loaded at exactly XEN_VIRT_START then we don't
-         * need an additional 1:1 mapping, the virtual mapping will
-         * suffice.
-         */
-        cmp   x19, #XEN_VIRT_START
-        cset  x25, eq                /* x25 := identity map in place, or not */
-
-        /* Write Xen's PT's paddr into TTBR0_EL2 */
-        load_paddr x4, boot_pgtable
-        msr   TTBR0_EL2, x4
-
-        /* Setup boot_pgtable: */
-        load_paddr x1, boot_first
-
-        /* ... map boot_first in boot_pgtable[0] */
-        mov   x3, #PT_PT             /* x2 := table map of boot_first */
-        orr   x2, x1, x3             /*       + rights for linear PT */
-        str   x2, [x4, #0]           /* Map it in slot 0 */
-
-        /* ... map of paddr(start) in boot_pgtable+boot_first_id */
-        lsr   x1, x19, #ZEROETH_SHIFT/* Offset of base paddr in boot_pgtable */
-        cbz   x1, 1f                 /* It's in slot 0, map in boot_first
-                                      * or boot_second later on */
-
-        /* Level zero does not support superpage mappings, so we have
-         * to use an extra first level page in which we create a 1GB mapping.
-         */
-        load_paddr x2, boot_first_id
-
-        mov   x3, #PT_PT             /* x2 := table map of boot_first_id */
-        orr   x2, x2, x3             /*       + rights for linear PT */
-        lsl   x1, x1, #3             /* x1 := Slot offset */
-        str   x2, [x4, x1]
-
-        load_paddr x4, boot_first_id
-
-        lsr   x1, x19, #FIRST_SHIFT  /* x1 := Offset of base paddr in boot_first_id */
-        lsl   x2, x1, #FIRST_SHIFT   /* x2 := Base address for 1GB mapping */
-        mov   x3, #PT_MEM            /* x2 := Section map */
-        orr   x2, x2, x3
-        and   x1, x1, #LPAE_ENTRY_MASK /* x1 := Slot offset */
-        lsl   x1, x1, #3
-        str   x2, [x4, x1]           /* Mapping of paddr(start) */
-        mov   x25, #1                /* x25 := identity map now in place */
-
-1:      /* Setup boot_first: */
-        load_paddr x4, boot_first   /* Next level into boot_first */
-
-        /* ... map boot_second in boot_first[0] */
-        load_paddr x1, boot_second
-        mov   x3, #PT_PT             /* x2 := table map of boot_second */
-        orr   x2, x1, x3             /*       + rights for linear PT */
-        str   x2, [x4, #0]           /* Map it in slot 0 */
-
-        /* ... map of paddr(start) in boot_first */
-        cbnz  x25, 1f                /* x25 is set if already created */
-        lsr   x2, x19, #FIRST_SHIFT  /* x2 := Offset of base paddr in boot_first */
-        and   x1, x2, #LPAE_ENTRY_MASK /* x1 := Slot to use */
-        cbz   x1, 1f                 /* It's in slot 0, map in boot_second */
-
-        lsl   x2, x2, #FIRST_SHIFT   /* Base address for 1GB mapping */
-        mov   x3, #PT_MEM            /* x2 := Section map */
-        orr   x2, x2, x3
-        lsl   x1, x1, #3             /* x1 := Slot offset */
-        str   x2, [x4, x1]           /* Create mapping of paddr(start)*/
-        mov   x25, #1                /* x25 := identity map now in place */
-
-1:      /* Setup boot_second: */
-        load_paddr x4, boot_second
-
-        /* ... map boot_third in boot_second[1] */
-        load_paddr x1, boot_third
-        mov   x3, #PT_PT             /* x2 := table map of boot_third */
-        orr   x2, x1, x3             /*       + rights for linear PT */
-        str   x2, [x4, #8]           /* Map it in slot 1 */
-
-        /* ... map of paddr(start) in boot_second */
-        cbnz  x25, 1f                /* x25 is set if already created */
-        lsr   x2, x19, #SECOND_SHIFT /* x2 := Offset of base paddr in boot_second */
-        and   x1, x2, #LPAE_ENTRY_MASK /* x1 := Slot to use */
-        cmp   x1, #1
-        b.eq  virtphys_clash         /* It's in slot 1, which we cannot handle */
-
-        lsl   x2, x2, #SECOND_SHIFT  /* Base address for 2MB mapping */
-        mov   x3, #PT_MEM            /* x2 := Section map */
-        orr   x2, x2, x3
-        lsl   x1, x1, #3             /* x1 := Slot offset */
-        str   x2, [x4, x1]           /* Create mapping of paddr(start)*/
-        mov   x25, #1                /* x25 := identity map now in place */
-
-1:      /* Setup boot_third: */
-        load_paddr x4, boot_third
-
-        lsr   x2, x19, #THIRD_SHIFT  /* Base address for 4K mapping */
-        lsl   x2, x2, #THIRD_SHIFT
-        mov   x3, #PT_MEM_L3         /* x2 := Section map */
-        orr   x2, x2, x3
-
-        /* ... map of vaddr(start) in boot_third */
-        mov   x1, xzr
-1:      str   x2, [x4, x1]           /* Map vaddr(start) */
-        add   x2, x2, #PAGE_SIZE     /* Next page */
-        add   x1, x1, #8             /* Next slot */
-        cmp   x1, #(LPAE_ENTRIES<<3) /* 512 entries per page */
-        b.lt  1b
-
-        /* Defer fixmap and dtb mapping until after paging enabled, to
-         * avoid them clashing with the 1:1 mapping. */
-
-        /* boot pagetable setup complete */
-
-        cbnz  x25, 1f                /* Did we manage to create an identity mapping ? */
-        PRINT("Unable to build boot page tables - Failed to identity map Xen.\r\n")
-        b     fail
-virtphys_clash:
-        /* Identity map clashes with boot_third, which we cannot handle yet */
-        PRINT("- Unable to build boot page tables - virt and phys addresses clash. -\r\n")
-        b     fail
-
-1:
         PRINT("- Turning on paging -\r\n")
 
         /*
@@ -758,6 +634,141 @@ ENTRY(efi_xen_start)
 
         b     real_start_efi
 ENDPROC(efi_xen_start)
+
+ENTRY(setup_page_tables)
+        ldr   x0, =start
+        adr   x19, start             /* x19 := paddr (start) */
+        sub   x20, x19, x0           /* x20 := phys-offset */
+
+        /* Rebuild the boot pagetable's first-level entries. The structure
+         * is described in mm.c.
+         *
+         * After the CPU enables paging it will add the fixmap mapping
+         * to these page tables, however this may clash with the 1:1
+         * mapping. So each CPU must rebuild the page tables here with
+         * the 1:1 in place. */
+
+        /* If Xen is loaded at exactly XEN_VIRT_START then we don't
+         * need an additional 1:1 mapping, the virtual mapping will
+         * suffice.
+         */
+        cmp   x19, #XEN_VIRT_START
+        cset  x25, eq                /* x25 := identity map in place, or not */
+
+        /* Write Xen's PT's paddr into TTBR0_EL2 */
+        load_paddr x4, boot_pgtable
+        msr   TTBR0_EL2, x4
+
+        /* Setup boot_pgtable: */
+        load_paddr x1, boot_first
+
+        /* ... map boot_first in boot_pgtable[0] */
+        mov   x3, #PT_PT             /* x2 := table map of boot_first */
+        orr   x2, x1, x3             /*       + rights for linear PT */
+        str   x2, [x4, #0]           /* Map it in slot 0 */
+
+        /* ... map of paddr(start) in boot_pgtable+boot_first_id */
+        lsr   x1, x19, #ZEROETH_SHIFT/* Offset of base paddr in boot_pgtable */
+        cbz   x1, 1f                 /* It's in slot 0, map in boot_first
+                                      * or boot_second later on */
+
+        /* Level zero does not support superpage mappings, so we have
+         * to use an extra first level page in which we create a 1GB mapping.
+         */
+        load_paddr x2, boot_first_id
+
+        mov   x3, #PT_PT             /* x2 := table map of boot_first_id */
+        orr   x2, x2, x3             /*       + rights for linear PT */
+        lsl   x1, x1, #3             /* x1 := Slot offset */
+        str   x2, [x4, x1]
+
+        load_paddr x4, boot_first_id
+
+        lsr   x1, x19, #FIRST_SHIFT  /* x1 := Offset of base paddr in boot_first_id */
+        lsl   x2, x1, #FIRST_SHIFT   /* x2 := Base address for 1GB mapping */
+        mov   x3, #PT_MEM            /* x2 := Section map */
+        orr   x2, x2, x3
+        and   x1, x1, #LPAE_ENTRY_MASK /* x1 := Slot offset */
+        lsl   x1, x1, #3
+        str   x2, [x4, x1]           /* Mapping of paddr(start) */
+        mov   x25, #1                /* x25 := identity map now in place */
+
+1:      /* Setup boot_first: */
+        load_paddr x4, boot_first   /* Next level into boot_first */
+
+        /* ... map boot_second in boot_first[0] */
+        load_paddr x1, boot_second
+        mov   x3, #PT_PT             /* x2 := table map of boot_second */
+        orr   x2, x1, x3             /*       + rights for linear PT */
+        str   x2, [x4, #0]           /* Map it in slot 0 */
+
+        /* ... map of paddr(start) in boot_first */
+        cbnz  x25, 1f                /* x25 is set if already created */
+        lsr   x2, x19, #FIRST_SHIFT  /* x2 := Offset of base paddr in boot_first */
+        and   x1, x2, #LPAE_ENTRY_MASK /* x1 := Slot to use */
+        cbz   x1, 1f                 /* It's in slot 0, map in boot_second */
+
+        lsl   x2, x2, #FIRST_SHIFT   /* Base address for 1GB mapping */
+        mov   x3, #PT_MEM            /* x2 := Section map */
+        orr   x2, x2, x3
+        lsl   x1, x1, #3             /* x1 := Slot offset */
+        str   x2, [x4, x1]           /* Create mapping of paddr(start)*/
+        mov   x25, #1                /* x25 := identity map now in place */
+
+1:      /* Setup boot_second: */
+        load_paddr x4, boot_second
+
+        /* ... map boot_third in boot_second[1] */
+        load_paddr x1, boot_third
+        mov   x3, #PT_PT             /* x2 := table map of boot_third */
+        orr   x2, x1, x3             /*       + rights for linear PT */
+        str   x2, [x4, #8]           /* Map it in slot 1 */
+
+        /* ... map of paddr(start) in boot_second */
+        cbnz  x25, 1f                /* x25 is set if already created */
+        lsr   x2, x19, #SECOND_SHIFT /* x2 := Offset of base paddr in boot_second */
+        and   x1, x2, #LPAE_ENTRY_MASK /* x1 := Slot to use */
+        cmp   x1, #1
+        b.eq  virtphys_clash         /* It's in slot 1, which we cannot handle */
+
+        lsl   x2, x2, #SECOND_SHIFT  /* Base address for 2MB mapping */
+        mov   x3, #PT_MEM            /* x2 := Section map */
+        orr   x2, x2, x3
+        lsl   x1, x1, #3             /* x1 := Slot offset */
+        str   x2, [x4, x1]           /* Create mapping of paddr(start)*/
+        mov   x25, #1                /* x25 := identity map now in place */
+
+1:      /* Setup boot_third: */
+        load_paddr x4, boot_third
+
+        lsr   x2, x19, #THIRD_SHIFT  /* Base address for 4K mapping */
+        lsl   x2, x2, #THIRD_SHIFT
+        mov   x3, #PT_MEM_L3         /* x2 := Section map */
+        orr   x2, x2, x3
+
+        /* ... map of vaddr(start) in boot_third */
+        mov   x1, xzr
+1:      str   x2, [x4, x1]           /* Map vaddr(start) */
+        add   x2, x2, #PAGE_SIZE     /* Next page */
+        add   x1, x1, #8             /* Next slot */
+        cmp   x1, #(LPAE_ENTRIES<<3) /* 512 entries per page */
+        b.lt  1b
+
+        /* Defer fixmap and dtb mapping until after paging enabled, to
+         * avoid them clashing with the 1:1 mapping. */
+
+        /* boot pagetable setup complete */
+
+        cbnz  x25, 1f                /* Did we manage to create an identity mapping ? */
+        PRINT("Unable to build boot page tables - Failed to identity map Xen.\r\n")
+        b    1f
+virtphys_clash:
+        /* Identity map clashes with boot_third, which we cannot handle yet */
+        PRINT("- Unable to build boot page tables - virt and phys addresses clash. -\r\n")
+1:
+        ret
+
+ENDPROC(setup_page_tables)
 
 /*
  * Local variables:
