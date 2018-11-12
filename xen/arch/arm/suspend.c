@@ -146,6 +146,9 @@ int32_t domain_suspend(register_t epoint, register_t cid)
     d->is_shut_down = 1;
     d->shutdown_code = SHUTDOWN_suspend;
 
+    /* Disable watchdogs of this domain */
+    watchdog_domain_suspend(d);
+
     /*
      * The calling domain is suspended by blocking its last running VCPU. If an
      * event is pending the domain will resume right away (VCPU will not block,
