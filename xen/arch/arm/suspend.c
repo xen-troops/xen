@@ -117,6 +117,7 @@ static void vcpu_suspend(register_t epoint, register_t cid)
 static long system_suspend(void *data)
 {
     int status;
+    unsigned long flags;
 
     BUG_ON(system_state != SYS_STATE_active);
 
@@ -130,7 +131,20 @@ static long system_suspend(void *data)
         goto resume_nonboot_cpus;
     }
 
+    local_irq_save(flags);
+    status = gic_suspend();
+    if ( status )
+    {
+        system_state = SYS_STATE_resume;
+        goto resume_irqs;
+    }
+
     system_state = SYS_STATE_resume;
+
+    gic_resume();
+
+resume_irqs:
+    local_irq_restore(flags);
 
 resume_nonboot_cpus:
     rcu_barrier();
