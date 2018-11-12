@@ -75,6 +75,7 @@ void arch_domain_creation_finished(struct domain *d);
 void arch_p2m_set_access_required(struct domain *d, bool access_required);
 
 int arch_set_info_guest(struct vcpu *, vcpu_guest_context_u);
+void _arch_set_info_guest(struct vcpu *, struct vcpu_guest_context *);
 void arch_get_info_guest(struct vcpu *, vcpu_guest_context_u);
 
 int arch_initialise_vcpu(struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg);
