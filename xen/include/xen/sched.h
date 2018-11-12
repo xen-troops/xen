@@ -909,6 +909,13 @@ void watchdog_domain_init(struct domain *d);
 void watchdog_domain_destroy(struct domain *d);
 
 /*
+ * Suspend/resume watchdogs of domain (while the domain is suspended its
+ * watchdogs should be on pause)
+ */
+void watchdog_domain_suspend(struct domain *d);
+void watchdog_domain_resume(struct domain *d);
+
+/*
  * Use this check when the following are both true:
  *  - Using this feature or interface requires full access to the hardware
  *    (that is, this would not be suitable for a driver domain)

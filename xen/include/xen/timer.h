@@ -18,6 +18,9 @@ struct timer {
     /* System time expiry value (nanoseconds since boot). */
     s_time_t expires;
 
+    /* Suspend timestamp value (nanoseconds since boot). */
+    s_time_t suspended;
+
     /* Position in active-timer data structure. */
     union {
         /* Timer-heap offset (TIMER_STATUS_in_heap). */
