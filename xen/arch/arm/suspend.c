@@ -1,4 +1,5 @@
 #include <xen/sched.h>
+#include <xen/cpu.h>
 #include <asm/cpufeature.h>
 #include <asm/event.h>
 #include <asm/psci.h>
@@ -115,17 +116,29 @@ static void vcpu_suspend(register_t epoint, register_t cid)
 /* Xen suspend. Note: data is not used (suspend is the suspend to RAM) */
 static long system_suspend(void *data)
 {
+    int status;
+
     BUG_ON(system_state != SYS_STATE_active);
 
     system_state = SYS_STATE_suspend;
     freeze_domains();
 
+    status = disable_nonboot_cpus();
+    if ( status )
+    {
+        system_state = SYS_STATE_resume;
+        goto resume_nonboot_cpus;
+    }
+
     system_state = SYS_STATE_resume;
 
+resume_nonboot_cpus:
+    enable_nonboot_cpus();
     thaw_domains();
     system_state = SYS_STATE_active;
+    dsb(sy);
 
-    return -ENOSYS;
+    return status;
 }
 
 int32_t domain_suspend(register_t epoint, register_t cid)
