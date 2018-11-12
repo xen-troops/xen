@@ -133,6 +133,7 @@ static long system_suspend(void *data)
     system_state = SYS_STATE_resume;
 
 resume_nonboot_cpus:
+    rcu_barrier();
     enable_nonboot_cpus();
     thaw_domains();
     system_state = SYS_STATE_active;
