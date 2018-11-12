@@ -1,5 +1,6 @@
 #include <xen/sched.h>
 #include <xen/cpu.h>
+#include <xen/console.h>
 #include <asm/cpufeature.h>
 #include <asm/event.h>
 #include <asm/psci.h>
@@ -149,6 +150,15 @@ static long system_suspend(void *data)
         goto resume_irqs;
     }
 
+    dprintk(XENLOG_DEBUG, "Suspend\n");
+    status = console_suspend();
+    if ( status )
+    {
+        dprintk(XENLOG_ERR, "Failed to suspend the console, err=%d\n", status);
+        system_state = SYS_STATE_resume;
+        goto resume_console;
+    }
+
     if ( hyp_suspend(&cpu_context) )
     {
         status = call_psci_system_suspend();
@@ -174,6 +184,10 @@ static long system_suspend(void *data)
      * writable and executable. This is done by mmu_init_secondary_cpu.
      */
     mmu_init_secondary_cpu();
+
+resume_console:
+    console_resume();
+    dprintk(XENLOG_DEBUG, "Resume\n");
 
     gic_resume();
 
