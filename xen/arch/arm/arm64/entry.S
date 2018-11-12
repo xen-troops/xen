@@ -1,6 +1,7 @@
 #include <asm/asm_defns.h>
 #include <asm/current.h>
 #include <asm/macros.h>
+#include <asm/page.h>
 #include <asm/regs.h>
 #include <asm/alternative.h>
 #include <asm/smccc.h>
@@ -534,6 +535,93 @@ ENTRY(__context_switch)
         ret
 
 ENTRY(hyp_resume)
+        msr   DAIFSet, 0xf           /* Disable all interrupts */
+
+        tlbi  alle2
+        dsb   sy                     /* Ensure completion of TLB flush */
+        isb
+
+        ldr   x0, =start
+        adr   x19, start             /* x19 := paddr (start) */
+        sub   x20, x19, x0           /* x20 := phys-offset */
+
+        /* XXXX call PROCINFO_cpu_init here */
+
+        /* Set up memory attribute type tables */
+        ldr   x0, =MAIRVAL
+        msr   mair_el2, x0
+
+        /* Set up TCR_EL2:
+         * PS -- Based on ID_AA64MMFR0_EL1.PARange
+         * Top byte is used
+         * PT walks use Inner-Shareable accesses,
+         * PT walks are write-back, write-allocate in both cache levels,
+         * 48-bit virtual address space goes through this table. */
+        ldr   x0,=(TCR_RES1|TCR_SH0_IS|TCR_ORGN0_WBWA|TCR_IRGN0_WBWA|TCR_T0SZ(64-48))
+        /* ID_AA64MMFR0_EL1[3:0] (PARange) corresponds to TCR_EL2[18:16] (PS) */
+        mrs   x1, ID_AA64MMFR0_EL1
+        bfi   x0, x1, #16, #3
+
+        msr   tcr_el2, x0
+
+        /* Set up the SCTLR_EL2:
+         * Exceptions in LE ARM,
+         * Low-latency IRQs disabled,
+         * Write-implies-XN disabled (for now),
+         * D-cache disabled (for now),
+         * I-cache enabled,
+         * Alignment checking disabled,
+         * MMU translation disabled (for now). */
+        ldr   x0, =(HSCTLR_BASE)
+        msr   SCTLR_EL2, x0
+
+        /* Ensure that any exceptions encountered at EL2
+         * are handled using the EL2 stack pointer, rather
+         * than SP_EL0. */
+        msr spsel, #1
+
+        /* Rebuild the boot pagetable's first-level entries. The structure
+         * is described in mm.c.
+         *
+         * After the CPU enables paging it will add the fixmap mapping
+         * to these page tables, however this may clash with the 1:1
+         * mapping. So each CPU must rebuild the page tables here with
+         * the 1:1 in place. */
+
+        /* If Xen is loaded at exactly XEN_VIRT_START then we don't
+         * need an additional 1:1 mapping, the virtual mapping will
+         * suffice.
+         */
+        cmp   x19, #XEN_VIRT_START
+        cset  x25, eq                /* x25 := identity map in place, or not */
+
+        /* Write Xen's PT's paddr into TTBR0_EL2 */
+        ldr   x4, =boot_pgtable     /* xen_pgtable    */
+        add   x4, x4, x20           /* x4 := paddr (boot_pagetable) */
+        msr   TTBR0_EL2, x4
+
+        /* Set up page tables */
+        bl    setup_page_tables
+
+        ldr   x1, =mmu_resumed      /* Explicit vaddr, not RIP-relative */
+        mrs   x0, SCTLR_EL2
+        orr   x0, x0, #SCTLR_M      /* Enable MMU */
+        orr   x0, x0, #SCTLR_C      /* Enable D-cache */
+        dsb   sy                    /* Flush PTE writes and finish reads */
+        msr   SCTLR_EL2, x0         /* now paging is enabled */
+        isb                         /* Now, flush the icache */
+        br    x1                    /* Get a proper vaddr into PC */
+
+mmu_resumed:
+        ldr   x4, =init_ttbr         /* VA of TTBR0_EL2 stashed by CPU 0 */
+        ldr   x4, [x4]               /* Actual value */
+        dsb   sy
+        msr   TTBR0_EL2, x4
+        dsb   sy
+        isb
+        tlbi  alle2
+        dsb   sy                     /* Ensure completion of TLB flush */
+        isb
         b .
 
 /*
