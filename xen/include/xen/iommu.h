@@ -235,6 +235,13 @@ struct iommu_ops {
                                  unsigned int *flush_flags);
     int __must_check (*unmap_page)(struct domain *d, dfn_t dfn,
                                    unsigned int *flush_flags);
+    int __must_check (*map_pages)(struct domain *d, dfn_t dfn, mfn_t mfn,
+                                  unsigned int page_order,
+                                  unsigned int flags,
+                                  unsigned int *flush_flags);
+    int __must_check (*unmap_pages)(struct domain *d, dfn_t dfn,
+                                    unsigned int page_order,
+                                    unsigned int *flush_flags);
     int __must_check (*lookup_page)(struct domain *d, dfn_t dfn, mfn_t *mfn,
                                     unsigned int *flags);
 
