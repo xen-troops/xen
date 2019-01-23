@@ -16,6 +16,7 @@
  */
 
 #include <xen/lib.h>
+#include <xen/sched.h>
 #include <xen/iommu.h>
 #include <xen/device_tree.h>
 #include <asm/device.h>
@@ -73,8 +74,8 @@ void arch_iommu_domain_destroy(struct domain *d)
 
 int arch_iommu_populate_page_table(struct domain *d)
 {
-    /* The IOMMU shares the p2m with the CPU */
-    return -ENOSYS;
+    /* Return an error if the IOMMU shares the p2m with the CPU */
+    return iommu_use_hap_pt(d) ? -ENOSYS : 0;
 }
 
 void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
