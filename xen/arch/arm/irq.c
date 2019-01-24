@@ -191,11 +191,13 @@ int request_irq(unsigned int irq, unsigned int irqflags,
 void remove_gsx_guest(struct domain *d)
 {
     struct irq_desc *desc = irq_to_desc(gsx_irq_num);
-    struct irq_guest *info = irq_get_guest_info(desc);
+    struct irq_guest *info;
     unsigned long flags;
     int i;
 
     spin_lock_irqsave(&desc->lock, flags);
+
+    info = irq_get_guest_info(desc);
 
     /* clear a slot occupied by gsx guest */
     for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
