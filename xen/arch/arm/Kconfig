@@ -21,6 +21,7 @@ config ARM
 	select HAS_PASSTHROUGH
 	select HAS_PDX
 	select IOMMU_FORCE_PT_SHARE
+	select IOREQ_SERVER
 
 config ARCH_DEFCONFIG
 	string

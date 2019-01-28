@@ -381,14 +381,17 @@ static inline gfn_t gfn_next_boundary(gfn_t gfn, unsigned int order)
     return gfn_add(gfn, 1UL << order);
 }
 
+#include <xen/mm.h>
+
 static inline int set_foreign_p2m_entry(struct domain *d, unsigned long gfn,
                                         mfn_t mfn)
 {
     /*
-     * NOTE: If this is implemented then proper reference counting of
-     *       foreign entries will need to be implemented.
+     * XXX: handle properly reference. It looks like the page may not always
+     * belong to d.
      */
-    return -EOPNOTSUPP;
+
+    return guest_physmap_add_entry(d, _gfn(gfn), mfn, 0, p2m_ram_rw);
 }
 
 /*

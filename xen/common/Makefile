@@ -70,6 +70,7 @@ extra-y := symbols-dummy.o
 
 obj-$(CONFIG_COVERAGE) += coverage/
 obj-y += sched/
+obj-$(CONFIG_HVM) += hvm/
 obj-$(CONFIG_UBSAN) += ubsan/
 
 obj-$(CONFIG_NEEDS_LIBELF) += libelf/

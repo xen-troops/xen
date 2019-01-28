@@ -417,6 +417,20 @@ struct xen_dm_op_pin_memory_cacheattr {
     uint32_t pad;
 };
 
+/*
+ * XEN_DMOP_set_irq_level: Set the logical level of a one of a domain's
+ *                         IRQ lines.
+ * XXX Handle PPIs.
+ */
+#define XEN_DMOP_set_irq_level 19
+
+struct xen_dm_op_set_irq_level {
+    uint32_t irq;
+    /* IN - Level: 0 -> deasserted, 1 -> asserted */
+    uint8_t  level;
+};
+
+
 struct xen_dm_op {
     uint32_t op;
     uint32_t pad;
@@ -430,6 +444,7 @@ struct xen_dm_op {
         struct xen_dm_op_track_dirty_vram track_dirty_vram;
         struct xen_dm_op_set_pci_intx_level set_pci_intx_level;
         struct xen_dm_op_set_isa_irq_level set_isa_irq_level;
+        struct xen_dm_op_set_irq_level set_irq_level;
         struct xen_dm_op_set_pci_link_route set_pci_link_route;
         struct xen_dm_op_modified_memory modified_memory;
         struct xen_dm_op_set_mem_type set_mem_type;

@@ -14,6 +14,10 @@
 # error "unknown ARM variant"
 #endif
 
+#include <public/hvm/ioreq.h>
+#include <public/hvm/dm_op.h>
+#include <asm/hvm/ioreq.h>
+
 /* Align Xen to a 2 MiB boundary. */
 #define XEN_PADDR_ALIGN (1 << 21)
 
@@ -357,14 +361,6 @@ static inline void put_page_and_type(struct page_info *page)
 }
 
 void clear_and_clean_page(struct page_info *page);
-
-static inline
-int arch_acquire_resource(struct domain *d, unsigned int type, unsigned int id,
-                          unsigned long frame, unsigned int nr_frames,
-                          xen_pfn_t mfn_list[])
-{
-    return -EOPNOTSUPP;
-}
 
 unsigned int arch_get_dma_bitsize(void);
 

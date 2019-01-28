@@ -28,6 +28,7 @@
 #include <asm/gic.h>
 #include <asm/guest_access.h>
 #include <asm/guest_atomics.h>
+#include <asm/hvm/ioreq.h>
 #include <asm/irq.h>
 #include <asm/p2m.h>
 #include <asm/platform.h>
@@ -681,6 +682,8 @@ int arch_domain_create(struct domain *d,
 
     ASSERT(config != NULL);
 
+    hvm_ioreq_init(d);
+
     /* p2m_init relies on some value initialized by the IOMMU subsystem */
     if ( (rc = iommu_domain_init(d, config->iommu_opts)) != 0 )
         goto fail;
@@ -1000,6 +1003,8 @@ int domain_relinquish_resources(struct domain *d)
         ret = tee_relinquish_resources(d);
         if (ret )
             return ret;
+
+        hvm_destroy_all_ioreq_servers(d);
 
     PROGRESS(xen):
         ret = relinquish_memory(d, &d->xenpage_list);

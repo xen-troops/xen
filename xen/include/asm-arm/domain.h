@@ -11,12 +11,64 @@
 #include <asm/vgic.h>
 #include <asm/vpl011.h>
 #include <public/hvm/params.h>
+#include <public/hvm/dm_op.h>
+#include <public/hvm/ioreq.h>
 #include <xen/serial.h>
 #include <xen/rbtree.h>
+
+struct hvm_ioreq_page {
+    gfn_t gfn;
+    struct page_info *page;
+    void *va;
+};
+
+struct hvm_ioreq_vcpu {
+    struct list_head list_entry;
+    struct vcpu      *vcpu;
+    evtchn_port_t    ioreq_evtchn;
+    bool             pending;
+};
+
+#define NR_IO_RANGE_TYPES (XEN_DMOP_IO_RANGE_PCI + 1)
+#define MAX_NR_IO_RANGES  256
+
+#define MAX_NR_IOREQ_SERVERS 8
+#define DEFAULT_IOSERVID 0
+
+struct hvm_ioreq_server {
+    struct domain          *target, *emulator;
+
+    /* Lock to serialize toolstack modifications */
+    spinlock_t             lock;
+
+    struct hvm_ioreq_page  ioreq;
+    struct list_head       ioreq_vcpu_list;
+    struct hvm_ioreq_page  bufioreq;
+
+    /* Lock to serialize access to buffered ioreq ring */
+    spinlock_t             bufioreq_lock;
+    evtchn_port_t          bufioreq_evtchn;
+    struct rangeset        *range[NR_IO_RANGE_TYPES];
+    bool                   enabled;
+    uint8_t                bufioreq_handling;
+};
 
 struct hvm_domain
 {
     uint64_t              params[HVM_NR_PARAMS];
+
+    /* Guest page range used for non-default ioreq servers */
+    struct {
+        unsigned long base;
+        unsigned long mask;
+        unsigned long legacy_mask; /* indexed by HVM param number */
+    } ioreq_gfn;
+
+    /* Lock protects all other values in the sub-struct and the default */
+    struct {
+        spinlock_t              lock;
+        struct hvm_ioreq_server *server[MAX_NR_IOREQ_SERVERS];
+    } ioreq_server;
 };
 
 #ifdef CONFIG_ARM_64
@@ -95,6 +147,29 @@ struct arch_domain
     /* OSID used by virtual GSX device */
     uint8_t vgsx_osid;
 }  __cacheline_aligned;
+
+enum hvm_io_completion {
+    HVMIO_no_completion,
+    HVMIO_mmio_completion,
+    HVMIO_pio_completion,
+    HVMIO_realmode_completion
+};
+
+struct hvm_vcpu_io {
+    /* I/O request in flight to device model. */
+    enum hvm_io_completion io_completion;
+    ioreq_t                io_req;
+
+    /*
+     * HVM emulation:
+     *  Linear address @mmio_gla maps to MMIO physical frame @mmio_gpfn.
+     *  The latter is known to be an MMIO frame (not RAM).
+     *  This translation is only valid for accesses as per @mmio_access.
+     */
+    struct npfec        mmio_access;
+    unsigned long       mmio_gla;
+    unsigned long       mmio_gpfn;
+};
 
 struct arch_vcpu
 {
@@ -208,6 +283,11 @@ struct arch_vcpu
      * more easily check for softirqs and preempt the vCPU safely.
      */
     bool need_flush_to_ram;
+
+    struct hvm_vcpu
+    {
+        struct hvm_vcpu_io hvm_io;
+    } hvm;
 
 }  __cacheline_aligned;
 
