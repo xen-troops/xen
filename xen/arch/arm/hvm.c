@@ -82,6 +82,37 @@ static int hvm_allow_get_param(const struct domain *d, unsigned int param)
     }
 }
 
+static int hvmop_set_param(struct domain *d, const struct xen_hvm_param *a)
+{
+    int rc = 0;
+
+    switch ( a->index )
+    {
+    case HVM_PARAM_IOREQ_SERVER_PFN:
+        d->arch.hvm.ioreq_gfn.base = a->value;
+        break;
+    case HVM_PARAM_NR_IOREQ_SERVER_PAGES:
+    {
+        unsigned int i;
+
+        if ( a->value == 0 ||
+             a->value > sizeof(d->arch.hvm.ioreq_gfn.mask) * 8 )
+        {
+            rc = -EINVAL;
+            break;
+        }
+        for ( i = 0; i < a->value; i++ )
+            set_bit(i, &d->arch.hvm.ioreq_gfn.mask);
+
+        break;
+    }
+    }
+
+    d->arch.hvm.params[a->index] = a->value;
+
+    return rc;
+}
+
 long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     long rc = 0;
@@ -111,7 +142,7 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
             if ( rc )
                 goto param_fail;
 
-            d->arch.hvm.params[a.index] = a.value;
+            rc = hvmop_set_param(d, &a);
         }
         else
         {
@@ -120,6 +151,8 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
                 goto param_fail;
 
             a.value = d->arch.hvm.params[a.index];
+            printk("d%u: GET %u = %lu\n",
+                   d->domain_id, a.index, a.value);
             rc = copy_to_guest(arg, &a, 1) ? -EFAULT : 0;
         }
 

@@ -160,6 +160,18 @@ do_hypfs_op(
     unsigned long arg4);
 #endif
 
+struct dmop_args {
+    domid_t domid;
+    unsigned int nr_bufs;
+    /* Reserve enough buf elements for all current hypercalls. */
+    struct xen_dm_op_buf buf[2];
+};
+
+int arch_dm_op(struct xen_dm_op *op,
+               struct domain *d,
+               const struct dmop_args *op_args,
+               bool *const_op);
+
 #ifdef CONFIG_COMPAT
 
 extern int

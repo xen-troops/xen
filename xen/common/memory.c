@@ -1045,6 +1045,38 @@ static int acquire_grant_table(struct domain *d, unsigned int id,
     return 0;
 }
 
+#ifdef CONFIG_IOREQ_SERVER
+static int acquire_ioreq_server(struct domain *d,
+                                unsigned int id,
+                                unsigned long frame,
+                                unsigned int nr_frames,
+                                xen_pfn_t mfn_list[])
+{
+    ioservid_t ioservid = id;
+    unsigned int i;
+    int rc;
+
+    if ( !is_hvm_domain(d) )
+        return -EINVAL;
+
+    if ( id != (unsigned int)ioservid )
+        return -EINVAL;
+
+    for ( i = 0; i < nr_frames; i++ )
+    {
+        mfn_t mfn;
+
+        rc = hvm_get_ioreq_server_frame(d, id, frame + i, &mfn);
+        if ( rc )
+            return rc;
+
+        mfn_list[i] = mfn_x(mfn);
+    }
+
+    return 0;
+}
+#endif
+
 static int acquire_resource(
     XEN_GUEST_HANDLE_PARAM(xen_mem_acquire_resource_t) arg)
 {
@@ -1058,11 +1090,15 @@ static int acquire_resource(
     xen_pfn_t mfn_list[32];
     int rc;
 
+    printk("%s:%u\n", __FUNCTION__, __LINE__);
+
     if ( copy_from_guest(&xmar, arg, 1) )
         return -EFAULT;
 
     if ( xmar.pad != 0 )
         return -EINVAL;
+
+    printk("%s:%u\n", __FUNCTION__, __LINE__);
 
     if ( guest_handle_is_null(xmar.frame_list) )
     {
@@ -1077,16 +1113,24 @@ static int acquire_resource(
         return 0;
     }
 
+    printk("%s:%u\n", __FUNCTION__, __LINE__);
+
     if ( xmar.nr_frames > ARRAY_SIZE(mfn_list) )
         return -E2BIG;
+
+    printk("%s:%u\n", __FUNCTION__, __LINE__);
 
     rc = rcu_lock_remote_domain_by_id(xmar.domid, &d);
     if ( rc )
         return rc;
 
+    printk("%s:%u\n", __FUNCTION__, __LINE__);
+
     rc = xsm_domain_resource_map(XSM_DM_PRIV, d);
     if ( rc )
         goto out;
+
+    printk("%s:%u type %u\n", __FUNCTION__, __LINE__, xmar.type);
 
     switch ( xmar.type )
     {
@@ -1095,9 +1139,14 @@ static int acquire_resource(
                                  mfn_list);
         break;
 
+#ifdef CONFIG_IOREQ_SERVER
+    case XENMEM_resource_ioreq_server:
+        rc = acquire_ioreq_server(d, xmar.id, xmar.frame, xmar.nr_frames,
+                                  mfn_list);
+        break;
+#endif
     default:
-        rc = arch_acquire_resource(d, xmar.type, xmar.id, xmar.frame,
-                                   xmar.nr_frames, mfn_list);
+        rc = -EOPNOTSUPP;
         break;
     }
 

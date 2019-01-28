@@ -26,11 +26,19 @@
 #include "xg_private.h"
 #include "xc_dom.h"
 
-#define NR_MAGIC_PAGES 4
+
 #define CONSOLE_PFN_OFFSET 0
 #define XENSTORE_PFN_OFFSET 1
 #define MEMACCESS_PFN_OFFSET 2
 #define VUART_PFN_OFFSET 3
+#define IOREQ_SERVER_PFN_OFFSET 4
+
+#define NR_IOREQ_SERVER_PAGES 8
+#define NR_MAGIC_PAGES (4 + NR_IOREQ_SERVER_PAGES)
+
+#define GUEST_MAGIC_BASE_PFN (GUEST_MAGIC_BASE >> XC_PAGE_SHIFT)
+
+#define special_pfn(x)  (GUEST_MAGIC_BASE_PFN + (x))
 
 #define LPAE_SHIFT 9
 
@@ -51,7 +59,7 @@ const char *xc_domain_get_native_protocol(xc_interface *xch,
 static int alloc_magic_pages(struct xc_dom_image *dom)
 {
     int rc, i;
-    const xen_pfn_t base = GUEST_MAGIC_BASE >> XC_PAGE_SHIFT;
+    const xen_pfn_t base = special_pfn(0);
     xen_pfn_t p2m[NR_MAGIC_PAGES];
 
     BUILD_BUG_ON(NR_MAGIC_PAGES > GUEST_MAGIC_SIZE >> XC_PAGE_SHIFT);
@@ -71,10 +79,9 @@ static int alloc_magic_pages(struct xc_dom_image *dom)
     dom->xenstore_pfn = base + XENSTORE_PFN_OFFSET;
     dom->vuart_gfn = base + VUART_PFN_OFFSET;
 
-    xc_clear_domain_page(dom->xch, dom->guest_domid, dom->console_pfn);
-    xc_clear_domain_page(dom->xch, dom->guest_domid, dom->xenstore_pfn);
-    xc_clear_domain_page(dom->xch, dom->guest_domid, base + MEMACCESS_PFN_OFFSET);
-    xc_clear_domain_page(dom->xch, dom->guest_domid, dom->vuart_gfn);
+    /* XXX: Check return */
+    xc_clear_domain_pages(dom->xch, dom->guest_domid, special_pfn(0),
+                          NR_MAGIC_PAGES);
 
     xc_hvm_param_set(dom->xch, dom->guest_domid, HVM_PARAM_CONSOLE_PFN,
             dom->console_pfn);
@@ -87,6 +94,12 @@ static int alloc_magic_pages(struct xc_dom_image *dom)
             dom->console_evtchn);
     xc_hvm_param_set(dom->xch, dom->guest_domid, HVM_PARAM_STORE_EVTCHN,
             dom->xenstore_evtchn);
+
+    /* Tell the domain where the pages are and how many there are. */
+    xc_hvm_param_set(dom->xch, dom->guest_domid, HVM_PARAM_IOREQ_SERVER_PFN,
+                     special_pfn(IOREQ_SERVER_PFN_OFFSET));
+    xc_hvm_param_set(dom->xch, dom->guest_domid, HVM_PARAM_NR_IOREQ_SERVER_PAGES,
+                     NR_IOREQ_SERVER_PAGES);
 
     return 0;
 }

@@ -43,6 +43,7 @@
 #include <asm/debugger.h>
 #include <asm/event.h>
 #include <asm/hsr.h>
+#include <asm/hvm/ioreq.h>
 #include <asm/mmio.h>
 #include <asm/regs.h>
 #include <asm/smccc.h>
@@ -1384,6 +1385,7 @@ static arm_hypercall_t arm_hypercall_table[] = {
 #ifdef CONFIG_HYPFS
     HYPERCALL(hypfs_op, 5),
 #endif
+    HYPERCALL(dm_op, 3),
 };
 
 #ifndef NDEBUG
@@ -1958,6 +1960,9 @@ static void do_trap_stage2_abort_guest(struct cpu_user_regs *regs,
             case IO_UNHANDLED:
                 /* IO unhandled, try another way to handle it. */
                 break;
+            default:
+                /* XXX: Handle IO_RETRY */
+                ASSERT_UNREACHABLE();
             }
         }
 
@@ -2275,6 +2280,15 @@ static void check_for_vcpu_work(void)
  */
 void leave_hypervisor_to_guest(void)
 {
+    /*
+     * XXX: Check the return. Shall we call that in
+     * continue_running and context_switch instead?
+     * The benefits would be to avoid calling
+     * handle_hvm_io_completion on every return.
+     */
+    local_irq_enable();
+    handle_hvm_io_completion(current);
+
     local_irq_disable();
 
     check_for_vcpu_work();
