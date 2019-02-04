@@ -214,8 +214,6 @@ void remove_gsx_guest(struct domain *d)
     }
 
     spin_unlock_irqrestore(&desc->lock, flags);
-
-    BUG_ON(i == ARRAY_SIZE(info->gsx_guests));
 }
 
 /* called with desc->lock held */
