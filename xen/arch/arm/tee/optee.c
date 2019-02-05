@@ -545,7 +545,7 @@ static bool translate_noncontig(struct optee_domain *ctx,
     if ( !guest_page )
         goto err_free;
 
-    pages_data_guest = map_domain_page(page_to_mfn(guest_page));
+    pages_data_guest = map_domain_page(_mfn(page_to_mfn(guest_page)));
     if ( !pages_data_guest )
         goto err_free;
 
@@ -578,7 +578,7 @@ static bool translate_noncontig(struct optee_domain *ctx,
             if ( !guest_page )
                 goto err_free;
 
-            pages_data_guest = map_domain_page(page_to_mfn(guest_page));
+            pages_data_guest = map_domain_page(_mfn(page_to_mfn(guest_page)));
             if ( !pages_data_guest )
                 goto err_free;
             /* Roll over to the next page */
@@ -701,7 +701,7 @@ static void copy_std_request_back(struct optee_domain *ctx,
     if ( !page )
         return;
 
-    guest_arg = map_domain_page(page_to_mfn(page));
+    guest_arg = map_domain_page(_mfn(page_to_mfn(page)));
 
     guest_arg->ret = call->xen_arg->ret;
     guest_arg->ret_origin = call->xen_arg->ret_origin;
