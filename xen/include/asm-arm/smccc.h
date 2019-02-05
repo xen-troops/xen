@@ -178,6 +178,47 @@ struct arm_smccc_res {
         *___res = (typeof(*___res)){r0, r1, r2, r3};            \
     } while ( 0 )
 
+void __arm_smccc_1_0_smc(register_t a0, register_t a1, register_t a2,
+                         register_t a3, register_t a4, register_t a5,
+                         register_t a6, register_t a7,
+                         struct arm_smccc_res *res);
+
+/* Macros to handle variadic parameter for SMCCC v1.0 helper */
+#define __arm_smccc_1_0_smc_7(a0, a1, a2, a3, a4, a5, a6, a7, res)  \
+    __arm_smccc_1_0_smc(a0, a1, a2, a3, a4, a5, a6, a7, res)
+
+#define __arm_smccc_1_0_smc_6(a0, a1, a2, a3, a4, a5, a6, res)  \
+    __arm_smccc_1_0_smc_7(a0, a1, a2, a3, a4, a5, a6, 0, res)
+
+#define __arm_smccc_1_0_smc_5(a0, a1, a2, a3, a4, a5, res)  \
+    __arm_smccc_1_0_smc_6(a0, a1, a2, a3, a4, a5, 0, res)
+
+#define __arm_smccc_1_0_smc_4(a0, a1, a2, a3, a4, res)  \
+    __arm_smccc_1_0_smc_5(a0, a1, a2, a3, a4, 0, res)
+
+#define __arm_smccc_1_0_smc_3(a0, a1, a2, a3, res)  \
+    __arm_smccc_1_0_smc_4(a0, a1, a2, a3, 0, res)
+
+#define __arm_smccc_1_0_smc_2(a0, a1, a2, res)  \
+    __arm_smccc_1_0_smc_3(a0, a1, a2, 0, res)
+
+#define __arm_smccc_1_0_smc_1(a0, a1, res)  \
+    __arm_smccc_1_0_smc_2(a0, a1, 0, res)
+
+#define __arm_smccc_1_0_smc_0(a0, res)  \
+    __arm_smccc_1_0_smc_1(a0, 0, res)
+
+#define ___arm_smccc_1_0_smc_count(count, ...)    \
+    __arm_smccc_1_0_smc_ ## count(__VA_ARGS__)
+
+#define __arm_smccc_1_0_smc_count(count, ...)   \
+    ___arm_smccc_1_0_smc_count(count, __VA_ARGS__)
+
+#define arm_smccc_1_0_smc(...)                                              \
+        __arm_smccc_1_0_smc_count(__count_args(__VA_ARGS__), __VA_ARGS__)
+
+#define arm_smccc_smc(...)                      \
+        arm_smccc_1_0_smc(__VA_ARGS__);
 
 /*
  * Construct function identifier from call type (fast or standard),
@@ -212,6 +253,50 @@ struct arm_smccc_res {
 /* SMCCC function identifier range which is reserved for existing APIs */
 #define ARM_SMCCC_RESERVED_RANGE_START  0x0
 #define ARM_SMCCC_RESERVED_RANGE_END    0x0100FFFF
+
+/* List of generic function numbers */
+#define ARM_SMCCC_CALL_COUNT_FID(owner)             \
+    ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
+                       ARM_SMCCC_CONV_32,           \
+                       ARM_SMCCC_OWNER_##owner,     \
+                       0xFF00)
+
+#define ARM_SMCCC_CALL_UID_FID(owner)               \
+    ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
+                       ARM_SMCCC_CONV_32,           \
+                       ARM_SMCCC_OWNER_##owner,     \
+                       0xFF01)
+
+#define ARM_SMCCC_REVISION_FID(owner)               \
+    ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
+                       ARM_SMCCC_CONV_32,           \
+                       ARM_SMCCC_OWNER_##owner,     \
+                       0xFF03)
+
+#define ARM_SMCCC_VERSION_FID                       \
+    ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
+                       ARM_SMCCC_CONV_32,           \
+                       ARM_SMCCC_OWNER_ARCH,        \
+                       0x0)                         \
+
+#define ARM_SMCCC_ARCH_FEATURES_FID                 \
+    ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
+                       ARM_SMCCC_CONV_32,           \
+                       ARM_SMCCC_OWNER_ARCH,        \
+                       0x1)
+
+#define ARM_SMCCC_ARCH_WORKAROUND_1_FID             \
+    ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
+                       ARM_SMCCC_CONV_32,           \
+                       ARM_SMCCC_OWNER_ARCH,        \
+                       0x8000)
+
+#define ARM_SMCCC_ARCH_WORKAROUND_2_FID             \
+    ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
+                       ARM_SMCCC_CONV_32,           \
+                       ARM_SMCCC_OWNER_ARCH,        \
+                       0x7FFF)
+
 
 #endif  /* __ASM_ARM_SMCCC_H__ */
 

@@ -14,16 +14,20 @@
  * GNU General Public License for more details.
  */
 
+#include <asm/asm_defns.h>
 #include <asm/macros.h>
 
 /*
- * void call_smccc_smc(register_t a0, register_t a1, register_t a2,
- *                     register_t a3, register_t a4, register_t a5,
- *                     register_t a6, register_t a7, register_t res[4])
+ * void __arm_smccc_1_0_smc(register_t a0, register_t a1, register_t a2,
+ *                          register_t a3, register_t a4, register_t a5,
+ *                          register_t a6, register_t a7,
+ *                          struct arm_smccc_res *res)
  */
-ENTRY(call_smccc_smc)
+ENTRY(__arm_smccc_1_0_smc)
         smc     #0
         ldr     x4, [sp]
-        stp     x0, x1, [x4, 0]
-        stp     x2, x3, [x4, 16]
+        cbz     x4, 1f          /* No need to store the result */
+        stp     x0, x1, [x4, #SMCCC_RES_a0]
+        stp     x2, x3, [x4, #SMCCC_RES_a2]
+1:
         ret

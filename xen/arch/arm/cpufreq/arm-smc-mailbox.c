@@ -30,6 +30,7 @@
 #include <xen/device_tree.h>
 #include <xen/err.h>
 #include <xen/xmalloc.h>
+#include <asm/smccc.h>
 
 #include "mailbox_controller.h"
 #include "wrappers.h"
@@ -38,29 +39,6 @@
  * TODO:
  * 1. Add releasing resources since devm.
  */
-
-struct arm_smccc_res {
-	unsigned long a0;
-	unsigned long a1;
-	unsigned long a2;
-	unsigned long a3;
-};
-
-/* This is just to align interfaces. */
-static inline void arm_smccc_smc(unsigned long a0, unsigned long a1,
-		unsigned long a2, unsigned long a3, unsigned long a4,
-		unsigned long a5, unsigned long a6, unsigned long a7,
-		struct arm_smccc_res *res)
-{
-	register_t ret[4] = { 0 };
-
-	call_smccc_smc(a0, a1, a2, a3, a4, a5, a6, a7, ret);
-
-	res->a0 = ret[0];
-	res->a1 = ret[1];
-	res->a2 = ret[2];
-	res->a3 = ret[3];
-}
 
 static inline void arm_smccc_hvc(unsigned long a0, unsigned long a1,
 		unsigned long a2, unsigned long a3, unsigned long a4,
