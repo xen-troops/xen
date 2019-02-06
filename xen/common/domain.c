@@ -15,6 +15,7 @@
 #include <xen/mm.h>
 #include <xen/event.h>
 #include <xen/vm_event.h>
+#include <xen/vmap.h>
 #include <xen/time.h>
 #include <xen/console.h>
 #include <xen/softirq.h>
@@ -738,7 +739,10 @@ int domain_kill(struct domain *d)
         if ( cpupool_move_domain(d, cpupool0) )
             return -ERESTART;
         for_each_vcpu ( d, v )
+        {
+            unmap_runstate_area(v);
             unmap_vcpu_info(v);
+        }
         d->is_dying = DOMDYING_dead;
         /* Mem event cleanup has to go here because the rings 
          * have to be put before we call put_domain. */
@@ -1192,7 +1196,7 @@ int domain_soft_reset(struct domain *d)
 
     for_each_vcpu ( d, v )
     {
-        set_xen_guest_handle(runstate_guest(v), NULL);
+        unmap_runstate_area(v);
         unmap_vcpu_info(v);
     }
 
@@ -1331,6 +1335,96 @@ void unmap_vcpu_info(struct vcpu *v)
     vcpu_info_reset(v); /* NB: Clobbers v->vcpu_info_mfn */
 
     put_page_and_type(mfn_to_page(mfn));
+}
+
+int map_runstate_area(struct vcpu *v,
+                      struct vcpu_register_runstate_memory_area *area)
+{
+    unsigned long offset;
+    unsigned int i;
+    size_t size =
+#ifdef CONFIG_COMPAT
+        has_32bit_shinfo((v)->domain) ? sizeof(*v->compat_runstate_guest) :
+#endif
+                                        sizeof(*v->runstate_guest);
+
+    if ( v->runstate_guest || v->runstate_nr )
+    {
+        ASSERT_UNREACHABLE();
+        return -EBUSY;
+    }
+
+    offset = area->addr.p & ~PAGE_MASK;
+
+    for ( i = 0; i < ARRAY_SIZE(v->runstate_mfn); i++ )
+    {
+        struct page_info *pg;
+#ifdef CONFIG_X86
+        p2m_type_t t;
+        struct domain *d = v->domain;
+        uint32_t pfec = PFEC_page_present;
+        gfn_t gfn = _gfn(paging_gva_to_gfn(v, area->addr.p, &pfec));
+
+        if ( gfn_eq(gfn, INVALID_GFN) )
+            goto release;
+
+        v->runstate_mfn[i] = get_gfn(d, gfn_x(gfn), &t);
+        if ( t != p2m_ram_rw || mfn_eq(v->runstate_mfn[i], INVALID_MFN) )
+            goto release;
+
+        pg = mfn_to_page(v->runstate_mfn[i]);
+        if ( !pg || !get_page_and_type(pg, d, PGT_writable_page) )
+        {
+            put_gfn(d, gfn_x(gfn));
+            goto release;
+        }
+        put_gfn(d, gfn_x(gfn));
+#elif defined(CONFIG_ARM)
+        pg = get_page_from_gva(v, area->addr.p, GV2M_WRITE);
+        if ( !pg || !get_page_type(pg, PGT_writable_page) )
+            goto release;
+
+        v->runstate_mfn[i] = page_to_mfn(pg);
+#else
+#error Unsopported arquitecture
+#endif
+
+        v->runstate_nr++;
+
+        if ( offset + size <= PAGE_SIZE )
+            break;
+
+        area->addr.p += PAGE_SIZE - offset;
+    }
+
+    v->runstate_guest = vmap(v->runstate_mfn, v->runstate_nr);
+    if ( !v->runstate_guest )
+        goto release;
+    v->runstate_guest = (void *)v->runstate_guest + offset;
+
+    return 0;
+
+ release:
+    for ( i = 0; i < v->runstate_nr; i++)
+        put_page_and_type(mfn_to_page(v->runstate_mfn[i]));
+    v->runstate_nr = 0;
+
+    return -EFAULT;
+}
+
+void unmap_runstate_area(struct vcpu *v)
+{
+    unsigned int i;
+
+    if ( !v->runstate_guest )
+        return;
+
+    vunmap(v->runstate_guest);
+    for ( i = 0; i < v->runstate_nr; i++ )
+        put_page_and_type(mfn_to_page(v->runstate_mfn[i]));
+
+    v->runstate_guest = NULL;
+    v->runstate_nr = 0;
 }
 
 int default_initialise_vcpu(struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg)
@@ -1510,27 +1604,17 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
     case VCPUOP_register_runstate_memory_area:
     {
         struct vcpu_register_runstate_memory_area area;
-        struct vcpu_runstate_info runstate;
 
         rc = -EFAULT;
         if ( copy_from_guest(&area, arg, 1) )
             break;
 
-        if ( !guest_handle_okay(area.addr.h, 1) )
+        unmap_runstate_area(v);
+        rc = map_runstate_area(v, &area);
+        if ( rc )
             break;
 
-        rc = 0;
-        runstate_guest(v) = area.addr.h;
-
-        if ( v == current )
-        {
-            __copy_to_guest(runstate_guest(v), &v->runstate, 1);
-        }
-        else
-        {
-            vcpu_runstate_get(v, &runstate);
-            __copy_to_guest(runstate_guest(v), &runstate, 1);
-        }
+        update_runstate_area(v);
 
         break;
     }
