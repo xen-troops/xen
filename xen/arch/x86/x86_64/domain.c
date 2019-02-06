@@ -22,34 +22,21 @@ arch_compat_vcpu_op(
     {
     case VCPUOP_register_runstate_memory_area:
     {
-        struct compat_vcpu_register_runstate_memory_area area;
-        struct compat_vcpu_runstate_info info;
-
-        area.addr.p = 0;
+        union {
+            struct compat_vcpu_register_runstate_memory_area compat;
+            struct vcpu_register_runstate_memory_area native;
+        } area = { };
 
         rc = -EFAULT;
-        if ( copy_from_guest(&area.addr.h, arg, 1) )
+        if ( copy_from_guest(&area.compat.addr.v, arg, 1) )
             break;
 
-        if ( area.addr.h.c != area.addr.p ||
-             !compat_handle_okay(area.addr.h, 1) )
+        unmap_runstate_area(v);
+        rc = map_runstate_area(v, &area.native);
+        if ( rc )
             break;
 
-        rc = 0;
-        guest_from_compat_handle(v->runstate_guest.compat, area.addr.h);
-
-        if ( v == current )
-        {
-            XLAT_vcpu_runstate_info(&info, &v->runstate);
-        }
-        else
-        {
-            struct vcpu_runstate_info runstate;
-
-            vcpu_runstate_get(v, &runstate);
-            XLAT_vcpu_runstate_info(&info, &runstate);
-        }
-        __copy_to_guest(v->runstate_guest.compat, &info, 1);
+        update_runstate_area(v);
 
         break;
     }
