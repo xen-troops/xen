@@ -118,4 +118,10 @@ struct vnuma_info {
 
 void vnuma_destroy(struct vnuma_info *vnuma);
 
+struct vcpu_register_runstate_memory_area;
+int map_runstate_area(struct vcpu *v,
+                      struct vcpu_register_runstate_memory_area *area);
+void unmap_runstate_area(struct vcpu *v);
+void update_runstate_area(struct vcpu *);
+
 #endif /* __XEN_DOMAIN_H__ */

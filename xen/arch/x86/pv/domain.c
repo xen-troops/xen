@@ -313,9 +313,6 @@ static void _toggle_guest_pt(struct vcpu *v)
     if ( !(v->arch.flags & TF_kernel_mode) )
         return;
 
-    if ( v->arch.pv.need_update_runstate_area && update_runstate_area(v) )
-        v->arch.pv.need_update_runstate_area = 0;
-
     if ( v->arch.pv.pending_system_time.version &&
          update_secondary_system_time(v, &v->arch.pv.pending_system_time) )
         v->arch.pv.pending_system_time.version = 0;
