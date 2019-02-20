@@ -651,10 +651,11 @@ typedef struct xen_vnuma_topology_info xen_vnuma_topology_info_t;
 DEFINE_XEN_GUEST_HANDLE(xen_vnuma_topology_info_t);
 
 /*
- * XENMEM_p2m_lookup used by guest to translate array of IPAs to
- * MAs.
+ * XENMEM_p2m_lookup used by guest to translate array of IPAs to MAs. The number
+ * is taken as MEMOP_CMD_MASK-1 at introduction time, in order to not cross
+ * with nearest future changes in XEN interface.
  */
-#define XENMEM_p2m_lookup                   28
+#define XENMEM_p2m_lookup                   62
 
 struct xen_p2m_lookup {
     /* IN */
@@ -668,7 +669,7 @@ struct xen_p2m_lookup {
 typedef struct xen_p2m_lookup xen_p2m_lookup_t;
 DEFINE_XEN_GUEST_HANDLE(xen_p2m_lookup_t);
 
-/* Next available subop number is 29 */
+/* Next available subop number is 28 */
 
 #endif /* __XEN_PUBLIC_MEMORY_H__ */
 
