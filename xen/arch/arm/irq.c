@@ -23,7 +23,9 @@
 #include <xen/init.h>
 #include <xen/errno.h>
 #include <xen/sched.h>
+#include <xen/vmap.h>
 
+#include <asm/io.h>
 #include <asm/gic.h>
 #include <asm/vgic.h>
 
@@ -32,18 +34,42 @@ const unsigned int nr_irqs = NR_IRQS;
 static unsigned int local_irqs_type[NR_LOCAL_IRQS];
 static DEFINE_SPINLOCK(local_irqs_type_lock);
 
-const int gsx_irq_num = 151;
+#define GSX_MAX_OS_CNT                                     8
+#define GSX_REG_BASE_ADDR                         0xfd000000
+#define GSX_REG_BANK_SIZE                            0x10000
+/*
+ * Please note:
+ * The last 5 Guest OSes are sharing one register. The argument for using
+ * the registers this way is that most systems have less than 5 domains.
+ * It is preferable to use the entire register for an OS' IRQ counter
+ * (rather than fit two counters in one register) to minimize the number
+ * of operations involved in triggering and handling an IRQ.
+ */
+#define GSX_OS_IRQ_CNT_REGS  {0x2028, 0x2050, 0x2030, 0x2058, \
+                              0x2058, 0x2058, 0x2058, 0x2058}
+#define GSX_IRQ_STATUS_REG                        0x00000ac8
+#define GSX_IRQ_STATUS_EVENT_MASK                 0x00000004
+#define GSX_IRQ_CLEAR_REG                         0x00000ac8
+#define GSX_IRQ_CLEAR_MASK                        0xfffffffb
 
-/* Total context count is 8, but the 8th context is always used by host */
-#define GSX_GUESTS_CNT    7
+static void __iomem *gsx_reg_base;
+static void __iomem *gsx_irq_cnt_regs[GSX_MAX_OS_CNT];
+const int gsx_irq_num = 151;
 
 /* Describe an IRQ assigned to a guest */
 struct irq_guest
 {
     struct domain *d;
     unsigned int virq;
-    struct domain *gsx_guests[GSX_GUESTS_CNT];
 };
+
+struct gsx_info
+{
+    struct domain *domains[GSX_MAX_OS_CNT];
+    uint32_t irq_cnts[GSX_MAX_OS_CNT];
+};
+
+static struct gsx_info gsx_info;
 
 static void ack_none(struct irq_desc *irq)
 {
@@ -201,74 +227,119 @@ int request_irq(unsigned int irq, unsigned int irqflags,
     return retval;
 }
 
-void remove_gsx_guest(struct domain *d)
+void remove_gsx_domain(struct domain *d)
 {
     struct irq_desc *desc = irq_to_desc(gsx_irq_num);
-    struct irq_guest *info;
+    struct gsx_info *info = desc->action->dev_id;
     unsigned long flags;
-    int i;
 
     if ( !desc->action )
         return;
 
     spin_lock_irqsave(&desc->lock, flags);
 
-    info = irq_get_guest_info(desc);
-
-    /* clear a slot occupied by gsx guest */
-    for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
+    if ( (d->arch.vgsx_osid < GSX_MAX_OS_CNT) &&
+         (info->domains[d->arch.vgsx_osid] == d) )
     {
-        if ( !info->gsx_guests[i] )
-            continue;
+        info->domains[d->arch.vgsx_osid] = NULL;
 
-        if ( info->gsx_guests[i] == d )
-        {
-            info->gsx_guests[i] = NULL;
-            printk("Removed GSX guest domain %u\n", d->domain_id);
-            break;
-        }
+        printk(XENLOG_INFO "Removed GSX %pd (OSID %u)\n", d, d->arch.vgsx_osid);
     }
 
     spin_unlock_irqrestore(&desc->lock, flags);
 }
 
 /* called with desc->lock held */
-static void add_gsx_guest(struct domain *d, struct irq_guest *info)
+static int add_gsx_domain(struct domain *d)
 {
-    int i;
+    struct irq_desc *desc = irq_to_desc(gsx_irq_num);
+    struct gsx_info *info = desc->action->dev_id;
 
-    /* find an empty slot to put gsx guest in it */
-    for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
+    ASSERT(spin_is_locked(&desc->lock));
+
+    if ( (d->arch.vgsx_osid < GSX_MAX_OS_CNT) &&
+         (info->domains[d->arch.vgsx_osid] == NULL) )
     {
-        if ( info->gsx_guests[i] )
-           continue;
+        info->domains[d->arch.vgsx_osid] = d;
 
-        info->gsx_guests[i] = d;
-        printk("Added GSX guest domain %u\n", d->domain_id);
-        break;
+        printk(XENLOG_INFO "Added GSX %pd (OSID %u)\n", d, d->arch.vgsx_osid);
+
+        return 0;
     }
 
-    BUG_ON(i == ARRAY_SIZE(info->gsx_guests));
+    printk(XENLOG_ERR "Failed to add GSX %pd (OSID %u)\n", d,
+           d->arch.vgsx_osid);
+
+    return -1;
 }
 
-/* called with desc->lock held */
-static void init_gsx_guests(struct domain *d, struct irq_guest *info)
+static void gsx_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)
 {
-    memset(info->gsx_guests, 0, sizeof(info->gsx_guests));
-}
-
-/* called with desc->lock held */
-static void inject_to_gsx_guests(struct irq_guest *info)
-{
+    struct irq_desc *desc = irq_to_desc(gsx_irq_num);
+    struct gsx_info *info = desc->action->dev_id;
+    uint32_t irq_cnt, irq_status;
+    bool injected = false;
     int i;
 
-    /* inject irq to all gsx guests */
-    for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
+    spin_lock_irq(&desc->lock);
+
+    /* Clear irq status to avoid irq to be raised again */
+    irq_status = readl_relaxed(gsx_reg_base + GSX_IRQ_STATUS_REG);
+    if ( irq_status & GSX_IRQ_STATUS_EVENT_MASK )
     {
-        if ( !info->gsx_guests[i] )
-            continue;
-        vgic_inject_irq(info->gsx_guests[i], NULL, info->virq, true);
+        writel_relaxed(GSX_IRQ_CLEAR_MASK, gsx_reg_base + GSX_IRQ_CLEAR_REG);
+
+        /* Inject irq to required gsx domains */
+        for ( i = 0; i < GSX_MAX_OS_CNT; i++ )
+        {
+            if ( !info->domains[i] )
+                continue;
+
+            irq_cnt = readl_relaxed(gsx_irq_cnt_regs[i]);
+            if ( info->irq_cnts[i] != irq_cnt )
+            {
+                info->irq_cnts[i] = irq_cnt;
+                vgic_inject_irq(info->domains[i], NULL, gsx_irq_num, true);
+                injected = true;
+            }
+        }
     }
+
+    spin_unlock_irq(&desc->lock);
+
+    if ( !injected && (irq_status & GSX_IRQ_STATUS_EVENT_MASK) )
+        printk(XENLOG_WARNING "Failed to inject GSX IRQ\n");
+}
+
+/* TODO GSX platform data (iomem, irq) should be retrieved from dt */
+void init_gsx_interrupt(void)
+{
+    const uint32_t irq_reg_offset[GSX_MAX_OS_CNT] = GSX_OS_IRQ_CNT_REGS;
+    int i, ret;
+
+    gsx_reg_base = ioremap_nocache(GSX_REG_BASE_ADDR, GSX_REG_BANK_SIZE);
+    if ( !gsx_reg_base )
+    {
+        printk(XENLOG_ERR "Failed to map GSX MMIO range\n");
+        return;
+    }
+
+    for ( i = 0; i < GSX_MAX_OS_CNT; i++ )
+        gsx_irq_cnt_regs[i] = gsx_reg_base + irq_reg_offset[i];
+
+    /* Just to be sure */
+    memset(&gsx_info, 0, sizeof(gsx_info));
+
+    irq_set_type(gsx_irq_num, IRQ_TYPE_LEVEL_HIGH);
+    ret = request_irq(gsx_irq_num, 0, gsx_irq_handler, "gsx irq", &gsx_info);
+    if ( ret )
+    {
+        iounmap(gsx_reg_base);
+        printk(XENLOG_ERR "Failed to request GSX IRQ\n");
+        return;
+    }
+
+    printk(XENLOG_INFO "Initialized GSX IRQ\n");
 }
 
 /* Dispatch an interrupt */
@@ -316,8 +387,6 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
          * guests.
          */
         vgic_inject_irq(info->d, NULL, info->virq, true);
-        if ( irq == gsx_irq_num )
-            inject_to_gsx_guests(info);
 
         goto out_no_end;
     }
@@ -561,18 +630,12 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
         if ( test_bit(_IRQ_GUEST, &desc->status) )
         {
             struct domain *ad = irq_get_domain(desc);
-            struct irq_guest *ainfo = irq_get_guest_info(desc);
 
             if ( d != ad )
             {
-                if ( irq != gsx_irq_num )
-                {
-                    printk(XENLOG_G_ERR "IRQ %u is already used by domain %u\n",
-                           irq, ad->domain_id);
-                    retval = -EBUSY;
-                }
-                else
-                    add_gsx_guest(d, ainfo);
+                printk(XENLOG_G_ERR "IRQ %u is already used by domain %u\n",
+                       irq, ad->domain_id);
+                retval = -EBUSY;
             }
             else if ( irq_get_guest_info(desc)->virq != virq )
             {
@@ -584,15 +647,15 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
         }
         else
         {
-            printk(XENLOG_G_ERR "IRQ %u is already used by Xen\n", irq);
-            retval = -EBUSY;
+            if ( irq == gsx_irq_num )
+                retval = add_gsx_domain(d);
+            else
+            {
+                printk(XENLOG_G_ERR "IRQ %u is already used by Xen\n", irq);
+                retval = -EBUSY;
+            }
         }
         goto out;
-    }
-    else
-    {
-        if ( irq == gsx_irq_num )
-            init_gsx_guests(d, info);
     }
 
     retval = __setup_irq(desc, 0, action);
