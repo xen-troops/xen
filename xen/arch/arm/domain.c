@@ -751,6 +751,8 @@ int arch_domain_create(struct domain *d,
     if ( is_hardware_domain(d) && (rc = domain_vuart_init(d)) )
         goto fail;
 
+    d->arch.vgsx_osid = config->arch.vgsx_osid;
+
     return 0;
 
 fail:
