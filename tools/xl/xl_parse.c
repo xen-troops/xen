@@ -2335,6 +2335,7 @@ void parse_config_data(const char *config_source,
         }
         for (i = 0; i < num_iomem; i++) {
             int used;
+            const char *iter;
 
             buf = xlu_cfg_get_listitem (iomem, i);
             if (!buf) {
@@ -2343,19 +2344,55 @@ void parse_config_data(const char *config_source,
                 exit(1);
             }
             libxl_iomem_range_init(&b_info->iomem[i]);
-            ret = sscanf(buf, "%" SCNx64",%" SCNx64"%n@%" SCNx64"%n",
+            /* Parse mandatory part */
+            ret = sscanf(buf, "%" SCNx64",%" SCNx64"%n",
                          &b_info->iomem[i].start,
-                         &b_info->iomem[i].number, &used,
-                         &b_info->iomem[i].gfn, &used);
-            if (ret < 2 || buf[used] != '\0') {
+                         &b_info->iomem[i].number, &used);
+            if (ret < 2) {
                 fprintf(stderr,
                         "xl: Invalid argument parsing iomem: %s\n", buf);
                 exit(1);
             }
+            if (buf[used] == '\0')
+                continue;
+
+            /* Parse optional "@gfn" or ",cacheability" */
+            iter = buf + used;
+            if (iter[0] == '@') {
+                char *ep;
+
+                iter++;
+                b_info->iomem[i].gfn = strtoull(iter, &ep, 16);
+                if (ep == iter) {
+                    fprintf(stderr,
+                            "xl: Invalid @gfn argument in iomem: %s\n", buf);
+                    exit(1);
+                }
+
+                if (*ep == '\0')
+                    continue;
+
+                iter = ep;
+            }
+
+            if (iter[0] == ',') {
+                iter++;
+
+                if (!strncmp(iter, "memory", strlen(iter)))
+                    b_info->iomem[i].cache_policy = LIBXL_CACHEABILITY_MEMORY;
+                else if (!strncmp(iter, "devmem", strlen(iter)))
+                    b_info->iomem[i].cache_policy = LIBXL_CACHEABILITY_DEVMEM;
+                else {
+                    fprintf(stderr,
+                            "xl: Invalid iomem cache parameter: %s\n", buf);
+                    exit(1);
+                }
+            } else {
+                fprintf(stderr, "xl: Invalid iomem format: %s\n", buf);
+                exit(1);
+            }
         }
     }
-
-
 
     if (!xlu_cfg_get_list (config, "disk", &vbds, 0, 0)) {
         d_config->num_disks = 0;
