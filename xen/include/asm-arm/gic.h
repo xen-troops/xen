@@ -252,6 +252,7 @@ int gic_remove_irq_from_guest(struct domain *d, unsigned int virq,
 extern void gic_clear_pending_irqs(struct vcpu *v);
 
 extern void init_maintenance_interrupt(void);
+extern void init_gsx_interrupt(void);
 extern void gic_raise_guest_irq(struct vcpu *v, unsigned int irq,
         unsigned int priority);
 extern void gic_raise_inflight_irq(struct vcpu *v, unsigned int virtual_irq);

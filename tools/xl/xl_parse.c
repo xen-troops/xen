@@ -1202,6 +1202,8 @@ out:
     if (rc) exit(EXIT_FAILURE);
 }
 
+#define GSX_MAX_OS_CNT	8
+
 static int parse_vgsx_config(libxl_device_vgsx *vgsx, char *token)
 {
     char *oparg;
@@ -1210,6 +1212,11 @@ static int parse_vgsx_config(libxl_device_vgsx *vgsx, char *token)
         vgsx->backend_domname = strdup(oparg);
     } else if (MATCH_OPTION("osid", token, oparg)) {
         vgsx->osid = strtoul(oparg, NULL, 0);
+        if (vgsx->osid >= GSX_MAX_OS_CNT) {
+            fprintf(stderr, "Invalid vGSX OSID parameter: %d\n", vgsx->osid);
+            return -1;
+        }
+
     } else {
         fprintf(stderr, "Unknown string \"%s\" in vgsx spec\n", token);
         return -1;

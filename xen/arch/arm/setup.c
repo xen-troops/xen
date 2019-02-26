@@ -885,6 +885,7 @@ void __init start_xen(unsigned long boot_phys_offset,
                     "untrusted domains.\n");
 
     init_maintenance_interrupt();
+    init_gsx_interrupt();
     init_timer_interrupt();
 
     timer_init();
