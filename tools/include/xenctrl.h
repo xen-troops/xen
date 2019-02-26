@@ -1720,6 +1720,14 @@ int xc_domain_memory_mapping(xc_interface *xch,
                              unsigned long nr_mfns,
                              uint32_t add_mapping);
 
+int xc_domain_memory_mapping_cache(xc_interface *xch,
+                                   uint32_t domid,
+                                   unsigned long first_gfn,
+                                   unsigned long first_mfn,
+                                   unsigned long nr_mfns,
+                                   uint32_t add_mapping,
+                                   uint32_t cache_policy);
+
 int xc_domain_ioport_mapping(xc_interface *xch,
                              uint32_t domid,
                              uint32_t first_gport,
