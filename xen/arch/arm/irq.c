@@ -23,7 +23,9 @@
 #include <xen/init.h>
 #include <xen/errno.h>
 #include <xen/sched.h>
+#include <xen/vmap.h>
 
+#include <asm/io.h>
 #include <asm/gic.h>
 #include <asm/vgic.h>
 
@@ -32,10 +34,16 @@ const unsigned int nr_irqs = NR_IRQS;
 static unsigned int local_irqs_type[NR_LOCAL_IRQS];
 static DEFINE_SPINLOCK(local_irqs_type_lock);
 
-const int gsx_irq_num = 151;
-
 /* Total context count is 8, but the 8th context is always used by host */
-#define GSX_GUESTS_CNT    7
+#define GSX_GUESTS_CNT                                     7
+#define GSX_MAX_OS_CNT                                     8
+#define GSX_REG_BASE_ADDR                         0xfd000000
+#define GSX_REG_BANK_SIZE                            0x10000
+#define GSX_OS_IRQ_CNT_REGS  {0x2028, 0x2050, 0x2030, 0x2058, \
+                              0x2058, 0x2058, 0x2058, 0x2058}
+
+static void __iomem *gsx_irq_cnt_regs[GSX_MAX_OS_CNT];
+const int gsx_irq_num = 151;
 
 /* Describe an IRQ assigned to a guest */
 struct irq_guest
@@ -43,6 +51,7 @@ struct irq_guest
     struct domain *d;
     unsigned int virq;
     struct domain *gsx_guests[GSX_GUESTS_CNT];
+    u32 gsx_irq_cnt[GSX_MAX_OS_CNT];
 };
 
 static void ack_none(struct irq_desc *irq)
@@ -129,6 +138,27 @@ static int init_local_irq_data(void)
     return 0;
 }
 
+static int __init init_gsx_irq_regs(void)
+{
+    int i;
+    void __iomem *gsx_reg_base;
+    const u32 irq_reg_offset[GSX_MAX_OS_CNT] = GSX_OS_IRQ_CNT_REGS;
+
+    gsx_reg_base = ioremap_nocache(GSX_REG_BASE_ADDR, GSX_REG_BANK_SIZE);
+    if ( !gsx_reg_base )
+    {
+        printk("failed to map GSX MMIO range\n");
+        return -EFAULT;
+    }
+
+    for (i = 0; i < GSX_MAX_OS_CNT; i++)
+    {
+        gsx_irq_cnt_regs[i] = gsx_reg_base + irq_reg_offset[i];
+    }
+
+    return 0;
+}
+
 void __init init_IRQ(void)
 {
     int irq;
@@ -140,6 +170,7 @@ void __init init_IRQ(void)
 
     BUG_ON(init_local_irq_data() < 0);
     BUG_ON(init_irq_data() < 0);
+    BUG_ON(init_gsx_irq_regs() < 0);
 }
 
 void init_secondary_IRQ(void)
@@ -252,19 +283,31 @@ static void add_gsx_guest(struct domain *d, struct irq_guest *info)
 static void init_gsx_guests(struct domain *d, struct irq_guest *info)
 {
     memset(info->gsx_guests, 0, sizeof(info->gsx_guests));
+    memset(info->gsx_irq_cnt, 0, sizeof(info->gsx_irq_cnt));
 }
 
 /* called with desc->lock held */
 static void inject_to_gsx_guests(struct irq_guest *info)
 {
     int i;
+    u32 irq_cnt;
+
+    /* skip the host's counter register */
+    void __iomem **gsx_guest_cnt_regs = &gsx_irq_cnt_regs[1];
+    u32 *gsx_guest_cnt = &info->gsx_irq_cnt[1];
 
     /* inject irq to all gsx guests */
     for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
     {
         if ( !info->gsx_guests[i] )
             continue;
-        vgic_inject_irq(info->gsx_guests[i], NULL, info->virq, true);
+
+        irq_cnt = readl_relaxed(gsx_guest_cnt_regs[i]);
+        if ( gsx_guest_cnt[i] != irq_cnt )
+        {
+            gsx_guest_cnt[i] = irq_cnt;
+            vgic_inject_irq(info->gsx_guests[i], NULL, info->virq, true);
+        }
     }
 }
 
