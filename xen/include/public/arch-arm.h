@@ -318,6 +318,11 @@ struct xen_arch_domainconfig {
     /* IN */
     uint32_t nr_spis;
     /*
+     * IN
+     * OSID used by virtual GSX device.
+     */
+    uint8_t vgsx_osid;
+    /*
      * OUT
      * Based on the property clock-frequency in the DT timer node.
      * The property may be present when the bootloader/firmware doesn't
