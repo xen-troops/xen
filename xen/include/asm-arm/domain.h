@@ -97,6 +97,9 @@ struct arch_domain
     struct vpl011 vpl011;
 #endif
 
+    /* OSID used by virtual GSX device */
+    uint8_t vgsx_osid;
+
 }  __cacheline_aligned;
 
 struct arch_vcpu

@@ -63,11 +63,6 @@ struct irq_guest
     unsigned int virq;
 };
 
-/*
- * TODO There should be mapping between domains and OSIDs, for Xen to properly
- * recognize to what domain to inject gsx irq as there may be a case when
- * domains[X] pointing to a domain with OSID != X.
- */
 struct gsx_info
 {
     struct domain *domains[GSX_MAX_OS_CNT];
@@ -237,22 +232,16 @@ void remove_gsx_domain(struct domain *d)
     struct irq_desc *desc = irq_to_desc(gsx_irq_num);
     struct gsx_info *info = desc->action->dev_id;
     unsigned long flags;
-    int i;
 
     spin_lock_irqsave(&desc->lock, flags);
 
-    /* clear a slot occupied by gsx domain */
-    for ( i = 0; i < GSX_MAX_OS_CNT; i++ )
+    if ( (d->arch.vgsx_osid < GSX_MAX_OS_CNT) &&
+         (info->domains[d->arch.vgsx_osid] != NULL) )
     {
-        if ( !info->domains[i] )
-            continue;
+        info->domains[d->arch.vgsx_osid] = NULL;
 
-        if ( info->domains[i] == d )
-        {
-            info->domains[i] = NULL;
-            printk("Removed GSX domain %u\n", d->domain_id);
-            break;
-        }
+        printk("Removed GSX domain %u (OSID %u)\n", d->domain_id,
+               d->arch.vgsx_osid);
     }
 
     spin_unlock_irqrestore(&desc->lock, flags);
@@ -263,22 +252,17 @@ static void add_gsx_domain(struct domain *d)
 {
     struct irq_desc *desc = irq_to_desc(gsx_irq_num);
     struct gsx_info *info = desc->action->dev_id;
-    int i;
 
     ASSERT(spin_is_locked(&desc->lock));
 
-    /* find an empty slot to put gsx domain in it */
-    for ( i = 0; i < GSX_MAX_OS_CNT; i++ )
+    if ( (d->arch.vgsx_osid < GSX_MAX_OS_CNT) &&
+         (info->domains[d->arch.vgsx_osid] == NULL) )
     {
-        if ( info->domains[i] )
-           continue;
+        info->domains[d->arch.vgsx_osid] = d;
 
-        info->domains[i] = d;
-        printk("Added GSX domain %u\n", d->domain_id);
-        break;
+        printk("Added GSX domain %u (OSID %u)\n", d->domain_id,
+               d->arch.vgsx_osid);
     }
-
-    BUG_ON(i == GSX_MAX_OS_CNT);
 }
 
 static void gsx_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)

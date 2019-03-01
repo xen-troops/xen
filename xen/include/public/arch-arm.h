@@ -328,6 +328,11 @@ struct xen_arch_domainconfig {
      * IOMMU is expected to be used for this domain.
      */
     uint8_t use_iommu;
+    /*
+     * IN
+     * OSID used by virtual GSX device.
+     */
+    uint8_t vgsx_osid;
 };
 #endif /* __XEN__ || __XEN_TOOLS__ */
 
