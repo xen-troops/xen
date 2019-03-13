@@ -34,6 +34,9 @@
 
 #include "io-pgtable.h"
 
+/* This option enables real backup/restore operations */
+#define CONFIG_RCAR_DDR_BACKUP
+
 /* TODO:
  * 1. Optimize xen_domain->lock usage.
  * 2. Show domain_id in every printk which is per Xen domain.
@@ -302,10 +305,8 @@ struct ipmmu_vmsa_archdata {
 static DEFINE_SPINLOCK(ipmmu_devices_lock);
 static LIST_HEAD(ipmmu_devices);
 
-#if 0 /* Xen: Not needed */
 static DEFINE_SPINLOCK(ipmmu_slave_devices_lock);
 static LIST_HEAD(ipmmu_slave_devices);
-#endif
 
 static struct ipmmu_vmsa_domain *to_vmsa_domain(struct iommu_domain *dom)
 {
@@ -1576,7 +1577,15 @@ static __maybe_unused void ipmmu_destroy_platform_device(struct device *dev)
 	if (!archdata)
 		return;
 
+	spin_lock(&ipmmu_slave_devices_lock);
+	list_del(&archdata->list);
+	spin_unlock(&ipmmu_slave_devices_lock);
+
 	kfree(archdata->utlbs);
+#ifdef CONFIG_RCAR_DDR_BACKUP
+	kfree(archdata->utlbs_val);
+	kfree(archdata->asids_val);
+#endif
 	kfree(archdata);
 	set_archdata(dev, NULL);
 }
@@ -1587,7 +1596,7 @@ static int ipmmu_init_platform_device(struct device *dev)
 	struct ipmmu_vmsa_device *mmus[IPMMU_PER_DEV_MAX];
 	struct ipmmu_vmsa_utlb *utlbs;
 #ifdef CONFIG_RCAR_DDR_BACKUP
-	unsigned int *utlbs_val, *asids_val;
+	unsigned int *utlbs_val = NULL, *asids_val = NULL;
 #endif
 	unsigned int i;
 	int num_utlbs;
@@ -1607,11 +1616,15 @@ static int ipmmu_init_platform_device(struct device *dev)
 
 #ifdef CONFIG_RCAR_DDR_BACKUP
 	utlbs_val = kcalloc(num_utlbs, sizeof(*utlbs_val), GFP_KERNEL);
-	if (!utlbs_val)
-		return -ENOMEM;
+	if (!utlbs_val) {
+		ret = -ENOMEM;
+		goto error;
+	}
 	asids_val = kcalloc(num_utlbs, sizeof(*asids_val), GFP_KERNEL);
-	if (!asids_val)
-		return -ENOMEM;
+	if (!asids_val) {
+		ret = -ENOMEM;
+		goto error;
+	}
 #endif
 
 	ret = ipmmu_find_utlbs(dev, utlbs, num_utlbs);
@@ -1653,6 +1666,10 @@ static int ipmmu_init_platform_device(struct device *dev)
 	archdata->dev = dev;
 	set_archdata(dev, archdata);
 
+	spin_lock(&ipmmu_slave_devices_lock);
+	list_add(&archdata->list, &ipmmu_slave_devices);
+	spin_unlock(&ipmmu_slave_devices_lock);
+
 	/* Xen: */
 	dev_notice(dev, "Initialized master device (IPMMUs %u micro-TLBs %u)\n",
 			num_mmus, num_utlbs);
@@ -1662,6 +1679,10 @@ static int ipmmu_init_platform_device(struct device *dev)
 	return 0;
 
 error:
+#ifdef CONFIG_RCAR_DDR_BACKUP
+	kfree(utlbs_val);
+	kfree(asids_val);
+#endif
 	kfree(utlbs);
 	return ret;
 }
@@ -2112,36 +2133,53 @@ static int ipmmu_remove(struct platform_device *pdev)
 
 	return 0;
 }
+#endif
 
-#ifdef CONFIG_PM_SLEEP
 #ifdef CONFIG_RCAR_DDR_BACKUP
-static int ipmmu_utlbs_backup(struct ipmmu_vmsa_device *mmu)
+/*
+ * Xen: Unlike Linux implementation, Xen is able to handle master devices tied
+ * to multiple cache IPMMUs. So, struct ipmmu_vmsa_archdata which describes
+ * a master device, contains addition elements (*utlbs) which allow us
+ * to identify cache IPMMU a particular device's UTLB is associated with.
+ *
+ * struct ipmmu_vmsa_archdata {
+ *     ...
+ *     struct ipmmu_vmsa_utlb *utlbs;
+ *     unsigned int num_utlbs;
+ *     ...
+ * };
+ *
+ * struct ipmmu_vmsa_utlb {
+ *     // Cache IPMMU the uTLB is connected to
+ *     struct ipmmu_vmsa_device *mmu;
+ *     unsigned int utlb;
+ * };
+ *
+ * This is why we don't need to pass IPMMU to these functions for finding a
+ * matching device, but just iterate through all registered devices performing
+ * uTLB backup/restore.
+ */
+static int ipmmu_utlbs_backup(void)
 {
-	unsigned int i;
-	struct ipmmu_vmsa_device *slave_mmu = NULL;
 	struct ipmmu_vmsa_archdata *slave_dev = NULL;
-
-	pr_debug("%s: Handle UTLB backup\n", dev_name(mmu->dev));
 
 	spin_lock(&ipmmu_slave_devices_lock);
 
 	list_for_each_entry(slave_dev, &ipmmu_slave_devices, list) {
-		slave_mmu = slave_dev->mmu;
+		unsigned int i;
 
-		if (slave_mmu != mmu)
-			continue;
+		dev_dbg(slave_dev->dev, "Handle UTLB backup\n");
 
 		for (i = 0; i < slave_dev->num_utlbs; ++i) {
-			slave_dev->utlbs_val[i] =
-				ipmmu_read(slave_mmu,
-					IMUCTR(slave_dev->utlbs[i]));
-			slave_dev->asids_val[i] =
-				ipmmu_read(slave_mmu,
-					IMUASID(slave_dev->utlbs[i]));
-			pr_debug("%d: Backup UTLB[%d]: 0x%x, ASID[%d]: %d\n",
-				i, slave_dev->utlbs[i], slave_dev->utlbs_val[i],
-				slave_dev->utlbs[i],
-				slave_dev->asids_val[i]);
+			struct ipmmu_vmsa_device *mmu = slave_dev->utlbs[i].mmu;
+			unsigned int utlb = slave_dev->utlbs[i].utlb;
+
+			slave_dev->utlbs_val[i] = ipmmu_read(mmu, IMUCTR(utlb));
+			slave_dev->asids_val[i] = ipmmu_read(mmu, IMUASID(utlb));
+
+			dev_dbg(slave_dev->dev, "%d: IPMMU: %s UTLB[%d]: 0x%x, ASID[%d]: %d\n",
+					i, dev_name(mmu->dev), utlb, slave_dev->utlbs_val[i],
+					utlb, slave_dev->asids_val[i]);
 		}
 	}
 
@@ -2150,35 +2188,27 @@ static int ipmmu_utlbs_backup(struct ipmmu_vmsa_device *mmu)
 	return 0;
 }
 
-static int ipmmu_utlbs_restore(struct ipmmu_vmsa_device *mmu)
+static int ipmmu_utlbs_restore(void)
 {
-	unsigned int i;
-	struct ipmmu_vmsa_device *slave_mmu = NULL;
 	struct ipmmu_vmsa_archdata *slave_dev = NULL;
-
-	pr_debug("%s: Handle UTLB restore\n", dev_name(mmu->dev));
 
 	spin_lock(&ipmmu_slave_devices_lock);
 
 	list_for_each_entry(slave_dev, &ipmmu_slave_devices, list) {
-		slave_mmu = slave_dev->mmu;
+		unsigned int i;
 
-		if (slave_mmu != mmu)
-			continue;
+		dev_dbg(slave_dev->dev, "Handle UTLB restore\n");
 
 		for (i = 0; i < slave_dev->num_utlbs; ++i) {
-			ipmmu_write(slave_mmu, IMUASID(slave_dev->utlbs[i]),
-					slave_dev->asids_val[i]);
-			ipmmu_write(slave_mmu,
-				IMUCTR(slave_dev->utlbs[i]),
-				(slave_dev->utlbs_val[i] | IMUCTR_FLUSH));
-			pr_debug("%d: Restore UTLB[%d]: 0x%x, ASID[%d]: %d\n",
-				i, slave_dev->utlbs[i],
-				ipmmu_read(slave_mmu,
-					IMUCTR(slave_dev->utlbs[i])),
-				slave_dev->utlbs[i],
-				ipmmu_read(slave_mmu,
-				IMUASID(slave_dev->utlbs[i])));
+			struct ipmmu_vmsa_device *mmu = slave_dev->utlbs[i].mmu;
+			unsigned int utlb = slave_dev->utlbs[i].utlb;
+
+			ipmmu_write(mmu, IMUASID(utlb), slave_dev->asids_val[i]);
+			ipmmu_write(mmu, IMUCTR(utlb), (slave_dev->utlbs_val[i] | IMUCTR_FLUSH));
+
+			dev_dbg(slave_dev->dev, "%d: IPMMU: %s UTLB[%d]: 0x%x, ASID[%d]: %d\n",
+					i, dev_name(mmu->dev), utlb, ipmmu_read(mmu, IMUCTR(utlb)),
+					utlb, ipmmu_read(mmu, IMUASID(utlb)));
 		}
 	}
 
@@ -2193,12 +2223,12 @@ static int ipmmu_domain_backup_context(struct ipmmu_vmsa_domain *domain)
 	struct hw_register *reg = mmu->reg_backup[domain->context_id];
 	unsigned int i;
 
-	pr_info("%s: Handle domain context backup\n", dev_name(mmu->dev));
+	dev_dbg(mmu->dev, "Handle IPMMU context %u backup\n", domain->context_id);
 
 	for (i = 0; i < HW_REGISTER_BACKUP_SIZE; i++) {
 		reg[i].reg_data = ipmmu_ctx_read_root(domain, reg[i].reg_offset);
 
-		pr_info("%s: reg_data 0x%x, reg_offset 0x%x\n",
+		dev_dbg(mmu->dev, "%s: reg_data 0x%x, reg_offset 0x%x\n",
 				reg[i].reg_name,
 				reg[i].reg_data,
 				reg[i].reg_offset);
@@ -2213,7 +2243,7 @@ static int ipmmu_domain_restore_context(struct ipmmu_vmsa_domain *domain)
 	struct hw_register *reg = mmu->reg_backup[domain->context_id];
 	unsigned int i;
 
-	pr_info("%s: Handle domain context restore\n", dev_name(mmu->dev));
+	dev_dbg(mmu->dev, "Handle IPMMU context %u restore\n", domain->context_id);
 
 	for (i = 0; i < HW_REGISTER_BACKUP_SIZE; i++) {
 		if (reg[i].reg_offset != IMCTR) {
@@ -2221,7 +2251,7 @@ static int ipmmu_domain_restore_context(struct ipmmu_vmsa_domain *domain)
 				reg[i].reg_offset,
 				reg[i].reg_data);
 
-			pr_info("%s: reg_data 0x%x, reg_offset 0x%x\n",
+			dev_dbg(mmu->dev, "%s: reg_data 0x%x, reg_offset 0x%x\n",
 				reg[i].reg_name,
 				ipmmu_ctx_read_root(domain, reg[i].reg_offset),
 				reg[i].reg_offset);
@@ -2231,7 +2261,7 @@ static int ipmmu_domain_restore_context(struct ipmmu_vmsa_domain *domain)
 				reg[i].reg_offset,
 				reg[i].reg_data | IMCTR_FLUSH);
 
-			pr_info("%s: reg_data 0x%x, reg_offset 0x%x\n",
+			dev_dbg(mmu->dev, "%s: reg_data 0x%x, reg_offset 0x%x\n",
 				reg[i].reg_name,
 				ipmmu_ctx_read_root(domain,
 					reg[i].reg_offset),
@@ -2243,61 +2273,80 @@ static int ipmmu_domain_restore_context(struct ipmmu_vmsa_domain *domain)
 }
 #endif
 
-static int ipmmu_suspend(struct device *dev)
+/*
+ * Xen: Unlike Linux implementation, Xen uses a single driver instance
+ * for handling all IPMMUs. There is no framework for ipmmu_suspend/resume
+ * callbacks to be invoked for each IPMMU. So, we need to iterate through
+ * all registered IPMMUs performing required actions.
+ *
+ * Also take care of restoring special settings, such as translation
+ * table format, disabling IPMMU TLB cache function where required.
+ */
+static int ipmmu_suspend(void)
 {
 #ifdef CONFIG_RCAR_DDR_BACKUP
-	int ctx;
-	unsigned int i;
-	struct ipmmu_vmsa_device *mmu = dev_get_drvdata(dev);
+	struct ipmmu_vmsa_device *mmu = NULL;
 
-	pr_debug("%s: %s\n", __func__, dev_name(dev));
+	spin_lock(&ipmmu_devices_lock);
 
-	/* Only backup UTLB in IPMMU cache devices*/
-	if (!ipmmu_is_root(mmu))
-		ipmmu_utlbs_backup(mmu);
+	ipmmu_utlbs_backup();
 
-	ctx = find_first_zero_bit(mmu->ctx, mmu->num_ctx);
+	list_for_each_entry(mmu, &ipmmu_devices, list) {
+		int ctx;
+		unsigned int i;
 
-	for (i = 0; i < ctx; i++) {
-		pr_info("Handle ctx %d\n", i);
-		ipmmu_domain_backup_context(mmu->domains[i]);
+		if (ipmmu_is_root(mmu)) {
+			ctx = find_first_zero_bit(mmu->ctx, mmu->num_ctx);
+			for (i = 0; i < ctx; i++)
+				ipmmu_domain_backup_context(mmu->domains[i]);
+		}
 	}
+
+	spin_unlock(&ipmmu_devices_lock);
 #endif
 
 	return 0;
 }
 
-static int ipmmu_resume(struct device *dev)
+static void ipmmu_resume(void)
 {
 #ifdef CONFIG_RCAR_DDR_BACKUP
-	int ctx;
-	unsigned int i;
-	struct ipmmu_vmsa_device *mmu = dev_get_drvdata(dev);
+	struct ipmmu_vmsa_device *mmu = NULL;
 
-	pr_debug("%s: %s\n", __func__, dev_name(dev));
+	spin_lock(&ipmmu_devices_lock);
 
-	ctx = find_first_zero_bit(mmu->ctx, mmu->num_ctx);
+	list_for_each_entry(mmu, &ipmmu_devices, list) {
+		int ctx;
+		unsigned int i;
 
-	for (i = 0; i < ctx; i++) {
-		pr_info("Handle ctx %d\n", i);
-		ipmmu_domain_restore_context(mmu->domains[i]);
-	}
-
-	/* Only backup UTLB in IPMMU cache devices*/
-	if (!ipmmu_is_root(mmu))
-		ipmmu_utlbs_restore(mmu);
+		if (ipmmu_is_root(mmu)) {
+#ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
+			/* Use stage 2 translation table format */
+			ipmmu_write(mmu, IMSAUXCTLR,
+					ipmmu_read(mmu, IMSAUXCTLR) | IMSAUXCTLR_S2PTE);
 #endif
 
-	return 0;
+			ctx = find_first_zero_bit(mmu->ctx, mmu->num_ctx);
+			for (i = 0; i < ctx; i++)
+				ipmmu_domain_restore_context(mmu->domains[i]);
+		} else {
+			/*
+			 * Disable IPMMU TLB cache function of IPMMU caches
+			 * that do require such action.
+			 */
+			if (mmu->is_mmu_tlb_disabled)
+				ipmmu_write(mmu, IMSCTLR,
+						ipmmu_read(mmu, IMSCTLR) | IMSCTLR_DISCACHE);
+		}
+	}
+
+	ipmmu_utlbs_restore();
+
+	spin_unlock(&ipmmu_devices_lock);
+#endif
 }
 
-static SIMPLE_DEV_PM_OPS(ipmmu_pm_ops,
-			ipmmu_suspend, ipmmu_resume);
-#define DEV_PM_OPS (&ipmmu_pm_ops)
-#else
-#define DEV_PM_OPS NULL
-#endif /* CONFIG_PM_SLEEP */
-
+#if 0 /* Xen: Not needed */
 static struct platform_driver ipmmu_driver = {
 	.driver = {
 		.name = "ipmmu-vmsa",
@@ -2798,6 +2847,26 @@ static void ipmmu_vmsa_dump_p2m_table(struct domain *d)
 #endif
 }
 
+static int __must_check ipmmu_vmsa_suspend(void)
+{
+	if (!iommu_enabled)
+		return 0;
+
+	printk(XENLOG_DEBUG "Suspending IPMMU ...\n");
+
+	return ipmmu_suspend();
+}
+
+static void ipmmu_vmsa_resume(void)
+{
+	if (!iommu_enabled)
+		return;
+
+	printk(XENLOG_DEBUG "Resuming IPMMU ...\n");
+
+	ipmmu_resume();
+}
+
 static const struct iommu_ops ipmmu_vmsa_iommu_ops = {
 	.init = ipmmu_vmsa_domain_init,
 	.hwdom_init = ipmmu_vmsa_hwdom_init,
@@ -2810,6 +2879,8 @@ static const struct iommu_ops ipmmu_vmsa_iommu_ops = {
 	.map_pages = ipmmu_vmsa_map_pages,
 	.unmap_pages = ipmmu_vmsa_unmap_pages,
 	.dump_p2m_table = ipmmu_vmsa_dump_p2m_table,
+	.suspend = ipmmu_vmsa_suspend,
+	.resume = ipmmu_vmsa_resume,
 };
 
 static __init const struct ipmmu_vmsa_device *find_ipmmu(const struct device *dev)
