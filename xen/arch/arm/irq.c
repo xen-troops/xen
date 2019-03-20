@@ -278,26 +278,28 @@ static void gsx_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)
     /* clear irq status to avoid irq to be raised again */
     irq_status = readl_relaxed(gsx_reg_base + GSX_IRQ_STATUS_REG);
     if ( irq_status & GSX_IRQ_STATUS_EVENT_MASK )
-         writel_relaxed(GSX_IRQ_CLEAR_MASK, gsx_reg_base + GSX_IRQ_CLEAR_REG);
-
-    /* inject irq to required gsx domains */
-    for ( i = 0; i < GSX_MAX_OS_CNT; i++ )
     {
-        if ( !info->domains[i] )
-            continue;
+        writel_relaxed(GSX_IRQ_CLEAR_MASK, gsx_reg_base + GSX_IRQ_CLEAR_REG);
 
-        irq_cnt = readl_relaxed(gsx_irq_cnt_regs[i]);
-        if ( info->irq_cnts[i] != irq_cnt )
+        /* inject irq to required gsx domains */
+        for ( i = 0; i < GSX_MAX_OS_CNT; i++ )
         {
-            info->irq_cnts[i] = irq_cnt;
-            vgic_inject_irq(info->domains[i], NULL, gsx_irq_num, true);
-            injected = true;
+            if ( !info->domains[i] )
+                continue;
+
+            irq_cnt = readl_relaxed(gsx_irq_cnt_regs[i]);
+            if ( info->irq_cnts[i] != irq_cnt )
+            {
+                info->irq_cnts[i] = irq_cnt;
+                vgic_inject_irq(info->domains[i], NULL, gsx_irq_num, true);
+                injected = true;
+            }
         }
     }
 
     spin_unlock_irq(&desc->lock);
 
-    if (!injected)
+    if ( !injected && (irq_status & GSX_IRQ_STATUS_EVENT_MASK) )
         printk("Failed to inject GSX IRQ\n");
 }
 
