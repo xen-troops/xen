@@ -984,13 +984,6 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 				~(IMBUSCR_DVM | IMBUSCR_BUSSEL_MASK));
 
 	/*
-	 * IMSAUXCTLR
-	 * Use stage 2 translation table format.
-	 */
-	ipmmu_ctx_write_root(domain, IMSAUXCTLR, ipmmu_ctx_read_root(domain, IMSAUXCTLR) |
-		IMSAUXCTLR_S2PTE);
-
-	/*
 	 * IMSTR
 	 * Clear all interrupt flags.
 	 */
@@ -2062,6 +2055,12 @@ static int ipmmu_probe(struct platform_device *pdev)
 		}
 
 		ipmmu_device_reset(mmu);
+
+#ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
+		/* Use stage 2 translation table format */
+		ipmmu_write(mmu, IMSAUXCTLR,
+				ipmmu_read(mmu, IMSAUXCTLR) | IMSAUXCTLR_S2PTE);
+#endif
 	} else {
 		/* Only IPMMU caches are affected */
 		mmu->is_mmu_tlb_disabled = ipmmu_is_mmu_tlb_disable_needed(pdev);
