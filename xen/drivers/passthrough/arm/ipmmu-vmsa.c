@@ -1224,13 +1224,6 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 #if 0
 		ret = ipmmu_domain_init_context(domain);
 #endif
-		/*
-		 * Here we have to disable IPMMU TLB cache function of IPMMU caches
-		 * that do require such action.
-		 */
-		if (domain->mmus[0]->is_mmu_tlb_disabled)
-			ipmmu_ctx_write_cache(domain, IMSCTLR,
-					ipmmu_ctx_read_root(domain, IMSCTLR) | IMSCTLR_DISCACHE);
 
 		ipmmu_ctx_write_cache(domain, IMCTR,
 				ipmmu_ctx_read_root(domain, IMCTR) | IMCTR_FLUSH);
@@ -2064,6 +2057,14 @@ static int ipmmu_probe(struct platform_device *pdev)
 	} else {
 		/* Only IPMMU caches are affected */
 		mmu->is_mmu_tlb_disabled = ipmmu_is_mmu_tlb_disable_needed(pdev);
+
+		/*
+		 * Disable IPMMU TLB cache function of IPMMU caches
+		 * that do require such action.
+		 */
+		if (mmu->is_mmu_tlb_disabled)
+			ipmmu_write(mmu, IMSCTLR,
+					ipmmu_read(mmu, IMSCTLR) | IMSCTLR_DISCACHE);
 	}
 
 	/*
