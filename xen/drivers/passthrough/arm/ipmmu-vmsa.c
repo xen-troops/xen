@@ -660,16 +660,14 @@ static void ipmmu_ctx_write_cache(struct ipmmu_vmsa_domain *domain, unsigned int
  * Xen: Write the context for both root IPMMU and all cache IPMMUs
  * that assigned to this Xen domain.
  */
-static void ipmmu_ctx_write_all(struct ipmmu_vmsa_domain *domain, unsigned int reg,
-			     u32 data)
+static __maybe_unused void ipmmu_ctx_write_all(struct ipmmu_vmsa_domain *domain,
+		unsigned int reg, u32 data)
 {
-#ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(domain->d)->arch.priv;
 	struct iommu_domain *io_domain;
 
 	list_for_each_entry(io_domain, &xen_domain->contexts, list)
 		ipmmu_ctx_write_cache(to_vmsa_domain(io_domain), reg, data);
-#endif
 
 	ipmmu_ctx_write_root(domain, reg, data);
 }
@@ -700,7 +698,11 @@ static void ipmmu_tlb_invalidate(struct ipmmu_vmsa_domain *domain)
 
 	reg = ipmmu_ctx_read_root(domain, IMCTR);
 	reg |= IMCTR_FLUSH;
+#ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
 	ipmmu_ctx_write_all(domain, IMCTR, reg);
+#else
+	ipmmu_ctx_write_root(domain, IMCTR, reg);
+#endif
 
 	ipmmu_tlb_sync(domain);
 }
