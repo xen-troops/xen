@@ -2316,8 +2316,12 @@ static void ipmmu_resume(void)
 	spin_lock(&ipmmu_devices_lock);
 
 	list_for_each_entry(mmu, &ipmmu_devices, list) {
-		int ctx;
+		int ctx, rc;
 		unsigned int i;
+
+		rc = ipmmu_preinit(mmu->dev->of_node);
+		if (rc)
+			dev_err(mmu->dev, "failed to preinit IPMMU (%d)\n", rc);
 
 		if (ipmmu_is_root(mmu)) {
 #ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
