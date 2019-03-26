@@ -1,6 +1,7 @@
 #include <xen/sched.h>
 #include <xen/cpu.h>
 #include <xen/console.h>
+#include <xen/iommu.h>
 #include <asm/cpufeature.h>
 #include <asm/event.h>
 #include <asm/psci.h>
@@ -142,6 +143,13 @@ static long system_suspend(void *data)
 
     time_suspend();
 
+    status = iommu_suspend();
+    if ( status )
+    {
+        system_state = SYS_STATE_resume;
+        goto resume_time;
+    }
+
     local_irq_save(flags);
     status = gic_suspend();
     if ( status )
@@ -194,6 +202,9 @@ resume_console:
 resume_irqs:
     local_irq_restore(flags);
 
+    iommu_resume();
+
+resume_time:
     time_resume();
 
 resume_nonboot_cpus:
