@@ -100,6 +100,17 @@ static const struct rcar_sysc_ch rcar_sysc_chs[2] = {
 
 #define dev_name(dev) dt_node_full_name(dev_to_dt(dev))
 
+static u32 syscier_val, syscimr_val;
+
+void rcar_sysc_restore(void)
+{
+	ASSERT(system_state == SYS_STATE_resume);
+
+	/* Re-enable interrupt sources when resuming */
+	writel(syscimr_val, rcar_sysc_base + SYSCIMR);
+	writel(syscier_val, rcar_sysc_base + SYSCIER);
+}
+
 static int rcar_sysc_init(void)
 {
 	u32 syscier, syscimr;
@@ -132,6 +143,9 @@ static int rcar_sysc_init(void)
 
 	/* SYSC needs all interrupt sources enabled to control power */
 	writel(syscier, rcar_sysc_base + SYSCIER);
+
+	syscier_val = syscier;
+	syscimr_val = syscimr;
 
 	return 0;
 }
