@@ -49,6 +49,7 @@
 
 extern int ipmmu_preinit(struct dt_device_node *np);
 extern bool ipmmu_is_mmu_tlb_disable_needed(struct dt_device_node *np);
+extern void rcar_sysc_restore(void);
 
 /***** Start of Xen specific code *****/
 
@@ -2312,6 +2313,8 @@ static void ipmmu_resume(void)
 {
 #ifdef CONFIG_RCAR_DDR_BACKUP
 	struct ipmmu_vmsa_device *mmu = NULL;
+
+	rcar_sysc_restore();
 
 	spin_lock(&ipmmu_devices_lock);
 
