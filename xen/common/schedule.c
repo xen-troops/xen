@@ -779,8 +779,9 @@ void restore_vcpu_affinity(struct domain *d)
 }
 
 /*
- * This function is used by cpu_hotplug code from stop_machine context
+ * This function is used by cpu_hotplug code via cpu notifier chain
  * and from cpupools to switch schedulers on a cpu.
+ * Caller must get domlist_read_lock.
  */
 int cpu_disable_scheduler(unsigned int cpu)
 {
@@ -795,12 +796,6 @@ int cpu_disable_scheduler(unsigned int cpu)
     if ( c == NULL )
         return ret;
 
-    /*
-     * We'd need the domain RCU lock, but:
-     *  - when we are called from cpupool code, it's acquired there already;
-     *  - when we are called for CPU teardown, we're in stop-machine context,
-     *    so that's not be a problem.
-     */
     for_each_domain_in_cpupool ( d, c )
     {
         for_each_vcpu ( d, v )
@@ -900,6 +895,30 @@ int cpu_disable_scheduler(unsigned int cpu)
     }
 
     return ret;
+}
+
+static int cpu_disable_scheduler_check(unsigned int cpu)
+{
+    struct domain *d;
+    struct vcpu *v;
+    struct cpupool *c;
+
+    c = per_cpu(cpupool, cpu);
+    if ( c == NULL )
+        return 0;
+
+    for_each_domain_in_cpupool ( d, c )
+    {
+        for_each_vcpu ( d, v )
+        {
+            if ( v->affinity_broken )
+                return -EADDRINUSE;
+            if ( system_state != SYS_STATE_suspend && v->processor == cpu )
+                return -EAGAIN;
+        }
+    }
+
+    return 0;
 }
 
 /*
@@ -1784,7 +1803,16 @@ static int cpu_schedule_callback(
     case CPU_UP_PREPARE:
         rc = cpu_schedule_up(cpu);
         break;
+    case CPU_DOWN_PREPARE:
+        rcu_read_lock(&domlist_read_lock);
+        rc = cpu_disable_scheduler_check(cpu);
+        rcu_read_unlock(&domlist_read_lock);
+        break;
     case CPU_DEAD:
+        rcu_read_lock(&domlist_read_lock);
+        rc = cpu_disable_scheduler(cpu);
+        BUG_ON(rc);
+        rcu_read_unlock(&domlist_read_lock);
         SCHED_OP(sched, deinit_pdata, sd->sched_priv, cpu);
         /* Fallthrough */
     case CPU_UP_CANCELED:
