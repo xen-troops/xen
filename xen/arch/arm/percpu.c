@@ -58,10 +58,13 @@ static int cpu_percpu_callback(
     switch ( action )
     {
     case CPU_UP_PREPARE:
+      if ( system_state != SYS_STATE_resume )
         rc = init_percpu_area(cpu);
         break;
     case CPU_UP_CANCELED:
     case CPU_DEAD:
+    case CPU_RESUME_FAILED:
+      if ( system_state != SYS_STATE_suspend )
         free_percpu_area(cpu);
         break;
     default:
