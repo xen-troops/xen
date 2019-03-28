@@ -386,10 +386,6 @@ void __cpu_disable(void)
     /* It's now safe to remove this processor from the online map */
     cpumask_clear_cpu(cpu, &cpu_online_map);
 
-    if ( cpu_disable_scheduler(cpu) )
-        BUG();
-    smp_mb();
-
     /* Return to caller; eventually the IPI mechanism will unwind and the 
      * scheduler will drop to the idle loop, which will call stop_cpu(). */
 }
