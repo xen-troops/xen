@@ -262,9 +262,20 @@ static void inject_to_gsx_guests(struct irq_guest *info)
     /* inject irq to all gsx guests */
     for ( i = 0; i < ARRAY_SIZE(info->gsx_guests); i++ )
     {
-        if ( !info->gsx_guests[i] )
+        struct domain *gsx_guest = info->gsx_guests[i];
+
+        if ( !gsx_guest )
             continue;
-        vgic_inject_irq(info->gsx_guests[i], NULL, info->virq, true);
+
+        /*
+         * FIXME: Do not inject into suspended domains, because
+         * this will wake them.
+         */
+        if ( gsx_guest->is_shut_down &&
+             gsx_guest->shutdown_code == SHUTDOWN_suspend )
+            continue;
+
+        vgic_inject_irq(gsx_guest, NULL, info->virq, true);
     }
 }
 
