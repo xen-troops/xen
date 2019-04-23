@@ -35,6 +35,8 @@
 #include <asm/device.h>
 #include <asm/io.h>
 
+extern bool cpufreq_debug;
+
 extern int scpi_cpufreq_throttle(bool enable);
 
 static bool throttle_enabled = false;
@@ -509,6 +511,9 @@ static void thermal_zone_device_update(struct rcar_thermal_priv *priv)
 	ret = rcar_gen3_thermal_get_temp(priv, &temp);
 	if (ret)
 		return;
+
+	if (cpufreq_debug)
+		printk("Current CPU temperature: %d mC\n", temp);
 
 	for (i = 0; i < ARRAY_SIZE(trip_points); i++)
 		handle_thermal_trip(temp, i);
