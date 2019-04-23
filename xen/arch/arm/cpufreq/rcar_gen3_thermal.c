@@ -545,8 +545,8 @@ static void rcar_gen3_thermal_irq(int irq, void *data,
 }
 
 static const struct dt_device_match rcar_thermal_dt_ids[] __initconst = {
-	{ .compatible = "renesas,thermal-r8a7795", },
-	{ .compatible = "renesas,thermal-r8a7796", },
+	{ .compatible = "renesas,r8a7795-thermal", },
+	{ .compatible = "renesas,r8a7796-thermal", },
 	{ },
 };
 
@@ -554,7 +554,7 @@ static int __init rcar_gen3_thermal_probe(struct dt_device_node *np)
 {
 	struct rcar_thermal_priv *priv;
 	struct device *dev = &np->dev;
-	int ret, i, irq_cnt, irqs[3];
+	int ret, i, addr_cnt, irq_cnt, irqs[3];
 	uint64_t addr, size;
 
 	priv = xzalloc(struct rcar_thermal_priv);
@@ -572,7 +572,17 @@ static int __init rcar_gen3_thermal_probe(struct dt_device_node *np)
 	}
 	priv->irq = 1;
 
-	ret = dt_device_get_address(np, 0, &addr, &size);
+	/* Preliminary check for IOMEM(s) to be present: we expect 3 IOMEM */
+	addr_cnt = dt_number_of_address(np);
+	if (addr_cnt != 3) {
+		printk("%s: Got wrong IOMEM count: %d, expected 3!\n",
+		       dev_name(dev), addr_cnt);
+		ret = -ENODEV;
+		goto err_free;
+	}
+
+	/* Get the 3rd thermal sensor */
+	ret = dt_device_get_address(np, 2, &addr, &size);
 	if (ret) {
 		printk("%s: Failed to get MMIO base address\n", dev_name(dev));
 		goto err_free;
@@ -588,7 +598,8 @@ static int __init rcar_gen3_thermal_probe(struct dt_device_node *np)
 	spin_lock_init(&priv->lock);
 	tasklet_init(&priv->work, rcar_gen3_thermal_work, (unsigned long)priv);
 
-	priv->id = dt_alias_get_id(dev->of_node, "tsc");
+	/* Set id corresponding to the 3rd thermal sensor */
+	priv->id = 2;
 
 	rcar_gen3_r8a7796_thermal_init(priv);
 	ret = thermal_read_fuse_factor(priv);
