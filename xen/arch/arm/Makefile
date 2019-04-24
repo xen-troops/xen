@@ -60,6 +60,7 @@ obj-y += vtimer.o
 obj-$(CONFIG_SBSA_VUART_CONSOLE) += vpl011.o
 obj-y += vsmc.o
 obj-y += vpsci.o
+obj-$(CONFIG_VSCMI) += vscmi.o
 obj-y += vuart.o
 
 #obj-bin-y += ....o

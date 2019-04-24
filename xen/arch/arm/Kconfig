@@ -227,6 +227,13 @@ config ARM64_HARDEN_BRANCH_PREDICTOR
 config ARM32_HARDEN_BRANCH_PREDICTOR
     def_bool y if ARM_32 && HARDEN_BRANCH_PREDICTOR
 
+config VSCMI
+	bool "Enable vSCMI server"
+	default y
+	help
+	  Enable vSCMI server in hypervsior. Guest will be able issue SCMI requests,
+	  that will be handler by hypervisor.
+
 source "arch/arm/platforms/Kconfig"
 
 source "common/Kconfig"
