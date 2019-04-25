@@ -35,6 +35,7 @@
 #include <asm/vfp.h>
 #include <asm/vgic.h>
 #include <asm/vtimer.h>
+#include <asm/vscmi.h>
 
 #include "vuart.h"
 
@@ -569,6 +570,9 @@ int arch_vcpu_create(struct vcpu *v)
         goto fail;
 
     if ( (rc = vcpu_vtimer_init(v)) != 0 )
+        goto fail;
+
+    if ( (rc = vcpu_vscmi_init(v)) != 0 )
         goto fail;
 
     /*
