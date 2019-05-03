@@ -23,7 +23,8 @@
 /*
  * cpufreq userspace governor
  */
-static unsigned int __read_mostly userspace_cmdline_freq;
+static unsigned int __read_mostly userspace_cmdline_freq,
+                           userspace_cmdline_count, userspace_cmdline_freq1;
 static DEFINE_PER_CPU(unsigned int, cpu_set_freq);
 
 static int cpufreq_governor_userspace(struct cpufreq_policy *policy,
@@ -87,6 +88,12 @@ cpufreq_userspace_handle_option(const char *name, const char *val)
     if (!strcmp(name, "speed") && val) {
         userspace_cmdline_freq = simple_strtoul(val, NULL, 0);
         return 1;
+    } else if (!strcmp(name, "count") && val) {
+        userspace_cmdline_count = simple_strtoul(val, NULL, 0);
+        return 1;
+    } else if (!strcmp(name, "speed1") && val) {
+        userspace_cmdline_freq1 = simple_strtoul(val, NULL, 0);
+        return 1;
     }
     return 0;
 }
@@ -99,7 +106,10 @@ static int cpufreq_userspace_cpu_callback(
     switch (action)
     {
     case CPU_UP_PREPARE:
-        per_cpu(cpu_set_freq, cpu) = userspace_cmdline_freq;
+        if (cpu < userspace_cmdline_count)
+            per_cpu(cpu_set_freq, cpu) = userspace_cmdline_freq;
+        else
+            per_cpu(cpu_set_freq, cpu) = userspace_cmdline_freq1;
         break;
     }
 
@@ -120,8 +130,12 @@ static int __init cpufreq_gov_userspace_init(void)
 {
     unsigned int cpu;
 
-    for_each_online_cpu(cpu)
-        per_cpu(cpu_set_freq, cpu) = userspace_cmdline_freq;
+    for_each_online_cpu(cpu) {
+        if (cpu < userspace_cmdline_count)
+            per_cpu(cpu_set_freq, cpu) = userspace_cmdline_freq;
+        else
+            per_cpu(cpu_set_freq, cpu) = userspace_cmdline_freq1;
+    }
     register_cpu_notifier(&cpufreq_userspace_cpu_nfb);
     return cpufreq_register_governor(&cpufreq_gov_userspace);
 }
