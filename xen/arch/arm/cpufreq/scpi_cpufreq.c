@@ -191,7 +191,8 @@ static int scpi_cpufreq_target_unlocked(struct cpufreq_policy *policy,
         return result;
 
     if (cpufreq_debug)
-        printk("Switch CPU freq: %u kHz --> %u kHz\n", freqs.old, freqs.new);
+        printk("Switch CPU%u freq: %u kHz --> %u kHz\n", policy->cpu,
+               freqs.old, freqs.new);
 
     for_each_cpu( j, &online_policy_cpus )
         cpufreq_statistic_update(j, perf->state, next_perf_state);
@@ -238,14 +239,20 @@ static inline bool is_turbo_freq(int index, int count)
     /* ugly Boost frequencies recognition */
     switch ( count )
     {
-    /* H3 has 2 turbo-freq among 5 OPPs */
+    /* H3 A57 cluster has 2 turbo-freq among 5 OPPs */
     case 5:
         return index <= 1 ? true : false;
 
-    /* M3 has 3 turbo-freq among 6 OPPs */
+    /* M3 A57 has 3 turbo-freq among 6 OPPs */
     case 6:
         return index <= 2 ? true : false;
 
+    /* M3 A53 has 1 turbo-freq among 4 OPPs */
+    case 4:
+        return index == 1 ? true : false;
+
+    /* H3 A53 cluster has no turbo-freq among 3 OPPs */
+    case 3:
     default:
         return false;
     }
@@ -381,11 +388,9 @@ static int scpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
      */
     policy->resume = 1;
 
-    /*
-     * TODO: We assume that we do DVFS only for A57 cluster, where all
-     * involved CPUs share the same clock. But this should be reconsidered.
-     */
-    target_cpu = policy->cpu;
+    /* TODO: We assume that A57 cluster belongs to power domain 0 */
+    if ( data->domain == 0 )
+        target_cpu = policy->cpu;
 
     return result;
 
