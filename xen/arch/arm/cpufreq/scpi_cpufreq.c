@@ -249,7 +249,7 @@ static inline bool is_turbo_freq(int index, int count)
 
     /* M3 A53 has 1 turbo-freq among 4 OPPs */
     case 4:
-        return index == 1 ? true : false;
+        return index == 0 ? true : false;
 
     /* H3 A53 cluster has no turbo-freq among 3 OPPs */
     case 3:
