@@ -2844,6 +2844,80 @@ static __init void populate_ipmmu_masters(const struct ipmmu_vmsa_device *mmu)
 	}
 }
 
+#ifdef CONFIG_RCAR_IPMMU_PGT_IS_SHARED
+/* RCAR GEN3 product and cut information */
+#define RCAR_PRODUCT_MASK		0x00007F00
+#define RCAR_PRODUCT_H3			0x00004F00
+#define RCAR_PRODUCT_M3			0x00005200
+#define RCAR_PRODUCT_M3N		0x00005500
+#define RCAR_CUT_MASK			0x000000FF
+#define RCAR_CUT_VER30			0x00000020
+
+static __init bool ipmmu_vmsa_stage2_supported(void)
+{
+	struct dt_device_node *np;
+	u64 addr, size;
+	void __iomem *base;
+	u32 product, cut;
+	static enum {
+		UNKNOWN,
+		SUPPORTED,
+		NOTSUPPORTED
+	} stage2_supported = UNKNOWN;
+
+	/* Use the flag to avoid checking for the compatibility more then once */
+	switch (stage2_supported) {
+	case SUPPORTED:
+		return true;
+
+	case NOTSUPPORTED:
+		return false;
+
+	case UNKNOWN:
+	default:
+		stage2_supported = NOTSUPPORTED;
+		break;
+	}
+
+	np = dt_find_compatible_node(NULL, NULL, "renesas,prr");
+	if (!np) {
+		printk("failed to find PRR node\n");
+		return false;
+	}
+
+	if (dt_device_get_address(np, 0, &addr, &size)) {
+		printk("failed to get PRR MMIO\n");
+		return false;
+	}
+
+	base = ioremap_nocache(addr, size);
+	if (!base) {
+		printk("failed to ioremap PRR MMIO\n");
+		return false;
+	}
+
+	product = readl(base);
+	cut = product & RCAR_CUT_MASK;
+	product &= RCAR_PRODUCT_MASK;
+
+	switch (product) {
+	case RCAR_PRODUCT_H3:
+	case RCAR_PRODUCT_M3:
+		if (cut >= RCAR_CUT_VER30)
+			stage2_supported = SUPPORTED;
+		break;
+
+	case RCAR_PRODUCT_M3N:
+		stage2_supported = SUPPORTED;
+		break;
+	}
+
+	iounmap(base);
+
+	return stage2_supported == SUPPORTED;
+}
+#endif
+
 /* TODO: What to do if we failed to init cache/root IPMMU? */
 static __init int ipmmu_vmsa_init(struct dt_device_node *dev,
 				   const void *data)
@@ -2875,11 +2949,10 @@ static __init int ipmmu_vmsa_init(struct dt_device_node *dev,
 		return -EINVAL;
 	}
 
-	if (!dt_device_is_compatible(dev, "renesas,ipmmu-r8a77965") &&
-		!dt_device_is_compatible(dev, "renesas,ipmmu-r8a7795")) {
+	if (!ipmmu_vmsa_stage2_supported()) {
 		dev_err(&dev->dev,
-			"Only M3N/H3 SoC IPMMU supports sharing P2M table with the CPU\n");
-		return -EINVAL;
+			"P2M sharing is not supported in current SoC revision\n");
+		return -EOPNOTSUPP;
 	}
 #endif
 
