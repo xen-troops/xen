@@ -208,6 +208,9 @@ void remove_gsx_guest(struct domain *d)
     unsigned long flags;
     int i;
 
+    if ( !desc->action )
+        return;
+
     spin_lock_irqsave(&desc->lock, flags);
 
     info = irq_get_guest_info(desc);
