@@ -247,6 +247,52 @@ static int __init ipmmu_power_on(struct dt_device_node *np)
 	return ret;
 }
 
+/* PRR MMIO range */
+#define PRR_BASE		0xfff00044
+#define PRR_SIZE		0x4
+
+#define RCAR_PRODUCT_CUT_MASK		0x00007fff
+#define RCAR_PRODUCT_H3_CUT_VER30	0x00004f20
+
+static bool is_soc_h3_es30(void)
+{
+	void __iomem *base;
+	u32 val;
+	static enum {
+		UNKNOWN,
+		DETECTED,
+		NOTDETECTED
+	} h3_es30 = UNKNOWN;
+
+	/* Use the flag to avoid checking for the H3 revision more then once */
+	switch (h3_es30) {
+	case DETECTED:
+		return true;
+
+	case NOTDETECTED:
+		return false;
+
+	case UNKNOWN:
+	default:
+		h3_es30 = NOTDETECTED;
+		break;
+	}
+
+	base = ioremap_nocache(PRR_BASE, PRR_SIZE);
+	if (!base) {
+		printk("failed to ioremap PRR MMIO\n");
+		return false;
+	}
+
+	val = readl(base);
+	if ((val & RCAR_PRODUCT_CUT_MASK) == RCAR_PRODUCT_H3_CUT_VER30)
+		h3_es30 = DETECTED;
+
+	iounmap(base);
+
+	return h3_es30 == DETECTED;
+}
+
 /*
  * Check if we will have to disable IPMMU TLB cache function of IPMMU caches
  * that belong to non ALWAYS_ON power domain (IPMMU-VP0, IPMMU-VC0 belong
@@ -258,9 +304,9 @@ bool ipmmu_is_mmu_tlb_disable_needed(struct dt_device_node *np)
 {
 	int i, pd;
 
-	/* W/A is actual for H3 and M3N SoCs only */
-	if (!dt_device_is_compatible(np, "renesas,ipmmu-r8a7795") &&
-			!dt_device_is_compatible(np, "renesas,ipmmu-r8a77965"))
+	/* W/A is not actual for H3 ES3.0 and M3 any revisions */
+	if (is_soc_h3_es30() ||
+			dt_device_is_compatible(np, "renesas,ipmmu-r8a7796"))
 		return false;
 
 	pd = ipmmu_get_mmu_pd(np);
