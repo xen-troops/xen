@@ -41,6 +41,7 @@ static void __iomem *rcar_sysc_base = NULL;
  */
 #define RCAR_GEN3_PD_A3VP			9
 #define RCAR_GEN3_PD_A3VC			14
+#define RCAR_GEN3_PD_A3IR			24
 /* Always-on power area */
 #define RCAR_GEN3_PD_ALWAYS_ON		32
 
@@ -80,10 +81,10 @@ struct rcar_sysc_ch {
  * we don't care at all. But some of them are located in other domains
  * and must be turned on once at boot.
  * Hopefully, the each of domains we are dealing with within this file
- * (A3VP, A3VP) is identically configured across all SoCs (H3, M3 and M3N).
+ * (A3VP, A3VP, A3IR) is identically configured across all SoCs (H3, M3 and M3N).
  * This allow us not to introduce support for each SoC separately.
  */
-static const struct rcar_sysc_ch rcar_sysc_chs[2] = {
+static const struct rcar_sysc_ch rcar_sysc_chs[3] = {
 	{
 		.name = "A3VP",
 		.chan_offs = 0x340,
@@ -95,6 +96,12 @@ static const struct rcar_sysc_ch rcar_sysc_chs[2] = {
 		.chan_offs = 0x380,
 		.chan_bit = 0,
 		.isr_bit = RCAR_GEN3_PD_A3VC,
+	},
+	{
+		.name = "A3IR",
+		.chan_offs = 0x180,
+		.chan_bit = 0,
+		.isr_bit = RCAR_GEN3_PD_A3IR,
 	},
 };
 
@@ -208,8 +215,8 @@ static uint32_t ipmmu_get_mmu_pd(struct dt_device_node *np)
 
 /*
  * Some IPMMU-XX are not located in ALWAYS_ON power domain
- * (IPMMU-VP0, IPMMU-VC0 belong to A3xx power domains) and as the result
- * they are in power-off state during booting, therefore they must be
+ * (IPMMU-VPx, IPMMU-VCx, IPMMU-IR belong to A3xx power domains) and as
+ * the result they are in power-off state during booting, therefore they must be
  * explicitly powered on before initializing.
  */
 static int __init ipmmu_power_on(struct dt_device_node *np)
@@ -295,8 +302,8 @@ static bool is_soc_h3_es30(void)
 
 /*
  * Check if we will have to disable IPMMU TLB cache function of IPMMU caches
- * that belong to non ALWAYS_ON power domain (IPMMU-VP0, IPMMU-VC0 belong
- * to A3xx power domains) due to H/W restriction.
+ * that belong to non ALWAYS_ON power domain (IPMMU-VPx, IPMMU-VCx, IPMMU-IR
+ * belong to A3xx power domains) due to H/W restriction.
  * Required action will be performed right before enabling corresponding
  * IPMMU-XX.
  */
