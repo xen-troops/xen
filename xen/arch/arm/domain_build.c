@@ -2115,16 +2115,6 @@ static void __init find_gnttab_region(struct domain *d,
 
     /* TODO: Move this to own function */
     kinfo->scmi_shmem = kinfo->gnttab_start + kinfo->gnttab_size;
-    d->arch.scmi_base_pg = alloc_domheap_page(d, 0);
-    printk(XENLOG_INFO "SCMI shmem at: %#"PRIpaddr" -> %#"PRIpaddr"\n",
-           kinfo->scmi_shmem,
-           page_to_maddr(d->arch.scmi_base_pg));
-
-    /* XXX: Ugly, ugly hack */
-    d->arch.scmi_base_ipa = kinfo->scmi_shmem;
-    map_regions_p2mt(d, gaddr_to_gfn(kinfo->scmi_shmem), 1,
-                     page_to_mfn(d->arch.scmi_base_pg), p2m_ram_rw);
-
 }
 
 static int __init construct_domain(struct domain *d, struct kernel_info *kinfo)
@@ -2354,6 +2344,10 @@ int __init construct_dom0(struct domain *d)
     else
         rc = prepare_acpi(d, &kinfo);
 
+    if ( rc < 0 )
+        return rc;
+
+    rc = domain_vscmi_init(d, gaddr_to_gfn(kinfo.scmi_shmem));
     if ( rc < 0 )
         return rc;
 

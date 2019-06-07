@@ -947,6 +947,9 @@ int domain_relinquish_resources(struct domain *d)
          */
         domain_vpl011_deinit(d);
 
+        /* Release vscmi resources */
+        domain_vscmi_free(d);
+
         d->arch.relmem = RELMEM_xen;
         /* Fallthrough */
 

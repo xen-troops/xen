@@ -15,6 +15,7 @@
  * GNU General Public License for more details.
  */
 
+#include <xen/mm.h>
 #include <xen/sched.h>
 #include <asm/io.h>
 #include <asm/vscmi.h>
@@ -43,6 +44,43 @@ int vcpu_vscmi_init(struct vcpu *vcpu)
     vcpu->arch.opp = VSCMI_OPP_NOM;
 
     return 0;
+}
+
+int domain_vscmi_init(struct domain *d, gfn_t shmem_gfn)
+{
+    int rc;
+
+    if ( gfn_eq(shmem_gfn, INVALID_GFN) )
+        return -EINVAL;
+
+    d->arch.scmi_base_pg = alloc_domheap_page(d, 0);
+    if ( !d->arch.scmi_base_pg )
+        return -ENOMEM;
+
+    d->arch.scmi_base_ipa = gfn_to_gaddr(shmem_gfn);
+
+    printk(XENLOG_INFO "SCMI shmem at: %#"PRIpaddr" -> %#"PRIpaddr"\n",
+           d->arch.scmi_base_ipa,
+           page_to_maddr(d->arch.scmi_base_pg));
+
+    rc = map_regions_p2mt(d, shmem_gfn, 1,
+                          page_to_mfn(d->arch.scmi_base_pg), p2m_ram_rw);
+
+    if ( rc )
+        free_domheap_page(d->arch.scmi_base_pg);
+
+    return rc;
+}
+
+void domain_vscmi_free(struct domain *d)
+{
+    if ( !d->arch.scmi_base_pg )
+        return;
+
+    unmap_regions_p2mt(d, gaddr_to_gfn(d->arch.scmi_base_ipa), 1,
+                       page_to_mfn(d->arch.scmi_base_pg));
+
+    free_domheap_page(d->arch.scmi_base_pg);
 }
 
 static void handle_base_req(struct scmi_shared_mem *data)
