@@ -231,6 +231,8 @@ struct xc_dom_image {
 
     xen_pfn_t vuart_gfn;
 
+    xen_pfn_t vscmi_gfn;
+
     /* Number of vCPUs */
     unsigned int max_vcpus;
 };
