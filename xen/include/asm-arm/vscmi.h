@@ -21,6 +21,8 @@
 #ifndef __ASM_VSCMI_H__
 #define __ASM_VSCMI_H__
 
+#include <xen/mm.h>
+
 #define ARM_SMCCC_SCMI_MBOX_TRIGGER 0x82000002
 
 enum vscmi_opp {
@@ -30,6 +32,9 @@ enum vscmi_opp {
   VSCMI_OPP_HIGH,
   VSCMI_OPP_TURBO
 };
+
+int domain_vscmi_init(struct domain *d, gfn_t shmem_gfn);
+void domain_vscmi_free(struct domain *d);
 
 bool vscmi_handle_call(struct cpu_user_regs *regs);
 int vcpu_vscmi_init(struct vcpu *vcpu);
