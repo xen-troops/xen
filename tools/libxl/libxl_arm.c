@@ -1089,6 +1089,15 @@ int libxl__arch_build_dom_finish(libxl__gc *gc,
 {
     int rc = 0, ret;
 
+    if (libxl_defbool_val(info->arch_arm.vscmi)) {
+        ret = xc_dom_vscmi_init(CTX->xch, dom->guest_domid, dom->vscmi_gfn);
+        if (ret < 0) {
+            rc = ERROR_FAIL;
+            LOG(ERROR, "xc_dom_vscmi_init failed\n");
+            goto out;
+        }
+    }
+
     if (info->arch_arm.vuart != LIBXL_VUART_TYPE_SBSA_UART) {
         rc = 0;
         goto out;
@@ -1145,6 +1154,9 @@ void libxl__arch_domain_build_info_setdefault(libxl__gc *gc,
 {
     /* ACPI is disabled by default */
     libxl_defbool_setdefault(&b_info->acpi, false);
+
+    /* vSCMI is disabled by default */
+    libxl_defbool_setdefault(&b_info->arch_arm.vscmi, false);
 
     if (b_info->type != LIBXL_DOMAIN_TYPE_PV)
         return;

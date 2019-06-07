@@ -1562,6 +1562,7 @@ void parse_config_data(const char *config_source,
 
     xlu_cfg_get_defbool(config, "driver_domain", &c_info->driver_domain, 0);
     xlu_cfg_get_defbool(config, "acpi", &b_info->acpi, 0);
+    xlu_cfg_get_defbool(config, "vscmi", &b_info->arch_arm.vscmi, 0);
 
     xlu_cfg_replace_string (config, "bootloader", &b_info->bootloader, 0);
     switch (xlu_cfg_get_list_as_string_list(config, "bootloader_args",
