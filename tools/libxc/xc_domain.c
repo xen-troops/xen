@@ -348,6 +348,21 @@ int xc_dom_vuart_init(xc_interface *xch,
     return rc;
 }
 
+int xc_dom_vscmi_init(xc_interface *xch, uint32_t domid, xen_pfn_t gfn)
+
+{
+    DECLARE_DOMCTL;
+
+    memset(&domctl, 0, sizeof(domctl));
+
+    domctl.cmd = XEN_DOMCTL_vscmi_init;
+    domctl.domain = domid;
+    domctl.u.vscmi_init.gfn = gfn;
+    fprintf(stderr, "%s:%d gfn=%lx\n", __FILE__, __LINE__, gfn);
+
+    return do_domctl(xch, &domctl);
+}
+
 int xc_domain_getinfo(xc_interface *xch,
                       uint32_t first_domid,
                       unsigned int max_doms,

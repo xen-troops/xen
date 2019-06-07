@@ -915,6 +915,16 @@ int xc_dom_vuart_init(xc_interface *xch,
                       evtchn_port_t *evtchn);
 
 /**
+ * This function initializes the vscmi emulation
+ *
+ * @parm xch a handle to an open hypervisor interface
+ * @parm domid being created
+ * @parm gfn the guest pfn to be used as the shared page
+ * @return 0 on success, negative error on failure
+ */
+int xc_dom_vscmi_init(xc_interface *xch, uint32_t domid, xen_pfn_t gfn);
+
+/**
  * This function returns information about the XSAVE state of a particular
  * vcpu of a domain. If extstate->size and extstate->xfeature_mask are 0,
  * the call is considered a query to retrieve them and the buffer is not
