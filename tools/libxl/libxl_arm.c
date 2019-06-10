@@ -293,6 +293,133 @@ static int make_root_properties(libxl__gc *gc,
     return 0;
 }
 
+static int make_scmi_sram_node(libxl__gc *gc, const struct xc_dom_image *dom,
+                               void *fdt)
+{
+    int res;
+    char name[32];
+    /* TODO: This is the ugly hack, because dom->vscmi_gfn is not populated right now */
+    uint64_t sram_addr = GUEST_MAGIC_BASE  + (4 << XC_PAGE_SHIFT);
+
+    /* Create SRAM node */
+    snprintf(name, sizeof(name), "sram@%lx", sram_addr);
+    res = fdt_begin_node(fdt, name);
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "compatible", "mmio-sram");
+    if (res) return res;
+
+    res = fdt_property_regs(gc,fdt, GUEST_ROOT_ADDRESS_CELLS, GUEST_ROOT_SIZE_CELLS, 1,
+                            sram_addr, 4096);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#address-cells", 2);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#size-cells", 2);
+    if (res) return res;
+
+    res = fdt_property(fdt, "ranges", 0, 0);
+    if (res) return res;
+
+    /* Create scp-shmem node inside the SRAM node */
+    res = fdt_begin_node(fdt, "scp-shmem@0");
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "compatible", "arm,scp-shmem");
+    if (res) return res;
+
+    res = fdt_property_regs(gc,fdt, GUEST_ROOT_ADDRESS_CELLS, GUEST_ROOT_SIZE_CELLS, 1,
+                            sram_addr, 512);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_SCPI_SHMEM);
+    if (res) return res;
+
+    /* End of scp-shmem node */
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    /* End of sram node */
+    res = fdt_end_node(fdt);
+
+    return res;
+
+}
+
+#define ARM_SMCCC_SCMI_MBOX_TRIGGER 0x82000002
+
+static int __init make_scmi_mbox_node(libxl__gc *gc, void *fdt)
+{
+    int res;
+
+    /* Begin mbox node */
+    res = fdt_begin_node(fdt, "mailbox@smc");
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "compatible", "arm,smc-mbox");
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#mbox-cells", 1);
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "method", "hvc");
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "arm,func-ids", ARM_SMCCC_SCMI_MBOX_TRIGGER);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_SCPI_MBOX);
+    if (res) return res;
+
+    /* End of mbox node */
+    res = fdt_end_node(fdt);
+
+    return res;
+}
+
+static int __init make_scmi_node(libxl__gc *gc, void *fdt)
+{
+    int res;
+    uint32_t mboxes[2] = {cpu_to_fdt32(GUEST_PHANDLE_SCPI_MBOX), 0};
+
+    /* Begin scmi node */
+    res = fdt_begin_node(fdt, "scmi");
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "compatible", "arm,scmi");
+    if (res) return res;
+
+    res = fdt_property(fdt, "mboxes", mboxes, sizeof(mboxes));
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "shmem", GUEST_PHANDLE_SCPI_SHMEM);
+    if (res) return res;
+
+    /* Start of scmi_dvfs: protocol@13 node */
+    res = fdt_begin_node(fdt, "protocol@13");
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "reg",  0x13);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_SCPI_CPU_CLOCKS);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#clock-cells",  1);
+    if (res) return res;
+
+    /* End of scmi_dvfs: protocol@13 node */
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    /* End of scmi node */
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    return 0;
+}
+
 static int make_chosen_node(libxl__gc *gc, void *fdt, bool ramdisk,
                             libxl__domain_build_state *state,
                             const libxl_domain_build_info *info)
@@ -344,10 +471,12 @@ static int make_chosen_node(libxl__gc *gc, void *fdt, bool ramdisk,
 }
 
 static int make_cpus_node(libxl__gc *gc, void *fdt, int nr_cpus,
-                          const struct arch_info *ainfo)
+                          const struct arch_info *ainfo, bool scmi)
 {
     int res, i;
     uint64_t mpidr_aff;
+    uint32_t cells[2] = {cpu_to_fdt32(GUEST_PHANDLE_SCPI_CPU_CLOCKS), 0};
+
 
     res = fdt_begin_node(fdt, "cpus");
     if (res) return res;
@@ -375,6 +504,12 @@ static int make_cpus_node(libxl__gc *gc, void *fdt, int nr_cpus,
 
         res = fdt_property_string(fdt, "enable-method", "psci");
         if (res) return res;
+
+        if (scmi) {
+            cells[1] = cpu_to_fdt32(i);
+            res = fdt_property(fdt, "clocks", &cells, sizeof(cells));
+            if (res) return res;
+        }
 
         res = fdt_property_regs(gc, fdt, 1, 0, 1, mpidr_aff);
         if (res) return res;
@@ -901,8 +1036,15 @@ next_resize:
 
         FDT( make_root_properties(gc, vers, fdt) );
         FDT( make_chosen_node(gc, fdt, !!dom->modules[0].blob, state, info) );
-        FDT( make_cpus_node(gc, fdt, info->max_vcpus, ainfo) );
+        FDT( make_cpus_node(gc, fdt, info->max_vcpus, ainfo,
+                            libxl_defbool_val(info->arch_arm.vscmi)));
         FDT( make_psci_node(gc, fdt) );
+
+        if (libxl_defbool_val(info->arch_arm.vscmi)) {
+            FDT( make_scmi_sram_node(gc, dom, fdt) );
+            FDT( make_scmi_mbox_node(gc, fdt) );
+            FDT( make_scmi_node(gc, fdt) );
+        }
 
         FDT( make_memory_nodes(gc, fdt, dom) );
 
