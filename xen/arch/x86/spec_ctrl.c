@@ -230,8 +230,8 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
            (_7d0 & cpufeat_mask(X86_FEATURE_L1D_FLUSH)) ? " L1D_FLUSH" : "",
            (_7d0 & cpufeat_mask(X86_FEATURE_SSBD))  ? " SSBD"      : "",
            (e8b  & cpufeat_mask(X86_FEATURE_IBPB))  ? " IBPB"      : "",
-           (caps & ARCH_CAPABILITIES_IBRS_ALL)      ? " IBRS_ALL"  : "",
-           (caps & ARCH_CAPABILITIES_RDCL_NO)       ? " RDCL_NO"   : "",
+           (caps & ARCH_CAPS_IBRS_ALL)              ? " IBRS_ALL"  : "",
+           (caps & ARCH_CAPS_RDCL_NO)               ? " RDCL_NO"   : "",
            (caps & ARCH_CAPS_RSBA)                  ? " RSBA"      : "",
            (caps & ARCH_CAPS_SKIP_L1DFL)            ? " SKIP_L1DFL": "",
            (caps & ARCH_CAPS_SSB_NO)                ? " SSB_NO"    : "");
@@ -316,8 +316,11 @@ static bool __init retpoline_safe(uint64_t caps)
     /*
      * RSBA may be set by a hypervisor to indicate that we may move to a
      * processor which isn't retpoline-safe.
+     *
+     * Processors offering Enhanced IBRS are not guarenteed to be
+     * repoline-safe.
      */
-    if ( caps & ARCH_CAPS_RSBA )
+    if ( caps & (ARCH_CAPS_RSBA | ARCH_CAPS_IBRS_ALL) )
         return false;
 
     switch ( boot_cpu_data.x86_model )
@@ -376,6 +379,23 @@ static bool __init retpoline_safe(uint64_t caps)
     case 0x8e:
     case 0x9e:
         return false;
+
+        /*
+         * Atom processors before Goldmont Plus/Gemini Lake are retpoline-safe.
+         */
+    case 0x1c: /* Pineview */
+    case 0x26: /* Lincroft */
+    case 0x27: /* Penwell */
+    case 0x35: /* Cloverview */
+    case 0x36: /* Cedarview */
+    case 0x37: /* Baytrail / Valleyview (Silvermont) */
+    case 0x4d: /* Avaton / Rangely (Silvermont) */
+    case 0x4c: /* Cherrytrail / Brasswell */
+    case 0x4a: /* Merrifield */
+    case 0x5a: /* Moorefield */
+    case 0x5c: /* Goldmont */
+    case 0x5f: /* Denverton */
+        return true;
 
     default:
         printk("Unrecognised CPU model %#x - assuming not reptpoline safe\n",
@@ -549,7 +569,7 @@ static __init void l1tf_calculations(uint64_t caps)
     }
 
     /* Any processor advertising RDCL_NO should be not vulnerable to L1TF. */
-    if ( caps & ARCH_CAPABILITIES_RDCL_NO )
+    if ( caps & ARCH_CAPS_RDCL_NO )
         cpu_has_bug_l1tf = false;
 
     if ( cpu_has_bug_l1tf && hit_default )
@@ -613,9 +633,9 @@ int8_t __read_mostly opt_xpti_domu = -1;
 static __init void xpti_init_default(uint64_t caps)
 {
     if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
-        caps = ARCH_CAPABILITIES_RDCL_NO;
+        caps = ARCH_CAPS_RDCL_NO;
 
-    if ( caps & ARCH_CAPABILITIES_RDCL_NO )
+    if ( caps & ARCH_CAPS_RDCL_NO )
     {
         if ( opt_xpti_hwdom < 0 )
             opt_xpti_hwdom = 0;

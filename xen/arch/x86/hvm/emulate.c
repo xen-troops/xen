@@ -952,7 +952,7 @@ static int hvmemul_phys_mmio_access(
  * cache indexed by linear MMIO address.
  */
 static struct hvm_mmio_cache *hvmemul_find_mmio_cache(
-    struct hvm_vcpu_io *vio, unsigned long gla, uint8_t dir)
+    struct hvm_vcpu_io *vio, unsigned long gla, uint8_t dir, bool create)
 {
     unsigned int i;
     struct hvm_mmio_cache *cache;
@@ -966,12 +966,14 @@ static struct hvm_mmio_cache *hvmemul_find_mmio_cache(
             return cache;
     }
 
-    i = vio->mmio_cache_count++;
-    if( i == ARRAY_SIZE(vio->mmio_cache) )
-    {
-        domain_crash(current->domain);
+    if ( !create )
         return NULL;
-    }
+
+    i = vio->mmio_cache_count;
+    if( i == ARRAY_SIZE(vio->mmio_cache) )
+        return NULL;
+
+    ++vio->mmio_cache_count;
 
     cache = &vio->mmio_cache[i];
     memset(cache, 0, sizeof (*cache));
@@ -1001,7 +1003,7 @@ static int hvmemul_linear_mmio_access(
 {
     struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
     unsigned long offset = gla & ~PAGE_MASK;
-    struct hvm_mmio_cache *cache = hvmemul_find_mmio_cache(vio, gla, dir);
+    struct hvm_mmio_cache *cache = hvmemul_find_mmio_cache(vio, gla, dir, true);
     unsigned int chunk, buffer_offset = 0;
     paddr_t gpa;
     unsigned long one_rep = 1;
@@ -1090,12 +1092,33 @@ static int linear_read(unsigned long addr, unsigned int bytes, void *p_data,
                        uint32_t pfec, struct hvm_emulate_ctxt *hvmemul_ctxt)
 {
     pagefault_info_t pfinfo;
-    int rc = hvm_copy_from_guest_linear(p_data, addr, bytes, pfec, &pfinfo);
+    struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
+    unsigned int offset = addr & ~PAGE_MASK;
+    int rc = HVMTRANS_bad_gfn_to_mfn;
+
+    if ( offset + bytes > PAGE_SIZE )
+    {
+        unsigned int part1 = PAGE_SIZE - offset;
+
+        /* Split the access at the page boundary. */
+        rc = linear_read(addr, part1, p_data, pfec, hvmemul_ctxt);
+        if ( rc == X86EMUL_OKAY )
+            rc = linear_read(addr + part1, bytes - part1, p_data + part1,
+                             pfec, hvmemul_ctxt);
+        return rc;
+    }
+
+    /*
+     * If there is an MMIO cache entry for the access then we must be re-issuing
+     * an access that was previously handled as MMIO. Thus it is imperative that
+     * we handle this access in the same way to guarantee completion and hence
+     * clean up any interim state.
+     */
+    if ( !hvmemul_find_mmio_cache(vio, addr, IOREQ_READ, false) )
+        rc = hvm_copy_from_guest_linear(p_data, addr, bytes, pfec, &pfinfo);
 
     switch ( rc )
     {
-        unsigned int offset, part1;
-
     case HVMTRANS_okay:
         return X86EMUL_OKAY;
 
@@ -1107,19 +1130,9 @@ static int linear_read(unsigned long addr, unsigned int bytes, void *p_data,
         if ( pfec & PFEC_insn_fetch )
             return X86EMUL_UNHANDLEABLE;
 
-        offset = addr & ~PAGE_MASK;
-        if ( offset + bytes <= PAGE_SIZE )
-            return hvmemul_linear_mmio_read(addr, bytes, p_data, pfec,
-                                            hvmemul_ctxt,
-                                            known_gla(addr, bytes, pfec));
-
-        /* Split the access at the page boundary. */
-        part1 = PAGE_SIZE - offset;
-        rc = linear_read(addr, part1, p_data, pfec, hvmemul_ctxt);
-        if ( rc == X86EMUL_OKAY )
-            rc = linear_read(addr + part1, bytes - part1, p_data + part1,
-                             pfec, hvmemul_ctxt);
-        return rc;
+        return hvmemul_linear_mmio_read(addr, bytes, p_data, pfec,
+                                        hvmemul_ctxt,
+                                        known_gla(addr, bytes, pfec));
 
     case HVMTRANS_gfn_paged_out:
     case HVMTRANS_gfn_shared:
@@ -1133,12 +1146,33 @@ static int linear_write(unsigned long addr, unsigned int bytes, void *p_data,
                         uint32_t pfec, struct hvm_emulate_ctxt *hvmemul_ctxt)
 {
     pagefault_info_t pfinfo;
-    int rc = hvm_copy_to_guest_linear(addr, p_data, bytes, pfec, &pfinfo);
+    struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
+    unsigned int offset = addr & ~PAGE_MASK;
+    int rc = HVMTRANS_bad_gfn_to_mfn;
+
+    if ( offset + bytes > PAGE_SIZE )
+    {
+        unsigned int part1 = PAGE_SIZE - offset;
+
+        /* Split the access at the page boundary. */
+        rc = linear_write(addr, part1, p_data, pfec, hvmemul_ctxt);
+        if ( rc == X86EMUL_OKAY )
+            rc = linear_write(addr + part1, bytes - part1, p_data + part1,
+                              pfec, hvmemul_ctxt);
+        return rc;
+    }
+
+    /*
+     * If there is an MMIO cache entry for the access then we must be re-issuing
+     * an access that was previously handled as MMIO. Thus it is imperative that
+     * we handle this access in the same way to guarantee completion and hence
+     * clean up any interim state.
+     */
+    if ( !hvmemul_find_mmio_cache(vio, addr, IOREQ_WRITE, false) )
+        rc = hvm_copy_to_guest_linear(addr, p_data, bytes, pfec, &pfinfo);
 
     switch ( rc )
     {
-        unsigned int offset, part1;
-
     case HVMTRANS_okay:
         return X86EMUL_OKAY;
 
@@ -1147,19 +1181,9 @@ static int linear_write(unsigned long addr, unsigned int bytes, void *p_data,
         return X86EMUL_EXCEPTION;
 
     case HVMTRANS_bad_gfn_to_mfn:
-        offset = addr & ~PAGE_MASK;
-        if ( offset + bytes <= PAGE_SIZE )
-            return hvmemul_linear_mmio_write(addr, bytes, p_data, pfec,
-                                             hvmemul_ctxt,
-                                             known_gla(addr, bytes, pfec));
-
-        /* Split the access at the page boundary. */
-        part1 = PAGE_SIZE - offset;
-        rc = linear_write(addr, part1, p_data, pfec, hvmemul_ctxt);
-        if ( rc == X86EMUL_OKAY )
-            rc = linear_write(addr + part1, bytes - part1, p_data + part1,
-                              pfec, hvmemul_ctxt);
-        return rc;
+        return hvmemul_linear_mmio_write(addr, bytes, p_data, pfec,
+                                         hvmemul_ctxt,
+                                         known_gla(addr, bytes, pfec));
 
     case HVMTRANS_gfn_paged_out:
     case HVMTRANS_gfn_shared:

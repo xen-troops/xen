@@ -359,10 +359,6 @@ void sh_install_xen_entries_in_l4(struct domain *, mfn_t gl4mfn, mfn_t sl4mfn);
 /* Update the shadows in response to a pagetable write from Xen */
 int sh_validate_guest_entry(struct vcpu *v, mfn_t gmfn, void *entry, u32 size);
 
-/* Update the shadows in response to a pagetable write from a HVM guest */
-void sh_validate_guest_pt_write(struct vcpu *v, mfn_t gmfn,
-                                void *entry, u32 size);
-
 /* Remove all writeable mappings of a guest frame from the shadows.
  * Returns non-zero if we need to flush TLBs.
  * level and fault_addr desribe how we found this to be a pagetable;
@@ -375,6 +371,12 @@ extern int sh_remove_write_access(struct domain *d, mfn_t readonly_mfn,
 int shadow_write_p2m_entry(struct p2m_domain *p2m, unsigned long gfn,
                            l1_pgentry_t *p, l1_pgentry_t new,
                            unsigned int level);
+
+/* Functions that atomically write PV guest PT entries */
+bool sh_write_guest_entry(struct vcpu *v, intpte_t *p, intpte_t new,
+                          mfn_t gmfn);
+bool sh_cmpxchg_guest_entry(struct vcpu *v, intpte_t *p, intpte_t *old,
+                            intpte_t new, mfn_t gmfn);
 
 /* Update all the things that are derived from the guest's CR0/CR3/CR4.
  * Called to initialize paging structures if the paging mode
