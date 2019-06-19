@@ -18,9 +18,9 @@ branches:
 
 before_install:
     - echo -n | openssl s_client -connect https://scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
-    - wget -c http://releases.linaro.org/components/toolchain/binaries/7.2-2017.11/aarch64-linux-gnu/gcc-linaro-7.2.1-2017.11-x86_64_aarch64-linux-gnu.tar.xz
-    - tar xf gcc-linaro-7.2.1-2017.11-x86_64_aarch64-linux-gnu.tar.xz
-    - export PATH=$PWD/gcc-linaro-7.2.1-2017.11-x86_64_aarch64-linux-gnu/bin/:$PATH
+    - wget -c http://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.4.1-2019.02-x86_64_aarch64-linux-gnu.tar.xz
+    - tar xf gcc-linaro-7.4.1-2019.02-x86_64_aarch64-linux-gnu.tar.xz
+    - export PATH=$PWD/gcc-linaro-7.4.1-2019.02-x86_64_aarch64-linux-gnu/bin/:$PATH
     - aarch64-linux-gnu-gcc --version
     # exporting the variable to be used by make utility
     - export CROSS_COMPILE=aarch64-linux-gnu-
