@@ -174,12 +174,13 @@ char *(strchr)(const char *s, int c)
  */
 char *(strrchr)(const char *s, int c)
 {
-       const char *p = s + strlen(s);
-       do {
-           if (*p == (char)c)
-               return (char *)p;
-       } while (--p >= s);
-       return NULL;
+	const char *p = s + strlen(s);
+
+	for (; *p != (char)c; --p)
+		if (p == s)
+			return NULL;
+
+	return (char *)p;
 }
 #endif
 
@@ -289,6 +290,27 @@ char * strsep(char **s, const char *ct)
 }
 #endif
 
+#ifndef __HAVE_ARCH_STRSTR
+/**
+ * strstr - Find the first substring in a %NUL terminated string
+ * @s1: The string to be searched
+ * @s2: The string to search for
+ */
+char *(strstr)(const char *s1, const char *s2)
+{
+	size_t l1, l2 = strlen(s2);
+
+	if (!l2)
+		return (char *)s1;
+
+	for (l1 = strlen(s1); l1 >= l2; --l1, ++s1)
+		if (!memcmp(s1, s2, l2))
+			return (char *)s1;
+
+	return NULL;
+}
+#endif
+
 #ifndef __HAVE_ARCH_MEMSET
 /**
  * memset - Fill a region of memory with the given value
@@ -379,54 +401,6 @@ int (memcmp)(const void *cs, const void *ct, size_t count)
 }
 #endif
 
-#ifndef __HAVE_ARCH_MEMSCAN
-/**
- * memscan - Find a character in an area of memory.
- * @addr: The memory area
- * @c: The byte to search for
- * @size: The size of the area.
- *
- * returns the address of the first occurrence of @c, or 1 byte past
- * the area if @c is not found
- */
-void * memscan(void * addr, int c, size_t size)
-{
-	unsigned char * p = (unsigned char *) addr;
-
-	while (size) {
-		if (*p == c)
-			return (void *) p;
-		p++;
-		size--;
-	}
-  	return (void *) p;
-}
-#endif
-
-#ifndef __HAVE_ARCH_STRSTR
-/**
- * strstr - Find the first substring in a %NUL terminated string
- * @s1: The string to be searched
- * @s2: The string to search for
- */
-char *(strstr)(const char *s1, const char *s2)
-{
-	int l1, l2;
-
-	l2 = strlen(s2);
-	if (!l2)
-		return (char *) s1;
-	l1 = strlen(s1);
-	while (l1 >= l2) {
-		l1--;
-		if (!memcmp(s1,s2,l2))
-			return (char *) s1;
-		s1++;
-	}
-	return NULL;
-}
-#endif
-
 #ifndef __HAVE_ARCH_MEMCHR
 /**
  * memchr - Find a character in an area of memory.
@@ -440,14 +414,13 @@ char *(strstr)(const char *s1, const char *s2)
 void *(memchr)(const void *s, int c, size_t n)
 {
 	const unsigned char *p = s;
-	while (n-- != 0) {
-        	if ((unsigned char)c == *p++) {
-			return (void *)(p-1);
-		}
-	}
+
+	while (n--)
+		if ((unsigned char)c == *p++)
+			return (void *)(p - 1);
+
 	return NULL;
 }
-
 #endif
 
 /*
