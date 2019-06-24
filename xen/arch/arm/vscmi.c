@@ -30,18 +30,12 @@
 #define SCMI_SUBVENDOR "Renesas"
 #define SCMI_AGENT "XEN"
 
-#define PERF_SUSTAINED_FREQ_KHZ 1500000
+#define PERF_SUSTAINED_FREQ_KHZ 1000000
+#define PERF_OPP_COUNT    16            /* Sadly, Linux does not support more */
+#define PERF_OPPS_PER_CALL 5
 
 static DEFINE_SPINLOCK(add_remove_lock);
 static NOTIFIER_HEAD(vscmi_chain);
-
-static uint32_t opp_table[] = {
-    500,     // VSCPI_OPP_MIN
-    1000,    // VSCPI_OPP_LOW
-    1500,    // VSCPI_OPP_NOM
-    2000,    // VSCPI_OPP_HIGH
-    2500,    // VSCPI_OPP_TURBO
-};
 
 void register_vscmi_notifier(struct notifier_block *nb)
 {
@@ -52,7 +46,7 @@ void register_vscmi_notifier(struct notifier_block *nb)
 
 int vcpu_vscmi_init(struct vcpu *vcpu)
 {
-    vcpu->arch.opp = VSCMI_OPP_NOM;
+    vcpu->arch.opp = PERF_OPP_COUNT / 2;
 
     return 0;
 }
@@ -189,7 +183,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
                                    SUPPORTS_SET_PERF_LVL(~0));
         attrs->rate_limit_us = le32_to_cpu(0);
         attrs->sustained_freq_khz = le32_to_cpu(PERF_SUSTAINED_FREQ_KHZ);
-        attrs->sustained_perf_level = le32_to_cpu(opp_table[VSCMI_OPP_NOM]);
+        attrs->sustained_perf_level = le32_to_cpu(PERF_OPP_COUNT / 2);
         snprintf((char*)attrs->name, sizeof(attrs->name), "vcpu%d", domain_id);
         data->length = sizeof(*attrs) + sizeof(uint32_t) * 2;
 
@@ -210,21 +204,21 @@ static void handle_perf_req(struct scmi_shared_mem *data)
             break;
         }
 
-        if ( idx >= VSCMI_OPP_TURBO )
+        if ( idx >= PERF_OPP_COUNT )
         {
             writel_relaxed(SCMI_ERR_RANGE, data->msg_payload);
             data->length = sizeof(uint32_t) * 2;
             break;
         }
 
-        resp->num_remaining = 0;
-        resp->num_returned = cpu_to_le16(VSCMI_OPP_TURBO - idx + 1);
+        resp->num_remaining = MAX(0, PERF_OPP_COUNT - idx - PERF_OPPS_PER_CALL);
+        resp->num_returned = MIN(PERF_OPPS_PER_CALL, PERF_OPP_COUNT - idx);
 
-        for ( i = idx; i <= VSCMI_OPP_TURBO; i++ )
+        for ( i = 0; i < resp->num_returned; i++ )
         {
-            resp->opp[i - idx].perf_val = cpu_to_le32(opp_table[i]);
-            resp->opp[i - idx].power = cpu_to_le32(opp_table[i]);
-            resp->opp[i - idx].transition_latency_us = cpu_to_le16(1);
+            resp->opp[i].perf_val = idx + i;
+            resp->opp[i].power = resp->opp[i].perf_val;
+            resp->opp[i].transition_latency_us = cpu_to_le16(1);
         }
 
         data->length = sizeof(*resp) + sizeof(uint32_t) * 2 +
@@ -237,7 +231,6 @@ static void handle_perf_req(struct scmi_shared_mem *data)
     case PERF_LEVEL_SET:
     {
         struct scmi_perf_set_level *req = (void*)data->msg_payload;
-        enum vscmi_opp opp;
         uint32_t perf_domain = le32_to_cpu(req->domain);
         int level = le32_to_cpu(req->level);
 
@@ -248,23 +241,19 @@ static void handle_perf_req(struct scmi_shared_mem *data)
             break;
         }
 
-        for ( opp = VSCMI_OPP_MIN; opp <= VSCMI_OPP_TURBO; opp++ )
-            if ( opp_table[opp] == level )
-                break;
-
-        if ( opp > VSCMI_OPP_TURBO )
+        if ( level < 0 || level >= PERF_OPP_COUNT)
         {
-            gprintk(XENLOG_WARNING, "vscmi: can't find OPP for perf level %d\n", level);
+            gprintk(XENLOG_WARNING, "vscmi: requested opp is out of bounds: %d\n", level);
             writel_relaxed(SCMI_ERR_PARAMS, data->msg_payload);
             data->length = sizeof(uint32_t) * 2;
             break;
         }
 
-        if ( current->domain->vcpu[perf_domain]->arch.opp != opp )
+        if ( current->domain->vcpu[perf_domain]->arch.opp != level )
         {
-            current->domain->vcpu[perf_domain]->arch.opp = opp;
+            current->domain->vcpu[perf_domain]->arch.opp = level;
             /* TODO: Check the return value */
-            notifier_call_chain(&vscmi_chain, 0, d, NULL);
+            notifier_call_chain(&vscmi_chain, 0, current->domain->vcpu[perf_domain], NULL);
         }
 
         writel_relaxed(SCMI_SUCCESS, data->msg_payload);
@@ -284,7 +273,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
         }
 
         writel_relaxed(SCMI_SUCCESS, data->msg_payload);
-        writel_relaxed(opp_table[current->domain->vcpu[perf_domain]->arch.opp],
+        writel_relaxed(current->domain->vcpu[perf_domain]->arch.opp,
                        data->msg_payload + 4);
         data->length = sizeof(uint32_t) * 3;
 
@@ -361,6 +350,22 @@ bool vscmi_handle_call(struct cpu_user_regs *regs)
 err:
     xfree(data);
     return !res;
+}
+
+unsigned int vscmi_scale_opp(int requested, unsigned int freq_min,
+                             unsigned int freq_max)
+{
+    unsigned int ret;
+
+    if ( requested < 0)
+        ret = freq_min;
+    else if ( requested >= PERF_OPP_COUNT )
+        ret = freq_max;
+    else
+        ret = freq_min + (freq_max - freq_min) / (PERF_OPP_COUNT - 1) *
+            requested;
+
+    return  ret;
 }
 
 /*
