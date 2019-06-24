@@ -17,6 +17,7 @@
 
 #include <xen/mm.h>
 #include <xen/sched.h>
+#include <xen/spinlock.h>
 #include <asm/io.h>
 #include <asm/vscmi.h>
 #include <asm/guest_access.h>
@@ -31,6 +32,9 @@
 
 #define PERF_SUSTAINED_FREQ_KHZ 1500000
 
+static DEFINE_SPINLOCK(add_remove_lock);
+static NOTIFIER_HEAD(vscmi_chain);
+
 static uint32_t opp_table[] = {
     500,     // VSCPI_OPP_MIN
     1000,    // VSCPI_OPP_LOW
@@ -38,6 +42,13 @@ static uint32_t opp_table[] = {
     2000,    // VSCPI_OPP_HIGH
     2500,    // VSCPI_OPP_TURBO
 };
+
+void register_vscmi_notifier(struct notifier_block *nb)
+{
+    spin_lock(&add_remove_lock);
+    notifier_chain_register(&vscmi_chain, nb);
+    spin_unlock(&add_remove_lock);
+}
 
 int vcpu_vscmi_init(struct vcpu *vcpu)
 {
@@ -249,7 +260,12 @@ static void handle_perf_req(struct scmi_shared_mem *data)
             break;
         }
 
-        current->domain->vcpu[perf_domain]->arch.opp = opp;
+        if ( current->domain->vcpu[perf_domain]->arch.opp != opp )
+        {
+            current->domain->vcpu[perf_domain]->arch.opp = opp;
+            /* TODO: Check the return value */
+            notifier_call_chain(&vscmi_chain, 0, d, NULL);
+        }
 
         writel_relaxed(SCMI_SUCCESS, data->msg_payload);
         data->length = sizeof(uint32_t) * 2;

@@ -21,6 +21,7 @@
 #ifndef __ASM_VSCMI_H__
 #define __ASM_VSCMI_H__
 
+#include <xen/notifier.h>
 #include <xen/mm.h>
 
 #define ARM_SMCCC_SCMI_MBOX_TRIGGER 0x82000002
@@ -32,6 +33,8 @@ enum vscmi_opp {
   VSCMI_OPP_HIGH,
   VSCMI_OPP_TURBO
 };
+
+void register_vscmi_notifier(struct notifier_block *nb);
 
 int domain_vscmi_init(struct domain *d, gfn_t shmem_gfn);
 void domain_vscmi_free(struct domain *d);
