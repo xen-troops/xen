@@ -216,7 +216,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
 
         for ( i = 0; i < resp->num_returned; i++ )
         {
-            resp->opp[i].perf_val = idx + i;
+            resp->opp[i].perf_val = idx + i + 1;
             resp->opp[i].power = resp->opp[i].perf_val;
             resp->opp[i].transition_latency_us = cpu_to_le16(1);
         }
@@ -232,7 +232,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
     {
         struct scmi_perf_set_level *req = (void*)data->msg_payload;
         uint32_t perf_domain = le32_to_cpu(req->domain);
-        int level = le32_to_cpu(req->level);
+        int level = le32_to_cpu(req->level) - 1;
 
         if ( perf_domain >= current->domain->max_vcpus )
         {
@@ -273,7 +273,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
         }
 
         writel_relaxed(SCMI_SUCCESS, data->msg_payload);
-        writel_relaxed(current->domain->vcpu[perf_domain]->arch.opp,
+        writel_relaxed(current->domain->vcpu[perf_domain]->arch.opp + 1,
                        data->msg_payload + 4);
         data->length = sizeof(uint32_t) * 3;
 
