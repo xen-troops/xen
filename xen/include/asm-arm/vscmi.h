@@ -23,6 +23,7 @@
 
 #include <xen/notifier.h>
 #include <xen/mm.h>
+#include <xen/sched.h>
 
 #define ARM_SMCCC_SCMI_MBOX_TRIGGER 0x82000002
 
@@ -36,6 +37,11 @@ int vcpu_vscmi_init(struct vcpu *vcpu);
 
 unsigned int vscmi_scale_opp(int requested, unsigned int freq_min,
                              unsigned int freq_max);
+
+static inline bool vscmi_enabled_for_domain(struct domain *d)
+{
+    return d->arch.scmi_base_pg;
+}
 
 #endif
 
