@@ -19,6 +19,7 @@
 
 #include <xen/cpu.h>
 #include <xen/cpufreq.h>
+#include <xen/cpumask.h>
 #include <xen/init.h>
 #include <xen/percpu.h>
 #include <xen/sched.h>
@@ -58,17 +59,40 @@ static int cpufreq_vscmi_cpu_callback(
 {
     struct vcpu *vcpu = hcpu;
     struct cpufreq_policy *policy;
+    int requested_opp = 0;
+    struct domain *d;
+    struct vcpu *v;
     int freq;
+    int pcpu;
+    cpumask_t mask;
 
-    policy = per_cpu(cpufreq_cpu_policy, vcpu->processor);
+    cpumask_copy(&mask, vcpu->cpu_hard_affinity);
+    /* Check all domains to find the maximum opp requested */
+    for_each_cpu ( pcpu, &mask )
+    {
+        for_each_domain ( d )
+        {
+            if ( !vscmi_enabled_for_domain(d) )
+                continue;
 
-    freq = vscmi_scale_opp(vcpu->arch.opp, policy->min, policy->max);
+            for_each_vcpu ( d, v )
+            {
+                if ( requested_opp < v->arch.opp )
+                    requested_opp = v->arch.opp;
+            }
+        }
 
-    printk(XENLOG_INFO"cpufreq_vscmi: vcpu opp request %d freq is %d pCPU is likely %d\n",
-           vcpu->arch.opp, freq, vcpu->processor);
+        policy = per_cpu(cpufreq_cpu_policy, pcpu);
 
-    /* TODO: Check the return value */
-    __cpufreq_driver_target(policy, freq, CPUFREQ_RELATION_H);
+        freq = vscmi_scale_opp(requested_opp, policy->min, policy->max);
+
+        printk(XENLOG_INFO"cpufreq_vscmi: asking for freq %d for pcpu %d\n", freq, pcpu);
+
+        /* TODO: Check the return value */
+        __cpufreq_driver_target(policy, freq, CPUFREQ_RELATION_L);
+
+        cpumask_andnot(&mask, &mask, policy->cpus);
+    }
 
     return NOTIFY_DONE;
 }
