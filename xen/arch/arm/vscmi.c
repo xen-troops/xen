@@ -46,7 +46,7 @@ void register_vscmi_notifier(struct notifier_block *nb)
 
 int vcpu_vscmi_init(struct vcpu *vcpu)
 {
-    vcpu->arch.opp = PERF_OPP_COUNT / 2;
+    vcpu->arch.opp = 0;
 
     return 0;
 }
