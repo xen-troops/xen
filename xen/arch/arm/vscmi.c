@@ -362,8 +362,8 @@ unsigned int vscmi_scale_opp(int requested, unsigned int freq_min,
     else if ( requested >= PERF_OPP_COUNT )
         ret = freq_max;
     else
-        ret = freq_min + (freq_max - freq_min) / (PERF_OPP_COUNT - 1) *
-            requested;
+        ret = freq_min +
+            (unsigned long long)(freq_max - freq_min) * requested / (PERF_OPP_COUNT - 1);
 
     return  ret;
 }
