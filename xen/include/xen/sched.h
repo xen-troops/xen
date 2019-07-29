@@ -9,6 +9,7 @@
 #include <xen/timer.h>
 #include <xen/rangeset.h>
 #include <xen/domain.h>
+#include <xen/guest_pm.h>
 #include <xen/iommu.h>
 #include <xen/rcupdate.h>
 #include <xen/cpumask.h>
@@ -495,6 +496,10 @@ struct domain
 #ifdef CONFIG_ARGO
     /* Argo interdomain communication support */
     struct argo_domain *argo;
+#endif
+
+#ifdef CONFIG_HAS_PM
+    struct guest_pm pm;
 #endif
 };
 

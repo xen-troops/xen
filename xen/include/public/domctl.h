@@ -1121,6 +1121,19 @@ struct xen_domctl_vscmi_init {
                                  */
 };
 
+/* XEN_DOMCTL_pm_op */
+struct xen_domctl_pm_op {
+#define XEN_DOMCTL_PM_OP_GET_CONFIG     0
+#define XEN_DOMCTL_PM_OP_SET_CONFIG     1
+        uint8_t cmd;
+
+#define XEN_DOMCTL_PM_OP_FLAG_ENABLED   1
+        uint8_t flags;
+        uint8_t opp_min;
+#define XEN_DOMCTL_PM_OP_OPP_LIMIT      15
+        uint8_t opp_max;
+};
+
 struct xen_domctl {
     uint32_t cmd;
 #define XEN_DOMCTL_createdomain                   1
@@ -1202,6 +1215,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_vuart_op                      81
 #define XEN_DOMCTL_get_cpu_policy                82
 #define XEN_DOMCTL_vscmi_init                   300
+#define XEN_DOMCTL_pm_op                        301
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
@@ -1264,6 +1278,7 @@ struct xen_domctl {
         struct xen_domctl_psr_alloc         psr_alloc;
         struct xen_domctl_vuart_op          vuart_op;
         struct xen_domctl_vscmi_init        vscmi_init;
+        struct xen_domctl_pm_op             pm_op;
         uint8_t                             pad[128];
     } u;
 };

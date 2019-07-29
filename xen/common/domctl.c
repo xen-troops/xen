@@ -21,6 +21,7 @@
 #include <xen/iocap.h>
 #include <xen/rcupdate.h>
 #include <xen/guest_access.h>
+#include <xen/guest_pm.h>
 #include <xen/bitmap.h>
 #include <xen/paging.h>
 #include <xen/hypercall.h>
@@ -1065,6 +1066,18 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         if ( !ret )
             copyback = 1;
         break;
+
+#ifdef CONFIG_HAS_PM
+    case XEN_DOMCTL_pm_op:
+    {
+        struct xen_domctl_pm_op *pm_op = &op->u.pm_op;
+
+        ret = guest_pm_hadle_op(d, pm_op);
+        if ( !ret )
+            copyback = 1;
+        break;
+    }
+#endif
 
     default:
         ret = arch_do_domctl(op, d, u_domctl);
