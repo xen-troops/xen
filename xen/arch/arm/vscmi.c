@@ -16,6 +16,7 @@
  */
 
 #include <xen/mm.h>
+#include <xen/guest_pm.h>
 #include <xen/sched.h>
 #include <xen/spinlock.h>
 #include <asm/io.h>
@@ -31,7 +32,6 @@
 #define SCMI_AGENT "XEN"
 
 #define PERF_SUSTAINED_FREQ_KHZ 1000000
-#define PERF_OPP_COUNT    16            /* Sadly, Linux does not support more */
 #define PERF_OPPS_PER_CALL 5
 
 static DEFINE_SPINLOCK(add_remove_lock);
@@ -73,6 +73,9 @@ int domain_vscmi_init(struct domain *d, gfn_t shmem_gfn)
 
     if ( rc )
         free_domheap_page(d->arch.scmi_base_pg);
+
+    if ( !rc)
+        guest_pm_force_enable(d);
 
     return rc;
 }
