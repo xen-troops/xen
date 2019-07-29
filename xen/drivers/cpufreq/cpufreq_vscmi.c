@@ -17,13 +17,14 @@
  *
  */
 
+#include <asm/vscmi.h>
 #include <xen/cpu.h>
 #include <xen/cpufreq.h>
 #include <xen/cpumask.h>
+#include <xen/guest_pm.h>
 #include <xen/init.h>
 #include <xen/percpu.h>
 #include <xen/sched.h>
-#include <asm/vscmi.h>
 
 static int cpufreq_governor_vscmi(struct cpufreq_policy *policy,
                                       unsigned int event)
@@ -60,6 +61,7 @@ static int cpufreq_vscmi_cpu_callback(
     struct vcpu *vcpu = hcpu;
     struct cpufreq_policy *policy;
     int requested_opp = 0;
+    int vcpu_opp;
     struct domain *d;
     struct vcpu *v;
     int freq;
@@ -72,13 +74,14 @@ static int cpufreq_vscmi_cpu_callback(
     {
         for_each_domain ( d )
         {
-            if ( !vscmi_enabled_for_domain(d) )
+            if ( !vscmi_enabled_for_domain(d) || !guest_pm_enabled(d) )
                 continue;
 
             for_each_vcpu ( d, v )
             {
-                if ( requested_opp < v->arch.opp )
-                    requested_opp = v->arch.opp;
+                vcpu_opp = guest_pm_clamp_opp(d, v->arch.opp);
+                if ( requested_opp < vcpu_opp )
+                    requested_opp = vcpu_opp;
             }
         }
 
@@ -97,8 +100,25 @@ static int cpufreq_vscmi_cpu_callback(
     return NOTIFY_DONE;
 }
 
+static int cpufreq_vscmi_guest_pm_callback(
+    struct notifier_block *nfb, unsigned long action, void *hdomain)
+{
+    struct domain *d = hdomain;
+    struct vcpu *v;
+
+    for_each_vcpu ( d, v )
+        cpufreq_vscmi_cpu_callback(NULL, 0, v);
+
+    return NOTIFY_DONE;
+}
+
+
 static struct notifier_block cpufreq_vscmi_cpu_nfb = {
     .notifier_call = cpufreq_vscmi_cpu_callback
+};
+
+static struct notifier_block cpufreq_vscmi_cpu_guest_pm_nfb = {
+    .notifier_call = cpufreq_vscmi_guest_pm_callback
 };
 
 struct cpufreq_governor cpufreq_gov_vscmi = {
@@ -109,6 +129,8 @@ struct cpufreq_governor cpufreq_gov_vscmi = {
 static int __init cpufreq_gov_vscmi_init(void)
 {
     register_vscmi_notifier(&cpufreq_vscmi_cpu_nfb);
+    register_guest_pm_notifier(&cpufreq_vscmi_cpu_guest_pm_nfb);
+
     return cpufreq_register_governor(&cpufreq_gov_vscmi);
 }
 __initcall(cpufreq_gov_vscmi_init);
