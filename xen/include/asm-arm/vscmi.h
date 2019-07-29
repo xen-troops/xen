@@ -24,8 +24,11 @@
 #include <xen/notifier.h>
 #include <xen/mm.h>
 #include <xen/sched.h>
+#include <public/domctl.h>
 
 #define ARM_SMCCC_SCMI_MBOX_TRIGGER 0x82000002
+#define VSCMI_MAX_OPP XEN_DOMCTL_PM_OP_OPP_LIMIT
+#define VSCMI_OPP_COUNT (VSCMI_MAX_OPP + 1)
 
 void register_vscmi_notifier(struct notifier_block *nb);
 
