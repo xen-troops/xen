@@ -204,6 +204,9 @@ int main_cpupoolnumasplit(int argc, char **argv);
 int main_getenforce(int argc, char **argv);
 int main_setenforce(int argc, char **argv);
 int main_loadpolicy(int argc, char **argv);
+int main_guest_pm_set(int argc, char **argv);
+int main_guest_pm_show(int argc, char **argv);
+
 #ifndef LIBXL_HAVE_NO_SUSPEND_RESUME
 int main_remus(int argc, char **argv);
 #endif

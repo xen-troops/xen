@@ -1715,6 +1715,12 @@ libxl_vcpuinfo *libxl_list_vcpu(libxl_ctx *ctx, uint32_t domid,
                                 int *nb_vcpu, int *nr_cpus_out);
 void libxl_vcpuinfo_list_free(libxl_vcpuinfo *, int nr_vcpus);
 
+int libxl_guest_pm_get(libxl_ctx *ctx, uint32_t domid, bool *enabled,
+                       uint8_t *opp_min, uint8_t *opp_max);
+int libxl_guest_pm_set(libxl_ctx *ctx, uint32_t domid, bool enabled,
+                       uint8_t opp_min, uint8_t opp_max);
+
+
 /*
  * Devices
  * =======
