@@ -183,7 +183,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
                                    SUPPORTS_SET_PERF_LVL(~0));
         attrs->rate_limit_us = le32_to_cpu(0);
         attrs->sustained_freq_khz = le32_to_cpu(PERF_SUSTAINED_FREQ_KHZ);
-        attrs->sustained_perf_level = le32_to_cpu(PERF_OPP_COUNT / 2);
+        attrs->sustained_perf_level = le32_to_cpu(VSCMI_OPP_COUNT / 2);
         snprintf((char*)attrs->name, sizeof(attrs->name), "vcpu%d", domain_id);
         data->length = sizeof(*attrs) + sizeof(uint32_t) * 2;
 
@@ -204,15 +204,15 @@ static void handle_perf_req(struct scmi_shared_mem *data)
             break;
         }
 
-        if ( idx >= PERF_OPP_COUNT )
+        if ( idx > VSCMI_MAX_OPP )
         {
             writel_relaxed(SCMI_ERR_RANGE, data->msg_payload);
             data->length = sizeof(uint32_t) * 2;
             break;
         }
 
-        resp->num_remaining = MAX(0, PERF_OPP_COUNT - idx - PERF_OPPS_PER_CALL);
-        resp->num_returned = MIN(PERF_OPPS_PER_CALL, PERF_OPP_COUNT - idx);
+        resp->num_remaining = MAX(0, VSCMI_OPP_COUNT - idx - PERF_OPPS_PER_CALL);
+        resp->num_returned = MIN(PERF_OPPS_PER_CALL, VSCMI_OPP_COUNT - idx);
 
         for ( i = 0; i < resp->num_returned; i++ )
         {
@@ -241,7 +241,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
             break;
         }
 
-        if ( level < 0 || level >= PERF_OPP_COUNT)
+        if ( level < 0 || level > VSCMI_MAX_OPP)
         {
             gprintk(XENLOG_WARNING, "vscmi: requested opp is out of bounds: %d\n", level);
             writel_relaxed(SCMI_ERR_PARAMS, data->msg_payload);
@@ -359,11 +359,11 @@ unsigned int vscmi_scale_opp(int requested, unsigned int freq_min,
 
     if ( requested < 0)
         ret = freq_min;
-    else if ( requested >= PERF_OPP_COUNT )
+    else if ( requested > VSCMI_MAX_OPP )
         ret = freq_max;
     else
         ret = freq_min +
-            (unsigned long long)(freq_max - freq_min) * requested / (PERF_OPP_COUNT - 1);
+            (unsigned long long)(freq_max - freq_min) * requested / VSCMI_MAX_OPP;
 
     return  ret;
 }
