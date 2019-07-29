@@ -1804,6 +1804,36 @@ out:
     return rc;
 }
 
+int libxl_guest_pm_get(libxl_ctx *ctx, uint32_t domid, bool *enabled,
+                       uint8_t *opp_min, uint8_t *opp_max)
+{
+    int ret;
+    GC_INIT(ctx);
+    ret = xc_dom_guest_pm_get(ctx->xch, domid, enabled, opp_min, opp_max);
+    if (ret<0) {
+        LOGED(ERROR, domid, "guest_pm_get failed: %d", ret);
+        GC_FREE;
+        return ERROR_FAIL;
+    }
+    GC_FREE;
+    return 0;
+}
+
+int libxl_guest_pm_set(libxl_ctx *ctx, uint32_t domid, bool enabled,
+                       uint8_t opp_min, uint8_t opp_max)
+{
+    int ret;
+    GC_INIT(ctx);
+    ret = xc_dom_guest_pm_set(ctx->xch, domid, enabled, opp_min, opp_max);
+    if (ret<0) {
+        LOGED(ERROR, domid, "guest_pm_set failed: %d", ret);
+        GC_FREE;
+        return ERROR_FAIL;
+    }
+    GC_FREE;
+    return 0;
+}
+
 /*
  * Local variables:
  * mode: C

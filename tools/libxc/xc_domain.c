@@ -363,6 +363,51 @@ int xc_dom_vscmi_init(xc_interface *xch, uint32_t domid, xen_pfn_t gfn)
     return do_domctl(xch, &domctl);
 }
 
+int xc_dom_guest_pm_set(xc_interface *xch, uint32_t domid, bool enabled,
+                        uint8_t opp_min, uint8_t opp_max)
+
+{
+    DECLARE_DOMCTL;
+
+    memset(&domctl, 0, sizeof(domctl));
+
+    domctl.cmd = XEN_DOMCTL_pm_op;
+    domctl.domain = domid;
+    domctl.u.pm_op.cmd = XEN_DOMCTL_PM_OP_SET_CONFIG;
+    domctl.u.pm_op.opp_min = opp_min;
+    domctl.u.pm_op.opp_max = opp_max;
+    domctl.u.pm_op.flags = enabled ? XEN_DOMCTL_PM_OP_FLAG_ENABLED : 0;
+
+    return do_domctl(xch, &domctl);
+}
+
+int xc_dom_guest_pm_get(xc_interface *xch, uint32_t domid, bool *enabled,
+                        uint8_t *opp_min, uint8_t *opp_max)
+
+{
+    int ret;
+    DECLARE_DOMCTL;
+
+    memset(&domctl, 0, sizeof(domctl));
+
+    domctl.cmd = XEN_DOMCTL_pm_op;
+    domctl.domain = domid;
+    domctl.u.pm_op.cmd = XEN_DOMCTL_PM_OP_GET_CONFIG;
+
+    ret = do_domctl(xch, &domctl);
+    if (ret)
+        return ret;
+
+    if (opp_min)
+        *opp_min = domctl.u.pm_op.opp_min;
+    if (opp_max)
+        *opp_max = domctl.u.pm_op.opp_max;
+    if (enabled)
+        *enabled = domctl.u.pm_op.flags & XEN_DOMCTL_PM_OP_FLAG_ENABLED;
+
+    return 0;
+}
+
 int xc_domain_getinfo(xc_interface *xch,
                       uint32_t first_domid,
                       unsigned int max_doms,
