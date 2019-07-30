@@ -772,6 +772,14 @@ static int libxl__build_dom(libxl__gc *gc, uint32_t domid,
         LOGE(ERROR, "libxl__arch_build_dom_finish failed");
         goto out;
     }
+    if (info->guest_pm.state != LIBXL_GUEST_PM_STATE_NOT_SET)
+        if ((ret = libxl_guest_pm_set(CTX, domid, info->guest_pm.state ==
+                                      LIBXL_GUEST_PM_STATE_ON,
+                                      info->guest_pm.opp_min,
+                                      info->guest_pm.opp_max)) != 0 ) {
+            LOGE(ERROR, "libxl_guest_pm_set failed");
+            goto out;
+        }
 
 out:
     return ret != 0 ? ERROR_FAIL : 0;

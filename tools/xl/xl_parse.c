@@ -21,6 +21,7 @@
 #include <xen/hvm/params.h>
 #include <xen/io/sndif.h>
 #include <xen/io/kbdif.h>
+#include <xen/domctl.h>
 
 #include <libxl.h>
 #include <libxl_utils.h>
@@ -1260,6 +1261,71 @@ out:
     if (rc) exit(EXIT_FAILURE);
 }
 
+static void parse_guestpm(XLU_Config *config, libxl_domain_build_info *b_info)
+{
+    const char *value;
+    char *buf = NULL;
+    char *token, *endptr;
+    int rc;
+
+    rc = xlu_cfg_get_string(config, "guestpm", &value, 0);
+    if (rc)
+    {
+        if (rc == ESRCH)
+        {
+            b_info->guest_pm.state = LIBXL_GUEST_PM_STATE_NOT_SET;
+            rc = 0;
+        }
+
+        goto out;
+    }
+
+    if (!strcmp(value, "no") || !strcmp(value, "off")) {
+        b_info->guest_pm.state = LIBXL_GUEST_PM_STATE_OFF;
+        goto out;
+    }
+
+    buf = strdup(value);
+
+    token = strtok(buf, "-");
+    if (!token) {
+        rc = EINVAL;
+        goto out;
+    }
+
+    b_info->guest_pm.opp_min = strtol(token, &endptr, 10);
+    if (*endptr != 0 || b_info->guest_pm.opp_min > XEN_DOMCTL_PM_OP_OPP_LIMIT) {
+        rc = EINVAL;
+        goto out;
+    }
+
+    token = strtok(NULL, "-");
+    if (!token) {
+        rc = EINVAL;
+        goto out;
+    }
+
+    b_info->guest_pm.opp_max = strtol(token, &endptr, 10);
+    if (*endptr != 0 || b_info->guest_pm.opp_max > XEN_DOMCTL_PM_OP_OPP_LIMIT) {
+        rc = EINVAL;
+        goto out;
+    }
+
+    if (strtok(NULL, "-") != NULL) {
+        rc = EINVAL;
+        goto out;
+    }
+    b_info->guest_pm.state = LIBXL_GUEST_PM_STATE_ON;
+
+out:
+    if (buf)
+        free(buf);
+
+    if (rc) {
+        fprintf(stderr, "Failed to parse guestpm config, rc = %d\n", rc);
+        exit(EXIT_FAILURE);
+    }
+}
 
 void parse_config_data(const char *config_source,
                        const char *config_data,
@@ -2255,6 +2321,8 @@ skip_nic:
     d_config->num_vkbs = 0;
     d_config->vfbs = NULL;
     d_config->vkbs = NULL;
+
+    parse_guestpm(config, b_info);
 
     if (!xlu_cfg_get_list (config, "vfb", &cvfbs, 0, 0)) {
         while ((buf = xlu_cfg_get_listitem (cvfbs, d_config->num_vfbs)) != NULL) {
