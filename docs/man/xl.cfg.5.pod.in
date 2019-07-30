@@ -605,6 +605,15 @@ option should only be used with a trusted device tree.
 Note that the partial device tree should avoid using the phandle 65000
 which is reserved by the toolstack.
 
+=item B<guestpm="GUEST_PM_SPEC_STRING">
+
+Configure guest power management policies. B<GUEST_PM_SPEC_STRING> can
+either be B<"off"> to prevent guest from requesting any PM changes or
+B<"minOPP-maxOPP"> where B<minOPP> and B<maxOPP> are integer numbers
+between 0 and 15. They denote the performance range, in which guest
+can request performance state. For example setting B<"0-7"> will allow
+guest to request up to half of available performance state of the platform.
+
 =back
 
 =head2 Devices
