@@ -843,6 +843,14 @@ affinities to prefer but be not limited to the specified node(s).
 
 Pin dom0 vcpus to their respective pcpus
 
+### dom0_vscmi
+> `= <boolean>`
+
+> Default: `true`
+
+Create vSCMI server for Dom0. Disable this if you don't want Dom0
+to use virtual SCMI calls.
+
 ### dtuart (ARM)
 > `= path [:options]`
 
