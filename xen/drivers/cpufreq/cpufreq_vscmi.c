@@ -26,35 +26,6 @@
 #include <xen/percpu.h>
 #include <xen/sched.h>
 
-static int cpufreq_governor_vscmi(struct cpufreq_policy *policy,
-                                      unsigned int event)
-{
-    int ret = 0;
-    unsigned int cpu;
-
-    if (unlikely(!policy) ||
-        unlikely(!cpu_online(cpu = policy->cpu)))
-        return -EINVAL;
-
-    switch (event) {
-    case CPUFREQ_GOV_START:
-        /* TODO: Start  */
-        break;
-    case CPUFREQ_GOV_STOP:
-        /* TODO: Stop */
-        /* per_cpu(cpu_set_freq, cpu) = 0; */
-        break;
-    case CPUFREQ_GOV_LIMITS:
-        ret = __cpufreq_driver_target(policy, 1000000, CPUFREQ_RELATION_H);
-        break;
-    default:
-        ret = -EINVAL;
-        break;
-    }
-
-    return ret;
-}
-
 static int cpufreq_vscmi_cpu_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
@@ -93,7 +64,7 @@ static int cpufreq_vscmi_cpu_callback(
         printk(XENLOG_INFO"cpufreq_vscmi: asking for freq %d for pcpu %d\n", freq, pcpu);
 
         ret = __cpufreq_driver_target(policy, freq, CPUFREQ_RELATION_L);
-        if ( ret )
+        if ( ret < 0 )
         {
             printk(XENLOG_WARNING" __cpufreq_driver_target failed with error code %d\n",
                    ret);
@@ -127,6 +98,47 @@ static struct notifier_block cpufreq_vscmi_cpu_guest_pm_nfb = {
     .notifier_call = cpufreq_vscmi_guest_pm_callback
 };
 
+static int cpufreq_governor_vscmi(struct cpufreq_policy *policy,
+                                      unsigned int event)
+{
+    int ret = 0;
+    unsigned int cpu;
+    static int start_cnt = 0;
+
+    if (unlikely(!policy) ||
+        unlikely(!cpu_online(cpu = policy->cpu)))
+        return -EINVAL;
+
+    switch (event) {
+    case CPUFREQ_GOV_START:
+        if ( start_cnt++ > 0 )
+            break;
+
+        register_vscmi_notifier(&cpufreq_vscmi_cpu_nfb);
+        register_guest_pm_notifier(&cpufreq_vscmi_cpu_guest_pm_nfb);
+
+        break;
+    case CPUFREQ_GOV_STOP:
+        if ( start_cnt == 0 )
+            break;
+
+        unregister_vscmi_notifier(&cpufreq_vscmi_cpu_nfb);
+        unregister_guest_pm_notifier(&cpufreq_vscmi_cpu_guest_pm_nfb);
+
+        start_cnt--;
+        break;
+    case CPUFREQ_GOV_LIMITS:
+        break;
+    default:
+        ret = -EINVAL;
+        break;
+    }
+
+    return ret;
+}
+
+
+
 struct cpufreq_governor cpufreq_gov_vscmi = {
     .name = "vscmi",
     .governor = cpufreq_governor_vscmi,
@@ -134,9 +146,6 @@ struct cpufreq_governor cpufreq_gov_vscmi = {
 
 static int __init cpufreq_gov_vscmi_init(void)
 {
-    register_vscmi_notifier(&cpufreq_vscmi_cpu_nfb);
-    register_guest_pm_notifier(&cpufreq_vscmi_cpu_guest_pm_nfb);
-
     return cpufreq_register_governor(&cpufreq_gov_vscmi);
 }
 __initcall(cpufreq_gov_vscmi_init);
