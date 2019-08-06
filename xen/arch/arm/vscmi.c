@@ -243,6 +243,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
         struct scmi_perf_set_level *req = (void*)data->msg_payload;
         uint32_t perf_domain = le32_to_cpu(req->domain);
         int level = le32_to_cpu(req->level) - 1;
+        int ret = 0;
 
         if ( perf_domain >= current->domain->max_vcpus )
         {
@@ -262,11 +263,14 @@ static void handle_perf_req(struct scmi_shared_mem *data)
         if ( current->domain->vcpu[perf_domain]->arch.opp != level )
         {
             current->domain->vcpu[perf_domain]->arch.opp = level;
-            /* TODO: Check the return value */
-            notifier_call_chain(&vscmi_chain, 0, current->domain->vcpu[perf_domain], NULL);
+            ret = notifier_call_chain(&vscmi_chain, 0,
+                                      current->domain->vcpu[perf_domain], NULL);
         }
 
-        writel_relaxed(SCMI_SUCCESS, data->msg_payload);
+        if ( !ret )
+            writel_relaxed(SCMI_SUCCESS, data->msg_payload);
+        else
+            writel_relaxed(SCMI_ERR_HARDWARE, data->msg_payload);
         data->length = sizeof(uint32_t) * 2;
 
         break;
