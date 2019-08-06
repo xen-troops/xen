@@ -2122,9 +2122,6 @@ static void __init find_gnttab_region(struct domain *d,
 
     printk("Grant table range: %#"PRIpaddr"-%#"PRIpaddr"\n",
            kinfo->gnttab_start, kinfo->gnttab_start + kinfo->gnttab_size);
-
-    /* TODO: Move this to own function */
-    kinfo->scmi_shmem = kinfo->gnttab_start + kinfo->gnttab_size;
 }
 
 static int __init construct_domain(struct domain *d, struct kernel_info *kinfo)
@@ -2339,6 +2336,8 @@ int __init construct_dom0(struct domain *d)
 #endif
     allocate_memory_11(d, &kinfo);
     find_gnttab_region(d, &kinfo);
+
+    kinfo.scmi_shmem = kinfo.gnttab_start + kinfo.gnttab_size;
 
     /* Map extra GIC MMIO, irqs and other hw stuffs to dom0. */
     rc = gic_map_hwdom_extra_mappings(d);
