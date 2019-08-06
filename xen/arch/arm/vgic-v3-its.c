@@ -759,7 +759,7 @@ static int its_handle_mapd(struct virt_its *its, uint64_t *cmdptr)
         if ( is_iommu_enabled(its->d) ) {
             ret = map_mmio_regions(its->d, gaddr_to_gfn(its->doorbell_address),
                            PFN_UP(ITS_DOORBELL_OFFSET),
-                           maddr_to_mfn(its->doorbell_address));
+                           maddr_to_mfn(its->doorbell_address), p2m_mmio_direct_dev);
             if ( ret < 0 )
             {
                 printk(XENLOG_ERR "GICv3: Map ITS translation register d%d failed.\n",

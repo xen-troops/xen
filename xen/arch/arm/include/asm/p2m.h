@@ -331,6 +331,11 @@ int map_dev_mmio_page(struct domain *d, gfn_t gfn, mfn_t mfn);
 int p2m_insert_mapping(struct domain *d, gfn_t start_gfn, unsigned long nr,
                        mfn_t mfn, p2m_type_t t);
 
+int map_dev_mmio_region(struct domain *d,
+                        gfn_t gfn,
+                        unsigned long nr,
+                        mfn_t mfn);
+
 int guest_physmap_add_entry(struct domain *d,
                             gfn_t gfn,
                             mfn_t mfn,

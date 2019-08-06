@@ -348,7 +348,7 @@ int gicv3_its_map_translation_register(struct domain *d)
 
         ret = map_mmio_regions(d, gaddr_to_gfn(its_translation_addr),
                 PFN_UP(its_translation_size),
-                maddr_to_mfn(its_translation_addr));
+                maddr_to_mfn(its_translation_addr),  p2m_mmio_direct_dev);
         if ( ret )
         {
             printk(XENLOG_ERR "GICv3: Map ITS translation register d%d failed.\n",

@@ -195,7 +195,7 @@ static void __init acpi_map_other_tables(struct domain *d)
     {
         addr = acpi_gbl_root_table_list.tables[i].address;
         size = acpi_gbl_root_table_list.tables[i].length;
-        res = map_regions_p2mt(d,
+        res = map_mmio_regions(d,
                                gaddr_to_gfn(addr),
                                PFN_UP(size),
                                maddr_to_mfn(addr),
@@ -549,7 +549,7 @@ int __init prepare_acpi(struct domain *d, struct kernel_info *kinfo)
     acpi_create_efi_mmap_table(d, &kinfo->mem, tbl_add);
 
     /* Map the EFI and ACPI tables to Dom0 */
-    rc = map_regions_p2mt(d,
+    rc = map_mmio_regions(d,
                           gaddr_to_gfn(d->arch.efi_acpi_gpa),
                           PFN_UP(d->arch.efi_acpi_len),
                           virt_to_mfn(d->arch.efi_acpi_table),

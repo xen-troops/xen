@@ -152,29 +152,14 @@ out:
     return rc;
 }
 
-int map_regions_p2mt(struct domain *d,
+int map_mmio_regions(struct domain *d,
                      gfn_t gfn,
                      unsigned long nr,
                      mfn_t mfn,
                      p2m_type_t p2mt)
 {
+    ASSERT(p2m_is_mmio(p2mt));
     return p2m_insert_mapping(d, gfn, nr, mfn, p2mt);
-}
-
-int unmap_regions_p2mt(struct domain *d,
-                       gfn_t gfn,
-                       unsigned long nr,
-                       mfn_t mfn)
-{
-    return p2m_remove_mapping(d, gfn, nr, mfn);
-}
-
-int map_mmio_regions(struct domain *d,
-                     gfn_t start_gfn,
-                     unsigned long nr,
-                     mfn_t mfn)
-{
-    return p2m_insert_mapping(d, start_gfn, nr, mfn, p2m_mmio_direct_dev);
 }
 
 int unmap_mmio_regions(struct domain *d,

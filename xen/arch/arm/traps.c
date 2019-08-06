@@ -1765,7 +1765,7 @@ static bool try_map_mmio(gfn_t gfn)
          gfn_to_gaddr(gfn) >= d->arch.vgic.cbase &&
          (gfn_to_gaddr(gfn) - d->arch.vgic.cbase) < d->arch.vgic.csize )
         return !map_mmio_regions(d, gfn, d->arch.vgic.csize / PAGE_SIZE,
-                                 maddr_to_mfn(d->arch.vgic.vbase));
+                                 maddr_to_mfn(d->arch.vgic.vbase), p2m_mmio_direct_c);
 
     /*
      * Device-Tree should already have everything mapped when building
@@ -1781,7 +1781,7 @@ static bool try_map_mmio(gfn_t gfn)
     if ( !iomem_access_permitted(d, mfn_x(mfn), mfn_x(mfn)) )
         return false;
 
-    return !map_regions_p2mt(d, gfn, 1, mfn, p2m_mmio_direct_c);
+    return !map_mmio_regions(d, gfn, 1, mfn, p2m_mmio_direct_c);
 }
 
 static inline bool check_p2m(bool is_data, paddr_t gpa)
