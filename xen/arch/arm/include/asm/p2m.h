@@ -144,6 +144,11 @@ typedef enum {
 #define P2M_RAM_TYPES (p2m_to_mask(p2m_ram_rw) |        \
                        p2m_to_mask(p2m_ram_ro))
 
+/* MMIO types */
+#define P2M_MMIO_TYPES (p2m_to_mask(p2m_mmio_direct_dev) | \
+                        p2m_to_mask(p2m_mmio_direct_nc)  | \
+                        p2m_to_mask(p2m_mmio_direct_c))
+
 /* Grant mapping types, which map to a real frame in another VM */
 #define P2M_GRANT_TYPES (p2m_to_mask(p2m_grant_map_rw) |  \
                          p2m_to_mask(p2m_grant_map_ro))
@@ -158,6 +163,7 @@ typedef enum {
 #define p2m_is_any_ram(_t) (p2m_to_mask(_t) &                   \
                             (P2M_RAM_TYPES | P2M_GRANT_TYPES |  \
                              P2M_FOREIGN_TYPES))
+#define p2m_is_mmio(_t) (p2m_to_mask(_t) & P2M_MMIO_TYPES)
 
 /* All common type definitions should live ahead of this inclusion. */
 #ifdef _XEN_P2M_COMMON_H
