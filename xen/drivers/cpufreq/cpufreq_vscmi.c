@@ -67,6 +67,7 @@ static int cpufreq_vscmi_cpu_callback(
     int freq;
     int pcpu;
     cpumask_t mask;
+    int ret;
 
     cpumask_copy(&mask, vcpu->cpu_hard_affinity);
     /* Check all domains to find the maximum opp requested */
@@ -91,8 +92,13 @@ static int cpufreq_vscmi_cpu_callback(
 
         printk(XENLOG_INFO"cpufreq_vscmi: asking for freq %d for pcpu %d\n", freq, pcpu);
 
-        /* TODO: Check the return value */
-        __cpufreq_driver_target(policy, freq, CPUFREQ_RELATION_L);
+        ret = __cpufreq_driver_target(policy, freq, CPUFREQ_RELATION_L);
+        if ( ret )
+        {
+            printk(XENLOG_WARNING" __cpufreq_driver_target failed with error code %d\n",
+                   ret);
+            return ret;
+        }
 
         cpumask_andnot(&mask, &mask, policy->cpus);
     }
