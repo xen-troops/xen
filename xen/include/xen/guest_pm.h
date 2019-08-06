@@ -31,6 +31,7 @@ struct guest_pm {
 };
 
 void register_guest_pm_notifier(struct notifier_block *nb);
+void unregister_guest_pm_notifier(struct notifier_block *nb);
 int guest_pm_init_domain(struct domain *d);
 int guest_pm_hadle_op(struct domain *d, struct xen_domctl_pm_op *pm_op);
 uint8_t guest_pm_clamp_opp(struct domain *d, uint8_t opp);

@@ -35,6 +35,13 @@ void register_guest_pm_notifier(struct notifier_block *nb)
     spin_unlock(&add_remove_lock);
 }
 
+void unregister_guest_pm_notifier(struct notifier_block *nb)
+{
+    spin_lock(&add_remove_lock);
+    notifier_chain_unregister(&guest_pm_chain, nb);
+    spin_unlock(&add_remove_lock);
+}
+
 int guest_pm_init_domain(struct domain *d)
 {
     /* By default PM control is disabled for the guest */
