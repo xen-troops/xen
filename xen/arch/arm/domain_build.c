@@ -1397,7 +1397,7 @@ static int __init make_scmi_sram_node(struct domain *d, struct kernel_info *kinf
     cells = &reg[0];
     dt_child_set_range(&cells, GUEST_ROOT_ADDRESS_CELLS,
                        GUEST_ROOT_SIZE_CELLS, kinfo->scmi_shmem,
-                       512);
+                       VSCMI_SHM_SIZE);
 
     res = fdt_property(fdt, "reg", reg, sizeof(reg));
     if ( res )
