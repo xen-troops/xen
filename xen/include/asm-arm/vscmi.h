@@ -31,6 +31,7 @@
 #define VSCMI_OPP_COUNT (VSCMI_MAX_OPP + 1)
 
 void register_vscmi_notifier(struct notifier_block *nb);
+void unregister_vscmi_notifier(struct notifier_block *nb);
 
 int domain_vscmi_init(struct domain *d, gfn_t shmem_gfn);
 void domain_vscmi_free(struct domain *d);

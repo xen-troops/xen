@@ -44,6 +44,13 @@ void register_vscmi_notifier(struct notifier_block *nb)
     spin_unlock(&add_remove_lock);
 }
 
+void unregister_vscmi_notifier(struct notifier_block *nb)
+{
+    spin_lock(&add_remove_lock);
+    notifier_chain_unregister(&vscmi_chain, nb);
+    spin_unlock(&add_remove_lock);
+}
+
 int vcpu_vscmi_init(struct vcpu *vcpu)
 {
     vcpu->arch.opp = 0;
