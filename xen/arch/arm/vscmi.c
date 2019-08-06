@@ -317,7 +317,7 @@ bool vscmi_handle_call(struct cpu_user_regs *regs)
     scmi_mfn = page_to_mfn(current->domain->arch.scmi_base_pg);
     scmi_ipa = current->domain->arch.scmi_base_ipa;
 
-    data = (struct scmi_shared_mem*)xzalloc_array(char, 256);
+    data = (struct scmi_shared_mem*)xzalloc_array(char, VSCMI_SHM_SIZE);
     if ( !data )
     {
         gprintk(XENLOG_ERR, "Could not allocate buffer for SCMI SHM\n");
@@ -325,8 +325,8 @@ bool vscmi_handle_call(struct cpu_user_regs *regs)
     }
 
     flush_page_to_ram(scmi_mfn, false);
-    res = access_guest_memory_by_ipa(current->domain, scmi_ipa, data, 256,
-                                     false);
+    res = access_guest_memory_by_ipa(current->domain, scmi_ipa, data,
+                                     VSCMI_SHM_SIZE, false);
     if ( res )
     {
         gprintk(XENLOG_ERR, "Error reading guest memory %d\n", res);
@@ -351,8 +351,8 @@ bool vscmi_handle_call(struct cpu_user_regs *regs)
 
     data->channel_status = SCMI_SHMEM_CHAN_STAT_CHANNEL_FREE;
 
-    res = access_guest_memory_by_ipa(current->domain, scmi_ipa, data, 256,
-                                     true);
+    res = access_guest_memory_by_ipa(current->domain, scmi_ipa, data,
+                                     VSCMI_SHM_SIZE, true);
 
     flush_page_to_ram(scmi_mfn, false);
     if ( res )
