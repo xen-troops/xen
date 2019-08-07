@@ -423,6 +423,11 @@
 #define LIBXL_HAVE_BUILDINFO_BOOTLOADER_ARGS 1
 
 /*
+ * Support specifying memory policy information for memory mappings.
+ */
+#define LIBXL_HAVE_MEMORY_POLICY 1
+
+/*
  * LIBXL_HAVE_EXTENDED_VKB indicates that libxl_device_vkb has extended fields:
  *  - unique_id;
  *  - feature_disable_keyboard;

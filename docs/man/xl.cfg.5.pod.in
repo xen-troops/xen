@@ -1268,7 +1268,7 @@ is given in hexadecimal format and may either be a range, e.g. C<2f8-2ff>
 It is recommended to only use this option for trusted VMs under
 administrator's control.
 
-=item B<iomem=[ "IOMEM_START,NUM_PAGES[@GFN]", "IOMEM_START,NUM_PAGES[@GFN]", ...]>
+=item B<iomem=[ "IOMEM_START,NUM_PAGES[@GFN],MEMORY_POLICY", "IOMEM_START,NUM_PAGES[@GFN][,MEMORY_POLICY]", ...]>
 
 Allow auto-translated domains to access specific hardware I/O memory pages.
 
@@ -1279,6 +1279,14 @@ B<GFN> is not specified, the mapping will be performed using B<IOMEM_START>
 as a start in the guest's address space, therefore performing a 1:1 mapping
 by default.
 All of these values must be given in hexadecimal format.
+B<MEMORY_POLICY> for Arm platforms:
+  - "arm_dev_nGnRE" for Device-nGnRE (Device Memory on Armv7), the default on Arm
+  - "arm_mem_WB" for Outer Shareable Write-Back Cacheable Memory
+They select the stage-2 memory attributes, but note that the resulting
+memory attributes will be a combination of stage-2 and stage-1 memory
+attributes: it will be the strongest between the 2 stages attributes.
+B<MEMORY_POLICY> can be for both Arm and x86 platforms:
+  - "default" which is Uncachable Memory on x86, and arm_dev_nGnRE on Arm
 
 Note that the IOMMU won't be updated with the mappings specified with this
 option. This option therefore should not be used to pass through any

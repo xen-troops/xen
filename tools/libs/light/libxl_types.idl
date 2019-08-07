@@ -307,6 +307,12 @@ libxl_ioport_range = Struct("ioport_range", [
     ("number", uint32),
     ])
 
+libxl_memory_policy = Enumeration("memory_policy", [
+    (0, "default"),
+    (1, "ARM_Dev_nGnRE"),
+    (2, "ARM_Mem_WB"),
+    ], init_val = "LIBXL_MEMORY_POLICY_DEFAULT")
+
 libxl_iomem_range = Struct("iomem_range", [
     # start host frame number to be mapped to the guest
     ("start", uint64),
@@ -314,6 +320,8 @@ libxl_iomem_range = Struct("iomem_range", [
     ("number", uint64),
     # guest frame number used as a start for the mapping
     ("gfn", uint64, {'init_val': "LIBXL_INVALID_GFN"}),
+    # memory_policy of the memory region
+    ("memory_policy", libxl_memory_policy),
     ])
 
 libxl_vga_interface_info = Struct("vga_interface_info", [

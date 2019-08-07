@@ -2512,6 +2512,7 @@ void parse_config_data(const char *config_source,
         }
         for (i = 0; i < num_iomem; i++) {
             int used;
+            const char *mempolicy;
 
             buf = xlu_cfg_get_listitem (iomem, i);
             if (!buf) {
@@ -2524,10 +2525,29 @@ void parse_config_data(const char *config_source,
                          &b_info->iomem[i].start,
                          &b_info->iomem[i].number, &used,
                          &b_info->iomem[i].gfn, &used);
-            if (ret < 2 || buf[used] != '\0') {
+            if (ret < 2) {
                 fprintf(stderr,
                         "xl: Invalid argument parsing iomem: %s\n", buf);
                 exit(1);
+            }
+            mempolicy = &buf[used];
+            if (strlen(mempolicy) > 1) {
+                mempolicy++;
+                if (!strcmp(mempolicy, "arm_dev_nGnRE"))
+                    b_info->iomem[i].memory_policy =
+                        LIBXL_MEMORY_POLICY_ARM_DEV_NGNRE;
+                else if (!strcmp(mempolicy, "arm_mem_WB"))
+                    b_info->iomem[i].memory_policy =
+                        LIBXL_MEMORY_POLICY_ARM_MEM_WB;
+                else if (!strcmp(mempolicy, "default"))
+                    b_info->iomem[i].memory_policy =
+                        LIBXL_MEMORY_POLICY_DEFAULT;
+                else {
+                    fprintf(stderr,
+                            "xl: Invalid iomem memory policy parameter: %s\n",
+                            mempolicy);
+                    exit(1);
+                }
             }
         }
     }

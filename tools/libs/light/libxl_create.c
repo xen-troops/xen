@@ -1722,6 +1722,7 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
 
     for (i = 0; i < d_config->b_info.num_iomem; i++) {
         libxl_iomem_range *io = &d_config->b_info.iomem[i];
+        int memory_policy;
 
         LOGD(DEBUG, domid, "iomem %"PRIx64"-%"PRIx64,
              io->start, io->start + io->number - 1);
@@ -1735,9 +1736,16 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
             ret = ERROR_FAIL;
             goto error_out;
         }
-        ret = xc_domain_memory_mapping(CTX->xch, domid,
+        memory_policy = libxl__arch_memory_policy_to_xc(io->memory_policy);
+        if (memory_policy < 0) {
+            LOGED(ERROR, domid,
+                  "invalid memory policy %u", io->memory_policy);
+            ret = ERROR_FAIL;
+            goto error_out;
+        }
+        ret = xc_domain_mem_map_policy(CTX->xch, domid,
                                        io->gfn, io->start,
-                                       io->number, 1);
+                                       io->number, 1, memory_policy);
         if (ret < 0) {
             LOGED(ERROR, domid,
                   "failed to map to domain iomem range %"PRIx64"-%"PRIx64
