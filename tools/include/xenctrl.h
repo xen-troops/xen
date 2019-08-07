@@ -1717,6 +1717,14 @@ int xc_deassign_dt_device(xc_interface *xch,
                           uint32_t domid,
                           char *path);
 
+int xc_domain_mem_map_policy(xc_interface *xch,
+                             uint32_t domid,
+                             unsigned long first_gfn,
+                             unsigned long first_mfn,
+                             unsigned long nr_mfns,
+                             uint32_t add_mapping,
+                             uint32_t memory_policy);
+
 int xc_domain_memory_mapping(xc_interface *xch,
                              uint32_t domid,
                              unsigned long first_gfn,
