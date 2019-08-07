@@ -697,6 +697,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         unsigned long mfn_end = mfn + nr_mfns - 1;
         int add = op->u.memory_mapping.add_mapping;
         p2m_type_t p2mt;
+        unsigned int memory_policy = op->u.memory_mapping.memory_policy;
 
         ret = -EINVAL;
         if ( mfn_end < mfn || /* wrap? */
@@ -730,9 +731,29 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         if ( add )
         {
             printk(XENLOG_G_DEBUG
-                   "memory_map:add: dom%d gfn=%lx mfn=%lx nr=%lx\n",
-                   d->domain_id, gfn, mfn, nr_mfns);
+                   "memory_map:add: dom%d gfn=%lx mfn=%lx nr=%lx policy=%u\n",
+                   d->domain_id, gfn, mfn, nr_mfns, memory_policy);
 
+            switch ( memory_policy )
+            {
+#ifdef CONFIG_ARM
+                case MEMORY_POLICY_ARM_MEM_WB:
+                    p2mt = p2m_mmio_direct_c;
+                    break;
+                case MEMORY_POLICY_ARM_DEV_nGnRE:
+                    p2mt = p2m_mmio_direct_dev;
+                    break;
+#endif
+#ifdef CONFIG_X86
+                case MEMORY_POLICY_DEFAULT:
+                    p2mt = p2m_mmio_direct;
+                    break;
+#endif
+                default:
+                    domctl_lock_release();
+                    ret = -EINVAL;
+                    goto domctl_out_unlock_domonly;
+            }
             ret = map_mmio_regions(d, _gfn(gfn), nr_mfns, _mfn(mfn), p2mt);
             if ( ret < 0 )
                 printk(XENLOG_G_WARNING

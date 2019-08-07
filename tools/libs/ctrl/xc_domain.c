@@ -1916,6 +1916,7 @@ int xc_domain_memory_mapping(
     domctl.cmd = XEN_DOMCTL_memory_mapping;
     domctl.domain = domid;
     domctl.u.memory_mapping.add_mapping = add_mapping;
+    domctl.u.memory_mapping.memory_policy = MEMORY_POLICY_DEFAULT;
     max_batch_sz = nr_mfns;
     do
     {
