@@ -829,7 +829,7 @@ to be used in addition to QEMU.
 
 	Status: Tech Preview
 
-### ARM/Non-PCI device passthrough
+### ARM/Non-PCI device passthrough and other iomem configurations
 
     Status: Supported, not security supported
 
