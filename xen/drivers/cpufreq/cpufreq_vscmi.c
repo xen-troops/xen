@@ -61,8 +61,6 @@ static int cpufreq_vscmi_cpu_callback(
 
         freq = vscmi_scale_opp(requested_opp, policy->min, policy->max);
 
-        printk(XENLOG_INFO"cpufreq_vscmi: asking for freq %d for pcpu %d\n", freq, pcpu);
-
         ret = __cpufreq_driver_target(policy, freq, CPUFREQ_RELATION_L);
         if ( ret < 0 )
         {
@@ -136,8 +134,6 @@ static int cpufreq_governor_vscmi(struct cpufreq_policy *policy,
 
     return ret;
 }
-
-
 
 struct cpufreq_governor cpufreq_gov_vscmi = {
     .name = "vscmi",
