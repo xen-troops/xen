@@ -600,6 +600,7 @@ static int flask_domctl(struct domain *d, int cmd)
     case XEN_DOMCTL_vm_event_op:
     /* TODO: Add XSM support */
     case XEN_DOMCTL_vscmi_init:
+    case XEN_DOMCTL_pm_op:
 
     /* These have individual XSM hooks (arch/../domctl.c) */
     case XEN_DOMCTL_bind_pt_irq:
