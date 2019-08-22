@@ -1880,8 +1880,8 @@ struct page_info *get_page_from_gva(struct vcpu *v, vaddr_t va,
          */
         if ( !guest_walk_tables(v, va, &ipa, &s1_perms) )
         {
-            dprintk(XENLOG_G_DEBUG,
-                    "%pv: Failed to walk page-table va %#"PRIvaddr"\n", v, va);
+            /*dprintk(XENLOG_G_DEBUG,
+                    "%pv: Failed to walk page-table va %#"PRIvaddr"\n", v, va);*/
             return NULL;
         }
 
