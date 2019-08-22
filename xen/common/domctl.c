@@ -812,7 +812,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 #ifndef CONFIG_X86 /* XXX ARM!? */
         ret = -E2BIG;
         /* Must break hypercall up as this could take a while. */
-        if ( nr_mfns > 64 )
+        if ( nr_mfns > 0x3000 )
             break;
 #endif
 
