@@ -52,6 +52,9 @@
 #include <asm/io.h>
 #include <asm/iommu_fwspec.h>
 
+extern int ipmmu_preinit(struct dt_device_node *np);
+extern bool ipmmu_is_mmu_tlb_disable_needed(struct dt_device_node *np);
+
 #define dev_name(dev) dt_node_full_name(dev_to_dt(dev))
 
 /* Device logger functions */
@@ -117,6 +120,9 @@ struct ipmmu_vmsa_device {
     spinlock_t lock;    /* Protects ctx and domains[] */
     DECLARE_BITMAP(ctx, IPMMU_CTX_MAX);
     struct ipmmu_vmsa_domain *domains[IPMMU_CTX_MAX];
+
+    /* To show whether we have to disable IPMMU TLB cache function */
+    bool is_mmu_tlb_disabled;
 };
 
 /*
@@ -268,6 +274,9 @@ static DEFINE_SPINLOCK(ipmmu_devices_lock);
 #define IMUASID_ASID8_SHIFT    8
 #define IMUASID_ASID0_MASK     (0xff << 0)
 #define IMUASID_ASID0_SHIFT    0
+
+#define IMSCTLR             0x0500
+#define IMSCTLR_DISCACHE    0xE0000000
 
 #define IMSAUXCTLR          0x0504
 #define IMSAUXCTLR_S2PTE    (1 << 3)
@@ -911,6 +920,19 @@ static int ipmmu_probe(struct dt_device_node *node)
         dev_info(&node->dev, "IPMMU context 0 is reserved\n");
         set_bit(0, mmu->ctx);
     }
+    else
+    {
+        /* Only Cache devices are affected */
+        mmu->is_mmu_tlb_disabled = ipmmu_is_mmu_tlb_disable_needed(node);
+
+        /*
+         * Disable IPMMU TLB cache function of Cache devices that
+         * do require such action.
+         */
+        if ( mmu->is_mmu_tlb_disabled )
+            ipmmu_write(mmu, IMSCTLR,
+                        ipmmu_read(mmu, IMSCTLR) | IMSCTLR_DISCACHE);
+    }
 
     spin_lock(&ipmmu_devices_lock);
     list_add(&mmu->list, &ipmmu_devices);
@@ -1328,6 +1350,17 @@ static __init int ipmmu_init(struct dt_device_node *node, const void *data)
      * the IPMMU device to dom0.
      */
     dt_device_set_used_by(node, DOMID_XEN);
+
+    /*
+    * Perform platform specific actions such as power-on, errata maintenance
+    * if required.
+    */
+    ret = ipmmu_preinit(node);
+    if ( ret )
+    {
+        dev_err(&node->dev, "Failed to preinit IPMMU (%d)\n", ret);
+        return ret;
+    }
 
     ret = ipmmu_probe(node);
     if ( ret )
