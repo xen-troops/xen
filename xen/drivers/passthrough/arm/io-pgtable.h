@@ -12,10 +12,7 @@ typedef paddr_t dma_addr_t;
  */
 enum io_pgtable_fmt {
 	ARM_32_LPAE_S1,
-	ARM_32_LPAE_S2,
 	ARM_64_LPAE_S1,
-	ARM_64_LPAE_S2,
-	ARM_V7S,
 	IO_PGTABLE_NUM_FMTS,
 };
 
@@ -205,16 +202,6 @@ struct io_pgtable_init_fns {
 };
 
 extern struct io_pgtable_init_fns io_pgtable_arm_32_lpae_s1_init_fns;
-#if 0 /* Xen: Not needed */
-extern struct io_pgtable_init_fns io_pgtable_arm_32_lpae_s2_init_fns;
-#endif
 extern struct io_pgtable_init_fns io_pgtable_arm_64_lpae_s1_init_fns;
-#if 0 /* Xen: Not needed */
-extern struct io_pgtable_init_fns io_pgtable_arm_64_lpae_s2_init_fns;
-#endif
-/* Xen: Fix */
-#ifdef CONFIG_IOMMU_IO_PGTABLE_ARMV7S
-extern struct io_pgtable_init_fns io_pgtable_arm_v7s_init_fns;
-#endif
 
 #endif /* __IO_PGTABLE_H */
