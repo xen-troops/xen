@@ -24,6 +24,17 @@ config IPMMU_VMSA
 	  (H3 ES3.0, M3-W+, etc) which IPMMU hardware supports stage 2
 	  translation table format and is able to use CPU's P2M table as is.
 
+config IPMMU_VMSA_LEGACY
+	bool "Renesas IPMMU-VMSA found in R-Car Gen3 SoCs (legacy)" if EXPERT = "y"
+	depends on ARM_64 && !IPMMU_VMSA
+	---help---
+	  Support for implementations of the Renesas IPMMU-VMSA found
+	  in R-Car Gen3 SoCs (legacy).
+
+	  Say Y here if you are using old R-Car Gen3 SoCs revisions
+	  (H3 ES2.0, M3 ES1.1, etc) which IPMMU hardware doesn't support stage 2
+	  translation table format and is not able to use CPU's P2M table as is.
+
 endif
 
 config IOMMU_FORCE_PT_SHARE

@@ -20,7 +20,7 @@ config ARM
 	select HAS_DEVICE_TREE
 	select HAS_PASSTHROUGH
 	select HAS_PDX
-	select IOMMU_FORCE_PT_SHARE
+	select IOMMU_FORCE_PT_SHARE if !IPMMU_VMSA_LEGACY
 
 config ARCH_DEFCONFIG
 	string
