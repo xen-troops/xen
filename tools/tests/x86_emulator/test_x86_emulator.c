@@ -11,16 +11,38 @@ asm ( ".pushsection .test, \"ax\", @progbits; .popsection" );
 #include "3dnow.h"
 #include "sse.h"
 #include "sse2.h"
+#include "sse2-gf.h"
+#include "ssse3-aes.h"
+#include "ssse3-pclmul.h"
 #include "sse4.h"
+#include "sse4-sha.h"
 #include "avx.h"
+#include "avx-aes.h"
+#include "avx-pclmul.h"
+#include "avx-sha.h"
 #include "fma4.h"
 #include "fma.h"
 #include "avx2.h"
 #include "avx2-sg.h"
+#include "avx2-vaes.h"
+#include "avx2-vpclmulqdq.h"
+#include "avx2-gf.h"
 #include "xop.h"
 #include "avx512f-opmask.h"
 #include "avx512dq-opmask.h"
 #include "avx512bw-opmask.h"
+#include "avx512f.h"
+#include "avx512f-sg.h"
+#include "avx512f-sha.h"
+#include "avx512vl-sg.h"
+#include "avx512bw.h"
+#include "avx512bw-vaes.h"
+#include "avx512bw-vpclmulqdq.h"
+#include "avx512bw-gf.h"
+#include "avx512dq.h"
+#include "avx512er.h"
+#include "avx512vbmi.h"
+#include "avx512vbmi2-vpclmulqdq.h"
 
 #define verbose false /* Switch to true for far more logging. */
 
@@ -81,11 +103,38 @@ static bool simd_check_xop(void)
     return cpu_has_xop;
 }
 
+static bool simd_check_ssse3_aes(void)
+{
+    return cpu_has_aesni && cpu_has_ssse3;
+}
+
+static bool simd_check_avx_aes(void)
+{
+    return cpu_has_aesni && cpu_has_avx;
+}
+
+static bool simd_check_ssse3_pclmul(void)
+{
+    return cpu_has_pclmulqdq && cpu_has_ssse3;
+}
+
+static bool simd_check_avx_pclmul(void)
+{
+    return cpu_has_pclmulqdq && cpu_has_avx;
+}
+
 static bool simd_check_avx512f(void)
 {
     return cpu_has_avx512f;
 }
 #define simd_check_avx512f_opmask simd_check_avx512f
+#define simd_check_avx512f_sg simd_check_avx512f
+
+static bool simd_check_avx512f_vl(void)
+{
+    return cpu_has_avx512f && cpu_has_avx512vl;
+}
+#define simd_check_avx512vl_sg simd_check_avx512f_vl
 
 static bool simd_check_avx512dq(void)
 {
@@ -93,11 +142,112 @@ static bool simd_check_avx512dq(void)
 }
 #define simd_check_avx512dq_opmask simd_check_avx512dq
 
+static bool simd_check_avx512dq_vl(void)
+{
+    return cpu_has_avx512dq && cpu_has_avx512vl;
+}
+
+static bool simd_check_avx512er(void)
+{
+    return cpu_has_avx512er;
+}
+
 static bool simd_check_avx512bw(void)
 {
     return cpu_has_avx512bw;
 }
 #define simd_check_avx512bw_opmask simd_check_avx512bw
+
+static bool simd_check_avx512bw_vl(void)
+{
+    return cpu_has_avx512bw && cpu_has_avx512vl;
+}
+
+static bool simd_check_avx512vbmi(void)
+{
+    return cpu_has_avx512_vbmi;
+}
+
+static bool simd_check_avx512vbmi_vl(void)
+{
+    return cpu_has_avx512_vbmi && cpu_has_avx512vl;
+}
+
+static bool simd_check_sse4_sha(void)
+{
+    return cpu_has_sha && cpu_has_sse4_2;
+}
+
+static bool simd_check_avx_sha(void)
+{
+    return cpu_has_sha && cpu_has_avx;
+}
+
+static bool simd_check_avx512f_sha_vl(void)
+{
+    return cpu_has_sha && cpu_has_avx512vl;
+}
+
+static bool simd_check_avx2_vaes(void)
+{
+    return cpu_has_aesni && cpu_has_vaes && cpu_has_avx2;
+}
+
+static bool simd_check_avx512bw_vaes(void)
+{
+    return cpu_has_aesni && cpu_has_vaes && cpu_has_avx512bw;
+}
+
+static bool simd_check_avx512bw_vaes_vl(void)
+{
+    return cpu_has_aesni && cpu_has_vaes &&
+           cpu_has_avx512bw && cpu_has_avx512vl;
+}
+
+static bool simd_check_avx2_vpclmulqdq(void)
+{
+    return cpu_has_vpclmulqdq && cpu_has_avx2;
+}
+
+static bool simd_check_avx512bw_vpclmulqdq(void)
+{
+    return cpu_has_vpclmulqdq && cpu_has_avx512bw;
+}
+
+static bool simd_check_avx512bw_vpclmulqdq_vl(void)
+{
+    return cpu_has_vpclmulqdq && cpu_has_avx512bw && cpu_has_avx512vl;
+}
+
+static bool simd_check_avx512vbmi2_vpclmulqdq(void)
+{
+    return cpu_has_avx512_vbmi2 && simd_check_avx512bw_vpclmulqdq();
+}
+
+static bool simd_check_avx512vbmi2_vpclmulqdq_vl(void)
+{
+    return cpu_has_avx512_vbmi2 && simd_check_avx512bw_vpclmulqdq_vl();
+}
+
+static bool simd_check_sse2_gf(void)
+{
+    return cpu_has_gfni && cpu_has_sse2;
+}
+
+static bool simd_check_avx2_gf(void)
+{
+    return cpu_has_gfni && cpu_has_avx2;
+}
+
+static bool simd_check_avx512bw_gf(void)
+{
+    return cpu_has_gfni && cpu_has_avx512bw;
+}
+
+static bool simd_check_avx512bw_gf_vl(void)
+{
+    return cpu_has_gfni && cpu_has_avx512vl;
+}
 
 static void simd_set_regs(struct cpu_user_regs *regs)
 {
@@ -141,11 +291,21 @@ static const struct {
       .check_cpu = simd_check_ ## feat,                             \
       .set_regs = simd_set_regs,                                    \
       .check_regs = simd_check_regs }
+#define AVX512VL_(bits, desc, feat, form)                          \
+    { .code = feat ## _x86_ ## bits ## _D ## _ ## form,            \
+      .size = sizeof(feat ## _x86_ ## bits ## _D ## _ ## form),    \
+      .bitness = bits, .name = "AVX512" #desc,                     \
+      .check_cpu = simd_check_ ## feat ## _vl,                     \
+      .set_regs = simd_set_regs,                                   \
+      .check_regs = simd_check_regs }
 #ifdef __x86_64__
 # define SIMD(desc, feat, form) SIMD_(64, desc, feat, form), \
                                 SIMD_(32, desc, feat, form)
+# define AVX512VL(desc, feat, form) AVX512VL_(64, desc, feat, form), \
+                                    AVX512VL_(32, desc, feat, form)
 #else
 # define SIMD(desc, feat, form) SIMD_(32, desc, feat, form)
+# define AVX512VL(desc, feat, form) AVX512VL_(32, desc, feat, form)
 #endif
     SIMD(3DNow! single,          _3dnow,     8f4),
     SIMD(SSE scalar single,      sse,         f4),
@@ -228,6 +388,9 @@ static const struct {
     SIMD(AVX2 S/G i64[4x32],  avx2_sg,    32x4i8),
     SIMD(AVX2 S/G i32[4x64],  avx2_sg,    32x8i4),
     SIMD(AVX2 S/G i64[4x64],  avx2_sg,    32x8i8),
+#ifdef __x86_64__
+    SIMD_(64, AVX2 S/G %ymm8+, avx2_sg,     high),
+#endif
     SIMD(XOP 128bit single,       xop,      16f4),
     SIMD(XOP 256bit single,       xop,      32f4),
     SIMD(XOP 128bit double,       xop,      16f8),
@@ -244,10 +407,131 @@ static const struct {
     SIMD(XOP i16x16,              xop,      32i2),
     SIMD(XOP i32x8,               xop,      32i4),
     SIMD(XOP i64x4,               xop,      32i8),
+    SIMD(AES (legacy),      ssse3_aes,        16),
+    SIMD(AES (VEX/x16),       avx_aes,        16),
+    SIMD(PCLMUL (legacy), ssse3_pclmul,       16),
+    SIMD(PCLMUL (VEX/x2),  avx_pclmul,        16),
     SIMD(OPMASK/w,     avx512f_opmask,         2),
-    SIMD(OPMASK/b,    avx512dq_opmask,         1),
-    SIMD(OPMASK/d,    avx512bw_opmask,         4),
-    SIMD(OPMASK/q,    avx512bw_opmask,         8),
+    SIMD(OPMASK+DQ/b, avx512dq_opmask,         1),
+    SIMD(OPMASK+DQ/w, avx512dq_opmask,         2),
+    SIMD(OPMASK+BW/d, avx512bw_opmask,         4),
+    SIMD(OPMASK+BW/q, avx512bw_opmask,         8),
+    SIMD(AVX512F f32 scalar,  avx512f,        f4),
+    SIMD(AVX512F f32x16,      avx512f,      64f4),
+    SIMD(AVX512F f64 scalar,  avx512f,        f8),
+    SIMD(AVX512F f64x8,       avx512f,      64f8),
+    SIMD(AVX512F s32x16,      avx512f,      64i4),
+    SIMD(AVX512F u32x16,      avx512f,      64u4),
+    SIMD(AVX512F s64x8,       avx512f,      64i8),
+    SIMD(AVX512F u64x8,       avx512f,      64u8),
+    SIMD(AVX512F S/G f32[16x32], avx512f_sg, 64x4f4),
+    SIMD(AVX512F S/G f64[ 8x32], avx512f_sg, 64x4f8),
+    SIMD(AVX512F S/G f32[ 8x64], avx512f_sg, 64x8f4),
+    SIMD(AVX512F S/G f64[ 8x64], avx512f_sg, 64x8f8),
+    SIMD(AVX512F S/G i32[16x32], avx512f_sg, 64x4i4),
+    SIMD(AVX512F S/G i64[ 8x32], avx512f_sg, 64x4i8),
+    SIMD(AVX512F S/G i32[ 8x64], avx512f_sg, 64x8i4),
+    SIMD(AVX512F S/G i64[ 8x64], avx512f_sg, 64x8i8),
+#ifdef __x86_64__
+    SIMD_(64, AVX512F S/G %zmm8+, avx512f_sg, higher),
+    SIMD_(64, AVX512F S/G %zmm16+, avx512f_sg, highest),
+#endif
+    AVX512VL(VL f32x4,        avx512f,      16f4),
+    AVX512VL(VL f64x2,        avx512f,      16f8),
+    AVX512VL(VL f32x8,        avx512f,      32f4),
+    AVX512VL(VL f64x4,        avx512f,      32f8),
+    AVX512VL(VL s32x4,        avx512f,      16i4),
+    AVX512VL(VL u32x4,        avx512f,      16u4),
+    AVX512VL(VL s32x8,        avx512f,      32i4),
+    AVX512VL(VL u32x8,        avx512f,      32u4),
+    AVX512VL(VL s64x2,        avx512f,      16i8),
+    AVX512VL(VL u64x2,        avx512f,      16u8),
+    AVX512VL(VL s64x4,        avx512f,      32i8),
+    AVX512VL(VL u64x4,        avx512f,      32u8),
+    SIMD(AVX512VL S/G f32[4x32], avx512vl_sg, 16x4f4),
+    SIMD(AVX512VL S/G f64[2x32], avx512vl_sg, 16x4f8),
+    SIMD(AVX512VL S/G f32[2x64], avx512vl_sg, 16x8f4),
+    SIMD(AVX512VL S/G f64[2x64], avx512vl_sg, 16x8f8),
+    SIMD(AVX512VL S/G f32[8x32], avx512vl_sg, 32x4f4),
+    SIMD(AVX512VL S/G f64[4x32], avx512vl_sg, 32x4f8),
+    SIMD(AVX512VL S/G f32[4x64], avx512vl_sg, 32x8f4),
+    SIMD(AVX512VL S/G f64[4x64], avx512vl_sg, 32x8f8),
+    SIMD(AVX512VL S/G i32[4x32], avx512vl_sg, 16x4i4),
+    SIMD(AVX512VL S/G i64[2x32], avx512vl_sg, 16x4i8),
+    SIMD(AVX512VL S/G i32[2x64], avx512vl_sg, 16x8i4),
+    SIMD(AVX512VL S/G i64[2x64], avx512vl_sg, 16x8i8),
+    SIMD(AVX512VL S/G i32[8x32], avx512vl_sg, 32x4i4),
+    SIMD(AVX512VL S/G i64[4x32], avx512vl_sg, 32x4i8),
+    SIMD(AVX512VL S/G i32[4x64], avx512vl_sg, 32x8i4),
+    SIMD(AVX512VL S/G i64[4x64], avx512vl_sg, 32x8i8),
+    SIMD(AVX512BW s8x64,     avx512bw,      64i1),
+    SIMD(AVX512BW u8x64,     avx512bw,      64u1),
+    SIMD(AVX512BW s16x32,    avx512bw,      64i2),
+    SIMD(AVX512BW u16x32,    avx512bw,      64u2),
+    AVX512VL(BW+VL s8x16,    avx512bw,      16i1),
+    AVX512VL(BW+VL u8x16,    avx512bw,      16u1),
+    AVX512VL(BW+VL s8x32,    avx512bw,      32i1),
+    AVX512VL(BW+VL u8x32,    avx512bw,      32u1),
+    AVX512VL(BW+VL s16x8,    avx512bw,      16i2),
+    AVX512VL(BW+VL u16x8,    avx512bw,      16u2),
+    AVX512VL(BW+VL s16x16,   avx512bw,      32i2),
+    AVX512VL(BW+VL u16x16,   avx512bw,      32u2),
+    SIMD(AVX512DQ f32x16,    avx512dq,      64f4),
+    SIMD(AVX512DQ f64x8,     avx512dq,      64f8),
+    SIMD(AVX512DQ s32x16,    avx512dq,      64i4),
+    SIMD(AVX512DQ u32x16,    avx512dq,      64u4),
+    SIMD(AVX512DQ s64x8,     avx512dq,      64i8),
+    SIMD(AVX512DQ u64x8,     avx512dq,      64u8),
+    AVX512VL(DQ+VL f32x4,    avx512dq,      16f4),
+    AVX512VL(DQ+VL f64x2,    avx512dq,      16f8),
+    AVX512VL(DQ+VL f32x8,    avx512dq,      32f4),
+    AVX512VL(DQ+VL f64x4,    avx512dq,      32f8),
+    AVX512VL(DQ+VL s32x4,    avx512dq,      16i4),
+    AVX512VL(DQ+VL u32x4,    avx512dq,      16u4),
+    AVX512VL(DQ+VL s32x8,    avx512dq,      32i4),
+    AVX512VL(DQ+VL u32x8,    avx512dq,      32u4),
+    AVX512VL(DQ+VL s64x2,    avx512dq,      16i8),
+    AVX512VL(DQ+VL u64x2,    avx512dq,      16u8),
+    AVX512VL(DQ+VL s64x4,    avx512dq,      32i8),
+    AVX512VL(DQ+VL u64x4,    avx512dq,      32u8),
+    SIMD(AVX512ER f32 scalar,avx512er,        f4),
+    SIMD(AVX512ER f32x16,    avx512er,      64f4),
+    SIMD(AVX512ER f64 scalar,avx512er,        f8),
+    SIMD(AVX512ER f64x8,     avx512er,      64f8),
+    SIMD(AVX512_VBMI s8x64,  avx512vbmi,    64i1),
+    SIMD(AVX512_VBMI u8x64,  avx512vbmi,    64u1),
+    SIMD(AVX512_VBMI s16x32, avx512vbmi,    64i2),
+    SIMD(AVX512_VBMI u16x32, avx512vbmi,    64u2),
+    AVX512VL(_VBMI+VL s8x16, avx512vbmi,    16i1),
+    AVX512VL(_VBMI+VL u8x16, avx512vbmi,    16u1),
+    AVX512VL(_VBMI+VL s8x32, avx512vbmi,    32i1),
+    AVX512VL(_VBMI+VL u8x32, avx512vbmi,    32u1),
+    AVX512VL(_VBMI+VL s16x8, avx512vbmi,    16i2),
+    AVX512VL(_VBMI+VL u16x8, avx512vbmi,    16u2),
+    AVX512VL(_VBMI+VL s16x16, avx512vbmi,   32i2),
+    AVX512VL(_VBMI+VL u16x16, avx512vbmi,   32u2),
+    SIMD(SHA,                sse4_sha,        16),
+    SIMD(AVX+SHA,             avx_sha,        16),
+    AVX512VL(VL+SHA,      avx512f_sha,        16),
+    SIMD(VAES (VEX/x32),    avx2_vaes,        32),
+    SIMD(VAES (EVEX/x64), avx512bw_vaes,      64),
+    AVX512VL(VL+VAES (x16), avx512bw_vaes,    16),
+    AVX512VL(VL+VAES (x32), avx512bw_vaes,    32),
+    SIMD(VPCLMUL (VEX/x4), avx2_vpclmulqdq,  32),
+    SIMD(VPCLMUL (EVEX/x8), avx512bw_vpclmulqdq, 64),
+    AVX512VL(VL+VPCLMUL (x4), avx512bw_vpclmulqdq, 16),
+    AVX512VL(VL+VPCLMUL (x8), avx512bw_vpclmulqdq, 32),
+    SIMD(AVX512_VBMI2+VPCLMUL (x8), avx512vbmi2_vpclmulqdq, 64),
+    AVX512VL(_VBMI2+VL+VPCLMUL (x2), avx512vbmi2_vpclmulqdq, 16),
+    AVX512VL(_VBMI2+VL+VPCLMUL (x4), avx512vbmi2_vpclmulqdq, 32),
+    SIMD(GFNI (legacy),       sse2_gf,        16),
+    SIMD(GFNI (VEX/x16),      avx2_gf,        16),
+    SIMD(GFNI (VEX/x32),      avx2_gf,        32),
+    SIMD(GFNI (EVEX/x64), avx512bw_gf,        64),
+    AVX512VL(VL+GFNI (x16), avx512bw_gf,      16),
+    AVX512VL(VL+GFNI (x32), avx512bw_gf,      32),
+#undef AVX512VL_
+#undef AVX512VL
 #undef SIMD_
 #undef SIMD
 };
@@ -400,6 +684,38 @@ static int read_msr(
     return X86EMUL_UNHANDLEABLE;
 }
 
+#define INVPCID_ADDR 0x12345678
+#define INVPCID_PCID 0x123
+
+static int read_cr_invpcid(
+    unsigned int reg,
+    unsigned long *val,
+    struct x86_emulate_ctxt *ctxt)
+{
+    int rc = emul_test_read_cr(reg, val, ctxt);
+
+    if ( rc == X86EMUL_OKAY && reg == 4 )
+        *val |= X86_CR4_PCIDE;
+
+    return rc;
+}
+
+static int tlb_op_invpcid(
+    enum x86emul_tlb_op op,
+    unsigned long addr,
+    unsigned long aux,
+    struct x86_emulate_ctxt *ctxt)
+{
+    static unsigned int seq;
+
+    if ( op != x86emul_invpcid || addr != INVPCID_ADDR ||
+         x86emul_invpcid_pcid(aux) != (seq < 4 ? 0 : INVPCID_PCID) ||
+         x86emul_invpcid_type(aux) != (seq++ & 3) )
+        return X86EMUL_UNHANDLEABLE;
+
+    return X86EMUL_OKAY;
+}
+
 static struct x86_emulate_ops emulops = {
     .read       = read,
     .insn_fetch = fetch,
@@ -434,7 +750,7 @@ int main(int argc, char **argv)
 
     ctxt.regs = &regs;
     ctxt.force_writeback = 0;
-    ctxt.vendor    = X86_VENDOR_UNKNOWN;
+    ctxt.cpuid     = &cp;
     ctxt.lma       = sizeof(void *) == 8;
     ctxt.addr_size = 8 * sizeof(void *);
     ctxt.sp_size   = 8 * sizeof(void *);
@@ -3790,6 +4106,456 @@ int main(int argc, char **argv)
     else
         printf("skipped\n");
 
+    printf("%-40s", "Testing vcvtph2ps 32(%ecx),%zmm7{%k4}...");
+    if ( stack_exec && cpu_has_avx512f )
+    {
+        decl_insn(evex_vcvtph2ps);
+        decl_insn(evex_vcvtps2ph);
+
+        asm volatile ( "vpternlogd $0x81, %%zmm7, %%zmm7, %%zmm7\n\t"
+                       "kmovw %1,%%k4\n"
+                       put_insn(evex_vcvtph2ps, "vcvtph2ps 32(%0), %%zmm7%{%%k4%}")
+                       :: "c" (NULL), "r" (0x3333) );
+
+        set_insn(evex_vcvtph2ps);
+        memset(res, 0xff, 128);
+        res[8] = 0x40003c00; /* (1.0, 2.0) */
+        res[10] = 0x44004200; /* (3.0, 4.0) */
+        res[12] = 0x3400b800; /* (-.5, .25) */
+        res[14] = 0xbc000000; /* (0.0, -1.) */
+        regs.ecx = (unsigned long)res;
+        rc = x86_emulate(&ctxt, &emulops);
+        asm volatile ( "vmovups %%zmm7, %0" : "=m" (res[16]) );
+        if ( rc != X86EMUL_OKAY || !check_eip(evex_vcvtph2ps) )
+            goto fail;
+        printf("okay\n");
+
+        printf("%-40s", "Testing vcvtps2ph $0,%zmm3,64(%edx){%k4}...");
+        asm volatile ( "vmovups %0, %%zmm3\n"
+                       put_insn(evex_vcvtps2ph, "vcvtps2ph $0, %%zmm3, 128(%1)%{%%k4%}")
+                       :: "m" (res[16]), "d" (NULL) );
+
+        set_insn(evex_vcvtps2ph);
+        regs.edx = (unsigned long)res;
+        memset(res + 32, 0xcc, 32);
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(evex_vcvtps2ph) )
+            goto fail;
+        res[15] = res[13] = res[11] = res[9] = 0xcccccccc;
+        if ( memcmp(res + 8, res + 32, 32) )
+            goto fail;
+        printf("okay\n");
+    }
+    else
+        printf("skipped\n");
+
+    printf("%-40s", "Testing vfixupimmpd $0,8(%edx){1to8},%zmm3,%zmm4...");
+    if ( stack_exec && cpu_has_avx512f )
+    {
+        decl_insn(vfixupimmpd);
+        static const struct {
+            double d[4];
+        }
+        src = { { -1, 0, 1, 2 } },
+        dst = { { 3, 4, 5, 6 } },
+        out = { { .5, -1, 90, 2 } };
+
+        asm volatile ( "vbroadcastf64x4 %1, %%zmm3\n\t"
+                       "vbroadcastf64x4 %2, %%zmm4\n"
+                       put_insn(vfixupimmpd,
+                                "vfixupimmpd $0, 8(%0)%{1to8%}, %%zmm3, %%zmm4")
+                       :: "d" (NULL), "m" (src), "m" (dst) );
+
+        set_insn(vfixupimmpd);
+        /*
+         * Nibble (token) mapping (unused ones simply set to zero):
+         * 2 (ZERO)    ->  -1 (0x9)
+         * 3 (POS_ONE) ->  90 (0xc)
+         * 6 (NEG)     -> 1/2 (0xb)
+         * 7 (POS)     -> src (0x1)
+         */
+        res[2] = 0x1b00c900;
+        regs.edx = (unsigned long)res;
+        rc = x86_emulate(&ctxt, &emulops);
+        asm volatile ( "vmovupd %%zmm4, %0" : "=m" (res[0]) );
+        if ( rc != X86EMUL_OKAY || !check_eip(vfixupimmpd) ||
+             memcmp(res + 0, &out, sizeof(out)) ||
+             memcmp(res + 8, &out, sizeof(out)) )
+            goto fail;
+        printf("okay\n");
+    }
+    else
+        printf("skipped\n");
+
+
+    printf("%-40s", "Testing vfpclasspsz $0x46,64(%edx),%k2...");
+    if ( stack_exec && cpu_has_avx512dq )
+    {
+        decl_insn(vfpclassps);
+
+        asm volatile ( put_insn(vfpclassps,
+                                /* 0x46: check for +/- 0 and neg. */
+                                "vfpclasspsz $0x46, 64(%0), %%k2")
+                       :: "d" (NULL) );
+
+        set_insn(vfpclassps);
+        for ( i = 0; i < 3; ++i )
+        {
+            res[16 + i * 5 + 0] = 0x00000000; /* +0 */
+            res[16 + i * 5 + 1] = 0x80000000; /* -0 */
+            res[16 + i * 5 + 2] = 0x80000001; /* -DEN */
+            res[16 + i * 5 + 3] = 0xff000000; /* -FIN */
+            res[16 + i * 5 + 4] = 0x7f000000; /* +FIN */
+        }
+        res[31] = 0;
+        regs.edx = (unsigned long)res;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vfpclassps) )
+            goto fail;
+        asm volatile ( "kmovw %%k2, %0" : "=g" (rc) );
+        if ( rc != 0xbdef )
+            goto fail;
+        printf("okay\n");
+    }
+    else
+        printf("skipped\n");
+
+    /*
+     * The following compress/expand tests are not only making sure the
+     * accessed data is correct, but they also verify (by placing operands
+     * on the mapping boundaries) that elements controlled by clear mask
+     * bits don't get accessed.
+     */
+    if ( stack_exec && cpu_has_avx512f )
+    {
+        decl_insn(vpcompressd);
+        decl_insn(vpcompressq);
+        decl_insn(vpexpandd);
+        decl_insn(vpexpandq);
+        static const struct {
+            unsigned int d[16];
+        } dsrc = { { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } };
+        static const struct {
+            unsigned long long q[8];
+        } qsrc = { { 0, 1, 2, 3, 4, 5, 6, 7 } };
+        unsigned int *ptr = res + MMAP_SZ / sizeof(*res) - 32;
+
+        printf("%-40s", "Testing vpcompressd %zmm1,24*4(%ecx){%k2}...");
+        asm volatile ( "kmovw %1, %%k2\n\t"
+                       "vmovdqu32 %2, %%zmm1\n"
+                       put_insn(vpcompressd,
+                                "vpcompressd %%zmm1, 24*4(%0)%{%%k2%}")
+                       :: "c" (NULL), "r" (0x55aa), "m" (dsrc) );
+
+        memset(ptr, 0xdb, 32 * 4);
+        set_insn(vpcompressd);
+        regs.ecx = (unsigned long)ptr;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpcompressd) ||
+             memcmp(ptr, ptr + 8, 16 * 4) )
+            goto fail;
+        for ( i = 0; i < 4; ++i )
+            if ( ptr[24 + i] != 2 * i + 1 )
+                goto fail;
+        for ( ; i < 8; ++i )
+            if ( ptr[24 + i] != 2 * i )
+                goto fail;
+        printf("okay\n");
+
+        printf("%-40s", "Testing vpexpandd 8*4(%edx),%zmm3{%k2}{z}...");
+        asm volatile ( "vpternlogd $0x81, %%zmm3, %%zmm3, %%zmm3\n"
+                       put_insn(vpexpandd,
+                                "vpexpandd 8*4(%0), %%zmm3%{%%k2%}%{z%}")
+                       :: "d" (NULL) );
+        set_insn(vpexpandd);
+        regs.edx = (unsigned long)(ptr + 16);
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpexpandd) )
+            goto fail;
+        asm ( "vmovdqa32 %%zmm1, %%zmm2%{%%k2%}%{z%}\n\t"
+              "vpcmpeqd %%zmm2, %%zmm3, %%k0\n\t"
+              "kmovw %%k0, %0"
+              : "=r" (rc) );
+        if ( rc != 0xffff )
+            goto fail;
+        printf("okay\n");
+
+        printf("%-40s", "Testing vpcompressq %zmm4,12*8(%edx){%k3}...");
+        asm volatile ( "kmovw %1, %%k3\n\t"
+                       "vmovdqu64 %2, %%zmm4\n"
+                       put_insn(vpcompressq,
+                                "vpcompressq %%zmm4, 12*8(%0)%{%%k3%}")
+                       :: "d" (NULL), "r" (0x5a), "m" (qsrc) );
+
+        memset(ptr, 0xdb, 16 * 8);
+        set_insn(vpcompressq);
+        regs.edx = (unsigned long)ptr;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpcompressq) ||
+             memcmp(ptr, ptr + 8, 8 * 8) )
+            goto fail;
+        for ( i = 0; i < 2; ++i )
+        {
+            if ( ptr[(12 + i) * 2] != 2 * i + 1 ||
+                 ptr[(12 + i) * 2 + 1] )
+                goto fail;
+        }
+        for ( ; i < 4; ++i )
+        {
+            if ( ptr[(12 + i) * 2] != 2 * i ||
+                 ptr[(12 + i) * 2 + 1] )
+                goto fail;
+        }
+        printf("okay\n");
+
+        printf("%-40s", "Testing vpexpandq 4*8(%ecx),%zmm5{%k3}{z}...");
+        asm volatile ( "vpternlogq $0x81, %%zmm5, %%zmm5, %%zmm5\n"
+                       put_insn(vpexpandq,
+                                "vpexpandq 4*8(%0), %%zmm5%{%%k3%}%{z%}")
+                       :: "c" (NULL) );
+        set_insn(vpexpandq);
+        regs.ecx = (unsigned long)(ptr + 16);
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpexpandq) )
+            goto fail;
+        asm ( "vmovdqa64 %%zmm4, %%zmm6%{%%k3%}%{z%}\n\t"
+              "vpcmpeqq %%zmm5, %%zmm6, %%k0\n\t"
+              "kmovw %%k0, %0"
+              : "=r" (rc) );
+        if ( rc != 0xff )
+            goto fail;
+        printf("okay\n");
+    }
+
+#if __GNUC__ > 7 /* can't check for __AVX512VBMI2__ here */
+    if ( stack_exec && cpu_has_avx512_vbmi2 )
+    {
+        decl_insn(vpcompressb);
+        decl_insn(vpcompressw);
+        decl_insn(vpexpandb);
+        decl_insn(vpexpandw);
+        static const struct {
+            unsigned char b[64];
+        } bsrc = { { 0,  1,  2,  3,  4,  5,  6,  7,
+                     8,  9, 10, 11, 12, 13, 14, 15,
+                    16, 17, 18, 19, 20, 21, 22, 23,
+                    24, 25, 26, 27, 28, 29, 30, 31,
+                    32, 33, 34, 35, 36, 37, 38, 39,
+                    40, 41, 42, 43, 44, 45, 46, 47,
+                    48, 49, 50, 51, 52, 53, 54, 55,
+                    56, 57, 58, 59, 60, 61, 62, 63 } };
+        static const struct {
+            unsigned short w[32];
+        } wsrc = { { 0,  1,  2,  3,  4,  5,  6,  7,
+                     8,  9, 10, 11, 12, 13, 14, 15,
+                    16, 17, 18, 19, 20, 21, 22, 23,
+                    24, 25, 26, 27, 28, 29, 30, 31 } };
+        unsigned char *ptr = (void *)res + MMAP_SZ - 128;
+        unsigned long long w = 0x55555555aaaaaaaaULL;
+
+        printf("%-40s", "Testing vpcompressb %zmm1,96*1(%ecx){%k2}...");
+        asm volatile ( "kmovq %1, %%k2\n\t"
+                       "vmovdqu8 %2, %%zmm1\n"
+                       put_insn(vpcompressb,
+                                "vpcompressb %%zmm1, 96*1(%0)%{%%k2%}")
+                       :: "c" (NULL), "m" (w), "m" (bsrc) );
+
+        memset(ptr, 0xdb, 128 * 1);
+        set_insn(vpcompressb);
+        regs.ecx = (unsigned long)ptr;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpcompressb) ||
+             memcmp(ptr, ptr + 32, 64 * 1) )
+            goto fail;
+        for ( i = 0; i < 16; ++i )
+            if ( ptr[96 + i] != 2 * i + 1 )
+                goto fail;
+        for ( ; i < 32; ++i )
+            if ( ptr[96 + i] != 2 * i )
+                goto fail;
+        printf("okay\n");
+
+        printf("%-40s", "Testing vpexpandb 32*1(%edx),%zmm3{%k2}{z}...");
+        asm volatile ( "vpternlogd $0x81, %%zmm3, %%zmm3, %%zmm3\n"
+                       put_insn(vpexpandb,
+                                "vpexpandb 32*1(%0), %%zmm3%{%%k2%}%{z%}")
+                       :: "d" (NULL) );
+        set_insn(vpexpandb);
+        regs.edx = (unsigned long)(ptr + 64);
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpexpandb) )
+            goto fail;
+        asm ( "vmovdqu8 %%zmm1, %%zmm2%{%%k2%}%{z%}\n\t"
+              "vpcmpeqb %%zmm2, %%zmm3, %%k0\n\t"
+              "kmovq %%k0, %0"
+              : "=m" (w) );
+        if ( w != 0xffffffffffffffffULL )
+            goto fail;
+        printf("okay\n");
+
+        printf("%-40s", "Testing vpcompressw %zmm4,48*2(%edx){%k3}...");
+        asm volatile ( "kmovd %1, %%k3\n\t"
+                       "vmovdqu16 %2, %%zmm4\n"
+                       put_insn(vpcompressw,
+                                "vpcompressw %%zmm4, 48*2(%0)%{%%k3%}")
+                       :: "d" (NULL), "r" (0x5555aaaa), "m" (wsrc) );
+
+        memset(ptr, 0xdb, 64 * 2);
+        set_insn(vpcompressw);
+        regs.edx = (unsigned long)ptr;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpcompressw) ||
+             memcmp(ptr, ptr + 32, 32 * 2) )
+            goto fail;
+        for ( i = 0; i < 8; ++i )
+        {
+            if ( ptr[(48 + i) * 2] != 2 * i + 1 ||
+                 ptr[(48 + i) * 2 + 1] )
+                goto fail;
+        }
+        for ( ; i < 16; ++i )
+        {
+            if ( ptr[(48 + i) * 2] != 2 * i ||
+                 ptr[(48 + i) * 2 + 1] )
+                goto fail;
+        }
+        printf("okay\n");
+
+        printf("%-40s", "Testing vpexpandw 16*2(%ecx),%zmm5{%k3}{z}...");
+        asm volatile ( "vpternlogd $0x81, %%zmm5, %%zmm5, %%zmm5\n"
+                       put_insn(vpexpandw,
+                                "vpexpandw 16*2(%0), %%zmm5%{%%k3%}%{z%}")
+                       :: "c" (NULL) );
+        set_insn(vpexpandw);
+        regs.ecx = (unsigned long)(ptr + 64);
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpexpandw) )
+            goto fail;
+        asm ( "vmovdqu16 %%zmm4, %%zmm6%{%%k3%}%{z%}\n\t"
+              "vpcmpeqw %%zmm5, %%zmm6, %%k0\n\t"
+              "kmovq %%k0, %0"
+              : "=m" (w) );
+        if ( w != 0xffffffff )
+            goto fail;
+        printf("okay\n");
+    }
+#endif
+
+    printf("%-40s", "Testing v4fmaddps 32(%ecx),%zmm4,%zmm4{%k5}...");
+    if ( stack_exec && cpu_has_avx512_4fmaps )
+    {
+        decl_insn(v4fmaddps);
+        static const struct {
+            float f[16];
+        } in = {{
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+        }}, out = {{
+            1 + 1 * 9 + 2 * 10 + 3 * 11 + 4 * 12,
+            2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+            16 + 16 * 9 + 17 * 10 + 18 * 11 + 19 * 12
+        }};
+
+        asm volatile ( "vmovups %1, %%zmm4\n\t"
+                       "vbroadcastss %%xmm4, %%zmm7\n\t"
+                       "vaddps %%zmm4, %%zmm7, %%zmm5\n\t"
+                       "vaddps %%zmm5, %%zmm7, %%zmm6\n\t"
+                       "vaddps %%zmm6, %%zmm7, %%zmm7\n\t"
+                       "kmovw %2, %%k5\n"
+                       put_insn(v4fmaddps,
+                                "v4fmaddps 32(%0), %%zmm4, %%zmm4%{%%k5%}")
+                       :: "c" (NULL), "m" (in), "rmk" (0x8001) );
+
+        set_insn(v4fmaddps);
+        regs.ecx = (unsigned long)&in;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(v4fmaddps) )
+            goto fail;
+
+        asm ( "vcmpeqps %1, %%zmm4, %%k0\n\t"
+              "kmovw %%k0, %0" : "=g" (rc) : "m" (out) );
+        if ( rc != 0xffff )
+            goto fail;
+        printf("okay\n");
+    }
+    else
+        printf("skipped\n");
+
+    printf("%-40s", "Testing v4fnmaddss 16(%edx),%zmm4,%zmm4{%k3}...");
+    if ( stack_exec && cpu_has_avx512_4fmaps )
+    {
+        decl_insn(v4fnmaddss);
+        static const struct {
+            float f[16];
+        } in = {{
+            1, 2, 3, 4, 5, 6, 7, 8
+        }}, out = {{
+            1 - 1 * 5 - 2 * 6 - 3 * 7 - 4 * 8, 2, 3, 4
+        }};
+
+        asm volatile ( "vmovups %1, %%xmm4\n\t"
+                       "vaddss %%xmm4, %%xmm4, %%xmm5\n\t"
+                       "vaddss %%xmm5, %%xmm4, %%xmm6\n\t"
+                       "vaddss %%xmm6, %%xmm4, %%xmm7\n\t"
+                       "kmovw %2, %%k3\n"
+                       put_insn(v4fnmaddss,
+                                "v4fnmaddss 16(%0), %%xmm4, %%xmm4%{%%k3%}")
+                       :: "d" (NULL), "m" (in), "rmk" (1) );
+
+        set_insn(v4fnmaddss);
+        regs.edx = (unsigned long)&in;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(v4fnmaddss) )
+            goto fail;
+
+        asm ( "vcmpeqps %1, %%zmm4, %%k0\n\t"
+              "kmovw %%k0, %0" : "=g" (rc) : "m" (out) );
+        if ( rc != 0xffff )
+            goto fail;
+        printf("okay\n");
+    }
+    else
+        printf("skipped\n");
+
+    printf("%-40s", "Testing invpcid 16(%ecx),%%edx...");
+    if ( stack_exec )
+    {
+        decl_insn(invpcid);
+
+        asm volatile ( put_insn(invpcid, "invpcid 16(%0), %1")
+                       :: "c" (NULL), "d" (0L) );
+
+        res[4] = 0;
+        res[5] = 0;
+        res[6] = INVPCID_ADDR;
+        res[7] = 0;
+        regs.ecx = (unsigned long)res;
+        emulops.tlb_op = tlb_op_invpcid;
+
+        for ( ; ; )
+        {
+            for ( regs.edx = 0; regs.edx < 4; ++regs.edx )
+            {
+                set_insn(invpcid);
+                rc = x86_emulate(&ctxt, &emulops);
+                if ( rc != X86EMUL_OKAY || !check_eip(invpcid) )
+                    goto fail;
+            }
+
+            if ( ctxt.addr_size < 64 || res[4] == INVPCID_PCID )
+                break;
+
+            emulops.read_cr = read_cr_invpcid;
+            res[4] = INVPCID_PCID;
+        }
+
+        emulops.read_cr = emul_test_read_cr;
+        emulops.tlb_op = NULL;
+
+        printf("okay\n");
+    }
+    else
+        printf("skipped\n");
+
 #undef decl_insn
 #undef put_insn
 #undef set_insn
@@ -3834,7 +4600,7 @@ int main(int argc, char **argv)
 
         if ( !blobs[j].size )
         {
-            printf("%-39s n/a\n", blobs[j].name);
+            printf("%-39s n/a (%u-bit)\n", blobs[j].name, blobs[j].bitness);
             continue;
         }
 

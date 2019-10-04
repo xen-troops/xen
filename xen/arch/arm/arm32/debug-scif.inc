@@ -1,7 +1,7 @@
 /*
  * xen/arch/arm/arm32/debug-scif.inc
  *
- * SCIF specific debug code
+ * SCIF(A) specific debug code
  *
  * Oleksandr Tyshchenko <oleksandr.tyshchenko@globallogic.com>
  * Copyright (C) 2014, Globallogic.
@@ -19,28 +19,36 @@
 
 #include <asm/scif-uart.h>
 
+#ifdef EARLY_PRINTK_VERSION_NONE
+#define STATUS_REG    SCIF_SCFSR
+#define TX_FIFO_REG   SCIF_SCFTDR
+#elif EARLY_PRINTK_VERSION_A
+#define STATUS_REG    SCIFA_SCASSR
+#define TX_FIFO_REG   SCIFA_SCAFTDR
+#endif
+
 /*
- * SCIF UART wait UART to be ready to transmit
+ * Wait UART to be ready to transmit
  * rb: register which contains the UART base address
  * rc: scratch register
  */
 .macro early_uart_ready rb rc
 1:
-        ldrh   \rc, [\rb, #SCIF_SCFSR]   /* <- SCFSR (status register) */
+        ldrh   \rc, [\rb, #STATUS_REG]   /* Read status register */
         tst    \rc, #SCFSR_TDFE          /* Check TDFE bit */
         beq    1b                        /* Wait for the UART to be ready */
 .endm
 
 /*
- * SCIF UART transmit character
+ * UART transmit character
  * rb: register which contains the UART base address
  * rt: register which contains the character to transmit
  */
 .macro early_uart_transmit rb rt
-        strb   \rt, [\rb, #SCIF_SCFTDR]                  /* -> SCFTDR (data register) */
-        ldrh   \rt, [\rb, #SCIF_SCFSR]                   /* <- SCFSR (status register) */
+        strb   \rt, [\rb, #TX_FIFO_REG]                  /* Write data register */
+        ldrh   \rt, [\rb, #STATUS_REG]                   /* Read status register */
         and    \rt, \rt, #(~(SCFSR_TEND | SCFSR_TDFE))   /* Clear TEND and TDFE bits */
-        strh   \rt, [\rb, #SCIF_SCFSR]                   /* -> SCFSR (status register) */
+        strh   \rt, [\rb, #STATUS_REG]                   /* Write status register */
 .endm
 
 /*

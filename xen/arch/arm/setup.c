@@ -39,6 +39,7 @@
 #include <xen/trace.h>
 #include <xen/libfdt/libfdt.h>
 #include <xen/acpi.h>
+#include <xen/warning.h>
 #include <asm/alternative.h>
 #include <asm/page.h>
 #include <asm/current.h>
@@ -49,6 +50,7 @@
 #include <asm/platform.h>
 #include <asm/procinfo.h>
 #include <asm/setup.h>
+#include <asm/tee/tee.h>
 #include <xsm/xsm.h>
 #include <asm/acpi.h>
 
@@ -200,6 +202,28 @@ void __init dt_unreserved_regions(paddr_t s, paddr_t e,
         {
             dt_unreserved_regions(r_e, e, cb, i+1);
             dt_unreserved_regions(s, r_s, cb, i+1);
+            return;
+        }
+    }
+
+    /*
+     * i is the current bootmodule we are evaluating across all possible
+     * kinds.
+     *
+     * When retrieving the corresponding reserved-memory addresses
+     * below, we need to index the bootinfo.reserved_mem bank starting
+     * from 0, and only counting the reserved-memory modules. Hence,
+     * we need to use i - nr.
+     */
+    for ( ; i - nr < bootinfo.reserved_mem.nr_banks; i++ )
+    {
+        paddr_t r_s = bootinfo.reserved_mem.bank[i - nr].start;
+        paddr_t r_e = r_s + bootinfo.reserved_mem.bank[i - nr].size;
+
+        if ( s < r_e && r_s < e )
+        {
+            dt_unreserved_regions(r_e, e, cb, i + 1);
+            dt_unreserved_regions(s, r_s, cb, i + 1);
             return;
         }
     }
@@ -375,6 +399,19 @@ void __init discard_initial_modules(void)
     remove_early_mappings();
 }
 
+/* Relocate the FDT in Xen heap */
+static void * __init relocate_fdt(paddr_t dtb_paddr, size_t dtb_size)
+{
+    void *fdt = xmalloc_bytes(dtb_size);
+
+    if ( !fdt )
+        panic("Unable to allocate memory for relocating the Device-Tree.\n");
+
+    copy_from_paddr(fdt, dtb_paddr, dtb_size);
+
+    return fdt;
+}
+
 #ifdef CONFIG_ARM_32
 /*
  * Returns the end address of the highest region in the range s..e
@@ -390,7 +427,7 @@ static paddr_t __init consider_modules(paddr_t s, paddr_t e,
 {
     const struct bootmodules *mi = &bootinfo.modules;
     int i;
-    int nr_rsvd;
+    int nr;
 
     s = (s+align-1) & ~(align-1);
     e = e & ~(align-1);
@@ -416,9 +453,9 @@ static paddr_t __init consider_modules(paddr_t s, paddr_t e,
 
     /* Now check any fdt reserved areas. */
 
-    nr_rsvd = fdt_num_mem_rsv(device_tree_flattened);
+    nr = fdt_num_mem_rsv(device_tree_flattened);
 
-    for ( ; i < mi->nr_mods + nr_rsvd; i++ )
+    for ( ; i < mi->nr_mods + nr; i++ )
     {
         paddr_t mod_s, mod_e;
 
@@ -438,6 +475,31 @@ static paddr_t __init consider_modules(paddr_t s, paddr_t e,
                 return mod_e;
 
             return consider_modules(s, mod_s, size, align, i+1);
+        }
+    }
+
+    /*
+     * i is the current bootmodule we are evaluating, across all
+     * possible kinds of bootmodules.
+     *
+     * When retrieving the corresponding reserved-memory addresses, we
+     * need to index the bootinfo.reserved_mem bank starting from 0, and
+     * only counting the reserved-memory modules. Hence, we need to use
+     * i - nr.
+     */
+    nr += mi->nr_mods;
+    for ( ; i - nr < bootinfo.reserved_mem.nr_banks; i++ )
+    {
+        paddr_t r_s = bootinfo.reserved_mem.bank[i - nr].start;
+        paddr_t r_e = r_s + bootinfo.reserved_mem.bank[i - nr].size;
+
+        if ( s < r_e && r_s < e )
+        {
+            r_e = consider_modules(r_e, e, size, align, i + 1);
+            if ( r_e )
+                return r_e;
+
+            return consider_modules(s, r_s, size, align, i + 1);
         }
     }
     return e;
@@ -482,7 +544,14 @@ static void __init init_pdx(void)
 {
     paddr_t bank_start, bank_size, bank_end;
 
-    u64 mask = pdx_init_mask(bootinfo.mem.bank[0].start);
+    /*
+     * Arm does not have any restrictions on the bits to compress. Pass 0 to
+     * let the common code further restrict the mask.
+     *
+     * If the logic changes in pfn_pdx_hole_setup we might have to
+     * update this function too.
+     */
+    uint64_t mask = pdx_init_mask(0x0);
     int bank;
 
     for ( bank = 0 ; bank < bootinfo.mem.nr_banks; bank++ )
@@ -516,19 +585,22 @@ static void __init init_pdx(void)
 }
 
 #ifdef CONFIG_ARM_32
-static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
+static void __init setup_mm(void)
 {
     paddr_t ram_start, ram_end, ram_size;
     paddr_t s, e;
     unsigned long ram_pages;
     unsigned long heap_pages, xenheap_pages, domheap_pages;
-    unsigned long dtb_pages;
-    unsigned long boot_mfn_start, boot_mfn_end;
     int i;
-    void *fdt;
+    const uint32_t ctr = READ_CP32(CTR);
+    mfn_t boot_mfn_start, boot_mfn_end;
 
     if ( !bootinfo.mem.nr_banks )
         panic("No memory bank\n");
+
+    /* We only supports instruction caches implementing the IVIPT extension. */
+    if ( ((ctr >> CTR_L1Ip_SHIFT) & CTR_L1Ip_MASK) == CTR_L1Ip_AIVIVT )
+        panic("AIVIVT instruction cache not supported\n");
 
     init_pdx();
 
@@ -594,20 +666,10 @@ static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
 
     setup_xenheap_mappings((e >> PAGE_SHIFT) - xenheap_pages, xenheap_pages);
 
-    /*
-     * Need a single mapped page for populating bootmem_region_list
-     * and enough mapped pages for copying the DTB.
-     */
-    dtb_pages = (dtb_size + PAGE_SIZE-1) >> PAGE_SHIFT;
-    boot_mfn_start = mfn_x(xenheap_mfn_end) - dtb_pages - 1;
-    boot_mfn_end = mfn_x(xenheap_mfn_end);
-
-    init_boot_pages(pfn_to_paddr(boot_mfn_start), pfn_to_paddr(boot_mfn_end));
-
-    /* Copy the DTB. */
-    fdt = mfn_to_virt(mfn_x(alloc_boot_pages(dtb_pages, 1)));
-    copy_from_paddr(fdt, dtb_paddr, dtb_size);
-    device_tree_flattened = fdt;
+    /* We need a single mapped page for populating bootmem_region_list. */
+    boot_mfn_start = mfn_add(xenheap_mfn_end, -1);
+    boot_mfn_end = xenheap_mfn_end;
+    init_boot_pages(mfn_to_maddr(boot_mfn_start), mfn_to_maddr(boot_mfn_end));
 
     /* Add non-xenheap memory */
     for ( i = 0; i < bootinfo.mem.nr_banks; i++ )
@@ -652,20 +714,17 @@ static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
     setup_frametable_mappings(ram_start, ram_end);
     max_page = PFN_DOWN(ram_end);
 
-    /* Add xenheap memory that was not already added to the boot
-       allocator. */
+    /* Add xenheap memory that was not already added to the boot allocator. */
     init_xenheap_pages(mfn_to_maddr(xenheap_mfn_start),
-                       pfn_to_paddr(boot_mfn_start));
+                       mfn_to_maddr(boot_mfn_start));
 }
 #else /* CONFIG_ARM_64 */
-static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
+static void __init setup_mm(void)
 {
     paddr_t ram_start = ~0;
     paddr_t ram_end = 0;
     paddr_t ram_size = 0;
     int bank;
-    unsigned long dtb_pages;
-    void *fdt;
 
     init_pdx();
 
@@ -709,16 +768,6 @@ static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
     xenheap_mfn_start = maddr_to_mfn(ram_start);
     xenheap_mfn_end = maddr_to_mfn(ram_end);
 
-    /*
-     * Need enough mapped pages for copying the DTB.
-     */
-    dtb_pages = (dtb_size + PAGE_SIZE-1) >> PAGE_SHIFT;
-
-    /* Copy the DTB. */
-    fdt = mfn_to_virt(mfn_x(alloc_boot_pages(dtb_pages, 1)));
-    copy_from_paddr(fdt, dtb_paddr, dtb_size);
-    device_tree_flattened = fdt;
-
     setup_frametable_mappings(ram_start, ram_end);
     max_page = PFN_DOWN(ram_end);
 }
@@ -728,8 +777,7 @@ size_t __read_mostly dcache_line_bytes;
 
 /* C entry point for boot CPU */
 void __init start_xen(unsigned long boot_phys_offset,
-                      unsigned long fdt_paddr,
-                      unsigned long cpuid)
+                      unsigned long fdt_paddr)
 {
     size_t fdt_size;
     int cpus, i;
@@ -737,11 +785,12 @@ void __init start_xen(unsigned long boot_phys_offset,
     struct bootmodule *xen_bootmodule;
     struct domain *dom0;
     struct xen_domctl_createdomain dom0_cfg = {
-        .flags = XEN_DOMCTL_CDF_hvm_guest | XEN_DOMCTL_CDF_hap,
+        .flags = XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap,
         .max_evtchn_port = -1,
         .max_grant_frames = gnttab_dom0_frames(),
         .max_maptrack_frames = opt_max_maptrack_frames,
     };
+    int rc;
 
     dcache_line_bytes = read_dcache_line_bytes();
 
@@ -755,6 +804,8 @@ void __init start_xen(unsigned long boot_phys_offset,
     /* Initialize traps early allow us to get backtrace when an error occurred */
     init_traps();
 
+    setup_pagetables(boot_phys_offset);
+
     smp_clear_cpu_maps();
 
     device_tree_flattened = early_fdt_map(fdt_paddr);
@@ -764,21 +815,19 @@ void __init start_xen(unsigned long boot_phys_offset,
               "Please check your bootloader.\n",
               fdt_paddr);
 
-    fdt_size = boot_fdt_info(device_tree_flattened, fdt_paddr);
-
-    cmdline = boot_fdt_cmdline(device_tree_flattened);
-    printk("Command line: %s\n", cmdline);
-    cmdline_parse(cmdline);
-
     /* Register Xen's load address as a boot module. */
     xen_bootmodule = add_boot_module(BOOTMOD_XEN,
                              (paddr_t)(uintptr_t)(_start + boot_phys_offset),
                              (paddr_t)(uintptr_t)(_end - _start + 1), false);
     BUG_ON(!xen_bootmodule);
 
-    setup_pagetables(boot_phys_offset);
+    fdt_size = boot_fdt_info(device_tree_flattened, fdt_paddr);
 
-    setup_mm(fdt_paddr, fdt_size);
+    cmdline = boot_fdt_cmdline(device_tree_flattened);
+    printk("Command line: %s\n", cmdline);
+    cmdline_parse(cmdline);
+
+    setup_mm();
 
     /* Parse the ACPI tables for possible boot-time configuration */
     acpi_boot_table_init();
@@ -796,10 +845,14 @@ void __init start_xen(unsigned long boot_phys_offset,
     if ( acpi_disabled )
     {
         printk("Booting using Device Tree\n");
+        device_tree_flattened = relocate_fdt(fdt_paddr, fdt_size);
         dt_unflatten_host_device_tree();
     }
     else
+    {
         printk("Booting using ACPI\n");
+        device_tree_flattened = NULL;
+    }
 
     init_IRQ();
 
@@ -834,8 +887,11 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     tasklet_subsys_init();
 
-
-    xsm_dt_init();
+    if ( xsm_dt_init() != 1 )
+        warning_add("WARNING: SILO mode is not enabled.\n"
+                    "It has implications on the security of the system,\n"
+                    "unless the communications have been forbidden between\n"
+                    "untrusted domains.\n");
 
     init_maintenance_interrupt();
     init_timer_interrupt();
@@ -846,7 +902,7 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     rcu_init();
 
-    arch_init_memory();
+    setup_system_domains();
 
     local_irq_enable();
     local_abort_enable();
@@ -874,7 +930,9 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     setup_virt_paging();
 
-    iommu_setup();
+    rc = iommu_setup();
+    if ( !iommu_enabled && rc != -ENODEV )
+        panic("Couldn't configure correctly all the IOMMUs.\n");
 
     do_initcalls();
 
@@ -888,8 +946,18 @@ void __init start_xen(unsigned long boot_phys_offset,
     /* Create initial domain 0. */
     /* The vGIC for DOM0 is exactly emulating the hardware GIC */
     dom0_cfg.arch.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
-    dom0_cfg.arch.nr_spis = gic_number_lines() - 32;
+    /*
+     * Xen vGIC supports a maximum of 992 interrupt lines.
+     * 32 are substracted to cover local IRQs.
+     */
+    dom0_cfg.arch.nr_spis = min(gic_number_lines(), (unsigned int) 992) - 32;
+    if ( gic_number_lines() > 992 )
+        printk(XENLOG_WARNING "Maximum number of vGIC IRQs exceeded.\n");
+    dom0_cfg.arch.tee_type = tee_get_type();
     dom0_cfg.max_vcpus = dom0_max_vcpus();
+
+    if ( iommu_enabled )
+        dom0_cfg.flags |= XEN_DOMCTL_CDF_iommu;
 
     dom0 = domain_create(0, &dom0_cfg, true);
     if ( IS_ERR(dom0) || (alloc_dom0_vcpu0(dom0) == NULL) )

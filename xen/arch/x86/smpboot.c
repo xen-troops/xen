@@ -25,7 +25,6 @@
 #include <xen/domain.h>
 #include <xen/domain_page.h>
 #include <xen/sched.h>
-#include <xen/sched-if.h>
 #include <xen/irq.h>
 #include <xen/delay.h>
 #include <xen/softirq.h>
@@ -33,6 +32,7 @@
 #include <xen/serial.h>
 #include <xen/numa.h>
 #include <xen/cpu.h>
+#include <asm/cpuidle.h>
 #include <asm/current.h>
 #include <asm/mc146818rtc.h>
 #include <asm/desc.h>
@@ -45,10 +45,6 @@
 #include <asm/time.h>
 #include <asm/tboot.h>
 #include <mach_apic.h>
-#include <mach_wakecpu.h>
-#include <smpboot_hooks.h>
-
-#define setup_trampoline()    (bootsym_phys(trampoline_realmode_entry))
 
 unsigned long __read_mostly trampoline_phys;
 
@@ -209,8 +205,7 @@ static void smp_callin(void)
     halt:
         clear_local_APIC();
         spin_debug_enable();
-        cpu_exit_clear(cpu);
-        (*dead_idle)();
+        play_dead();
     }
 
     /* Allow the master to continue. */
@@ -366,7 +361,7 @@ void start_secondary(void *unused)
     if ( system_state <= SYS_STATE_smp_boot )
         early_microcode_update_cpu(false);
     else
-        microcode_resume_cpu(cpu);
+        microcode_resume_cpu();
 
     /*
      * If MSR_SPEC_CTRL is available, apply Xen's default setting and discard
@@ -548,8 +543,11 @@ static int do_boot_cpu(int apicid, int cpu)
 
     booting_cpu = cpu;
 
-    /* start_eip had better be page-aligned! */
-    start_eip = setup_trampoline();
+    start_eip = bootsym_phys(trampoline_realmode_entry);
+
+    /* start_eip needs be page aligned, and below the 1M boundary. */
+    if ( start_eip & ~0xff000 )
+        panic("AP trampoline %#lx not suitably positioned\n", start_eip);
 
     /* So we see what's up   */
     if ( opt_cpu_info )
@@ -561,10 +559,6 @@ static int do_boot_cpu(int apicid, int cpu)
     /* This grunge runs the startup process for the targeted processor. */
 
     set_cpu_state(CPU_STATE_INIT);
-
-    Dprintk("Setting warm reset code and vector.\n");
-
-    smpboot_setup_warm_reset_vector(start_eip);
 
     /* Starting actual IPI sequence... */
     if ( !tboot_in_measured_env() || tboot_wake_ap(apicid, start_eip) )
@@ -619,8 +613,6 @@ static int do_boot_cpu(int apicid, int cpu)
     /* mark "stuck" area as not stuck */
     bootsym(trampoline_cpu_started) = 0;
     smp_mb();
-
-    smpboot_restore_warm_reset_vector();
 
     return rc;
 }
@@ -830,7 +822,13 @@ static int setup_cpu_root_pgt(unsigned int cpu)
     if ( !rc )
         rc = clone_mapping(idt_tables[cpu], rpt);
     if ( !rc )
-        rc = clone_mapping(&per_cpu(init_tss, cpu), rpt);
+    {
+        struct tss_page *ptr = &per_cpu(tss_page, cpu);
+
+        BUILD_BUG_ON(sizeof(*ptr) != PAGE_SIZE);
+
+        rc = clone_mapping(&ptr->tss, rpt);
+    }
     if ( !rc )
         rc = clone_mapping((void *)per_cpu(stubs.addr, cpu), rpt);
 
@@ -907,7 +905,7 @@ static void cleanup_cpu_root_pgt(unsigned int cpu)
  */
 static void cpu_smpboot_free(unsigned int cpu, bool remove)
 {
-    unsigned int order, socket = cpu_to_socket(cpu);
+    unsigned int socket = cpu_to_socket(cpu);
     struct cpuinfo_x86 *c = cpu_data;
 
     if ( cpumask_empty(socket_cpumask[socket]) )
@@ -949,16 +947,12 @@ static void cpu_smpboot_free(unsigned int cpu, bool remove)
             free_domheap_page(mfn_to_page(mfn));
     }
 
-    order = get_order_from_pages(NR_RESERVED_GDT_PAGES);
-    if ( remove )
-        FREE_XENHEAP_PAGES(per_cpu(gdt_table, cpu), order);
-
-    free_xenheap_pages(per_cpu(compat_gdt_table, cpu), order);
+    FREE_XENHEAP_PAGE(per_cpu(compat_gdt, cpu));
 
     if ( remove )
     {
-        order = get_order_from_bytes(IDT_ENTRIES * sizeof(idt_entry_t));
-        FREE_XENHEAP_PAGES(idt_tables[cpu], order);
+        FREE_XENHEAP_PAGE(per_cpu(gdt, cpu));
+        FREE_XENHEAP_PAGE(idt_tables[cpu]);
 
         if ( stack_base[cpu] )
         {
@@ -970,7 +964,7 @@ static void cpu_smpboot_free(unsigned int cpu, bool remove)
 
 static int cpu_smpboot_alloc(unsigned int cpu)
 {
-    unsigned int i, order, memflags = 0;
+    unsigned int i, memflags = 0;
     nodeid_t node = cpu_to_node(cpu);
     seg_desc_t *gdt;
     unsigned long stub_page;
@@ -985,24 +979,26 @@ static int cpu_smpboot_alloc(unsigned int cpu)
         goto out;
     memguard_guard_stack(stack_base[cpu]);
 
-    order = get_order_from_pages(NR_RESERVED_GDT_PAGES);
-    gdt = per_cpu(gdt_table, cpu) ?: alloc_xenheap_pages(order, memflags);
+    gdt = per_cpu(gdt, cpu) ?: alloc_xenheap_pages(0, memflags);
     if ( gdt == NULL )
         goto out;
-    per_cpu(gdt_table, cpu) = gdt;
-    memcpy(gdt, boot_cpu_gdt_table, NR_RESERVED_GDT_PAGES * PAGE_SIZE);
+    per_cpu(gdt, cpu) = gdt;
+    per_cpu(gdt_l1e, cpu) =
+        l1e_from_pfn(virt_to_mfn(gdt), __PAGE_HYPERVISOR_RW);
+    memcpy(gdt, boot_gdt, NR_RESERVED_GDT_PAGES * PAGE_SIZE);
     BUILD_BUG_ON(NR_CPUS > 0x10000);
     gdt[PER_CPU_GDT_ENTRY - FIRST_RESERVED_GDT_ENTRY].a = cpu;
 
-    per_cpu(compat_gdt_table, cpu) = gdt = alloc_xenheap_pages(order, memflags);
+    per_cpu(compat_gdt, cpu) = gdt = alloc_xenheap_pages(0, memflags);
     if ( gdt == NULL )
         goto out;
-    memcpy(gdt, boot_cpu_compat_gdt_table, NR_RESERVED_GDT_PAGES * PAGE_SIZE);
+    per_cpu(compat_gdt_l1e, cpu) =
+        l1e_from_pfn(virt_to_mfn(gdt), __PAGE_HYPERVISOR_RW);
+    memcpy(gdt, boot_compat_gdt, NR_RESERVED_GDT_PAGES * PAGE_SIZE);
     gdt[PER_CPU_GDT_ENTRY - FIRST_RESERVED_GDT_ENTRY].a = cpu;
 
-    order = get_order_from_bytes(IDT_ENTRIES * sizeof(idt_entry_t));
     if ( idt_tables[cpu] == NULL )
-        idt_tables[cpu] = alloc_xenheap_pages(order, memflags);
+        idt_tables[cpu] = alloc_xenheap_pages(0, memflags);
     if ( idt_tables[cpu] == NULL )
         goto out;
     memcpy(idt_tables[cpu], idt_table, IDT_ENTRIES * sizeof(idt_entry_t));
@@ -1159,7 +1155,8 @@ void __init smp_prepare_cpus(void)
     connect_bsp_APIC();
     setup_local_APIC();
 
-    smpboot_setup_io_apic();
+    if ( !skip_ioapic_setup && nr_ioapics )
+        setup_IO_APIC();
 
     setup_boot_APIC_clock();
 }
@@ -1221,9 +1218,6 @@ void __cpu_disable(void)
     cpumask_clear_cpu(cpu, &cpu_online_map);
     fixup_irqs(&cpu_online_map, 1);
     fixup_eoi();
-
-    if ( cpu_disable_scheduler(cpu) )
-        BUG();
 }
 
 void __cpu_die(unsigned int cpu)

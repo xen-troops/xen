@@ -274,6 +274,11 @@
 #define LIBXL_HAVE_BUILDINFO_ARM_GIC_VERSION 1
 
 /*
+ * libxl_domain_build_info has the arch_arm.tee field.
+ */
+#define LIBXL_HAVE_BUILDINFO_ARCH_ARM_TEE 1
+
+/*
  * LIBXL_HAVE_SOFT_RESET indicates that libxl supports performing
  * 'soft reset' for domains and there is 'soft_reset' shutdown reason
  * in enum libxl_shutdown_reason.
@@ -317,6 +322,24 @@
  * is present in the viridian enlightenment enumeration.
  */
 #define LIBXL_HAVE_VIRIDIAN_CRASH_CTL 1
+
+/*
+ * LIBXL_HAVE_VIRIDIAN_SYNIC indicates that the 'synic' value
+ * is present in the viridian enlightenment enumeration.
+ */
+#define LIBXL_HAVE_VIRIDIAN_SYNIC 1
+
+/*
+ * LIBXL_HAVE_VIRIDIAN_STIMER indicates that the 'stimer' value
+ * is present in the viridian enlightenment enumeration.
+ */
+#define LIBXL_HAVE_VIRIDIAN_STIMER 1
+
+/*
+ * LIBXL_HAVE_VIRIDIAN_HCALL_IPI indicates that the 'hcall_ipi' value
+ * is present in the viridian enlightenment enumeration.
+ */
+#define LIBXL_HAVE_VIRIDIAN_HCALL_IPI 1
 
 /*
  * LIBXL_HAVE_BUILDINFO_HVM_ACPI_LAPTOP_SLATE indicates that
@@ -375,6 +398,20 @@
  *  - multi_touch_num_contacts.
  */
 #define LIBXL_HAVE_EXTENDED_VKB 1
+
+/*
+ * LIBXL_HAVE_PHYSINFO_CAP_HAP_SHADOW indicates that libxl_physinfo has
+ * cap_hap and cap_shadow fields reflecting the hardware and Xen availability
+ * of Hardware Assisted, and Shadow paging support.
+ */
+#define LIBXL_HAVE_PHYSINFO_CAP_HAP_SHADOW 1
+
+/*
+ * LIBXL_HAVE_PHYSINFO_CAP_IOMMU_HAP_PT_SHARE indicates that libxl_physinfo
+ * has a cap_iommu_hap_pt_share field that indicates whether the hardware
+ * supports sharing the IOMMU and HAP page tables.
+ */
+#define LIBXL_HAVE_PHYSINFO_CAP_IOMMU_HAP_PT_SHARE 1
 
 /*
  * libxl ABI compatibility
@@ -601,7 +638,8 @@ typedef struct libxl__ctx libxl_ctx;
 /* API compatibility. */
 #ifdef LIBXL_API_VERSION
 #if LIBXL_API_VERSION != 0x040200 && LIBXL_API_VERSION != 0x040300 && \
-    LIBXL_API_VERSION != 0x040400 && LIBXL_API_VERSION != 0x040500
+    LIBXL_API_VERSION != 0x040400 && LIBXL_API_VERSION != 0x040500 && \
+    LIBXL_API_VERSION != 0x041300
 #error Unknown LIBXL_API_VERSION
 #endif
 #endif
@@ -637,6 +675,15 @@ typedef struct libxl__ctx libxl_ctx;
  * PCPUs of the host.
  */
 #define LIBXL_HAVE_BUILDINFO_VCPU_AFFINITY_ARRAYS 1
+
+/*
+ * LIBXL_HAVE_BUILDINFO_VKB_DEVICE
+ *
+ * If this is defined, then the libxl_domain_build_info structure will
+ * contain a boolean hvm.vkb_device which instructs libxl whether to include
+ * a vkbd at build time or not.
+ */
+#define LIBXL_HAVE_BUILDINFO_VKB_DEVICE 1
 
 /*
  * LIBXL_HAVE_BUILDINFO_USBDEVICE_LIST
@@ -1164,6 +1211,21 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, const libxl_mac *src);
  */
 #define LIBXL_HAVE_PVCALLS 1
 
+/*
+ * LIBXL_HAVE_FN_USING_QMP_ASYNC
+ *
+ * This define indicates that some function's API has changed and have an
+ * extra parameter "ao_how" which means that the function can be executed
+ * asynchronously. Those functions are:
+ *   libxl_domain_pause()
+ *   libxl_domain_unpause()
+ *   libxl_send_trigger()
+ *   libxl_set_vcpuonline()
+ *   libxl_retrieve_domain_configuration()
+ *   libxl_qemu_monitor_command()
+ */
+#define LIBXL_HAVE_FN_USING_QMP_ASYNC 1
+
 typedef char **libxl_string_list;
 void libxl_string_list_dispose(libxl_string_list *sl);
 int libxl_string_list_length(const libxl_string_list *sl);
@@ -1504,8 +1566,18 @@ void libxl_domain_config_dispose(libxl_domain_config *d_config);
  * works with DomU.
  */
 int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
-                                        libxl_domain_config *d_config)
+                                        libxl_domain_config *d_config,
+                                        const libxl_asyncop_how *ao_how)
                                         LIBXL_EXTERNAL_CALLERS_ONLY;
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x041300
+static inline int libxl_retrieve_domain_configuration_0x041200(
+    libxl_ctx *ctx, uint32_t domid, libxl_domain_config *d_config)
+{
+    return libxl_retrieve_domain_configuration(ctx, domid, d_config, NULL);
+}
+#define libxl_retrieve_domain_configuration \
+    libxl_retrieve_domain_configuration_0x041200
+#endif
 
 int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd,
                          int flags, /* LIBXL_SUSPEND_* */
@@ -1568,8 +1640,27 @@ int libxl_domain_rename(libxl_ctx *ctx, uint32_t domid,
    * transactionally that the domain has the old old name; if
    * trans is not 0 we use caller's transaction and caller must do retries */
 
-int libxl_domain_pause(libxl_ctx *ctx, uint32_t domid);
-int libxl_domain_unpause(libxl_ctx *ctx, uint32_t domid);
+int libxl_domain_pause(libxl_ctx *ctx, uint32_t domid,
+                       const libxl_asyncop_how *ao_how)
+                       LIBXL_EXTERNAL_CALLERS_ONLY;
+int libxl_domain_unpause(libxl_ctx *ctx, uint32_t domid,
+                         const libxl_asyncop_how *ao_how)
+                         LIBXL_EXTERNAL_CALLERS_ONLY;
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x041300
+static inline int libxl_domain_pause_0x041200(
+    libxl_ctx *ctx, uint32_t domid)
+{
+    return libxl_domain_pause(ctx, domid, NULL);
+}
+static inline int libxl_domain_unpause_0x041200(
+    libxl_ctx *ctx, uint32_t domid)
+{
+    return libxl_domain_unpause(ctx, domid, NULL);
+}
+#define libxl_domain_pause libxl_domain_pause_0x041200
+#define libxl_domain_unpause libxl_domain_unpause_0x041200
+#endif
+
 
 int libxl_domain_core_dump(libxl_ctx *ctx, uint32_t domid,
                            const char *filename,
@@ -1861,7 +1952,7 @@ libxl_device_disk *libxl_device_disk_list(libxl_ctx *ctx,
 void libxl_device_disk_list_free(libxl_device_disk* list, int num)
                                  LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_device_disk_getinfo(libxl_ctx *ctx, uint32_t domid,
-                              libxl_device_disk *disk, libxl_diskinfo *diskinfo)
+                              const libxl_device_disk *disk, libxl_diskinfo *diskinfo)
                               LIBXL_EXTERNAL_CALLERS_ONLY;
 
 /*
@@ -1923,7 +2014,7 @@ void libxl_device_usbctrl_list_free(libxl_device_usbctrl *list, int nr);
 
 
 int libxl_device_usbctrl_getinfo(libxl_ctx *ctx, uint32_t domid,
-                                 libxl_device_usbctrl *usbctrl,
+                                 const libxl_device_usbctrl *usbctrl,
                                  libxl_usbctrlinfo *usbctrlinfo);
 
 /* USB Devices */
@@ -1962,7 +2053,7 @@ libxl_device_nic *libxl_device_nic_list(libxl_ctx *ctx,
 void libxl_device_nic_list_free(libxl_device_nic* list, int num)
                                 LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_device_nic_getinfo(libxl_ctx *ctx, uint32_t domid,
-                             libxl_device_nic *nic, libxl_nicinfo *nicinfo)
+                             const libxl_device_nic *nic, libxl_nicinfo *nicinfo)
                              LIBXL_EXTERNAL_CALLERS_ONLY;
 
 /*
@@ -1973,7 +2064,7 @@ libxl_device_channel *libxl_device_channel_list(libxl_ctx *ctx,
                                                 uint32_t domid,
                                                 int *num);
 int libxl_device_channel_getinfo(libxl_ctx *ctx, uint32_t domid,
-                                 libxl_device_channel *channel,
+                                 const libxl_device_channel *channel,
                                  libxl_channelinfo *channelinfo);
 
 /* Virtual TPMs */
@@ -1995,7 +2086,7 @@ libxl_device_vtpm *libxl_device_vtpm_list(libxl_ctx *ctx,
 void libxl_device_vtpm_list_free(libxl_device_vtpm*, int num)
                                  LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_device_vtpm_getinfo(libxl_ctx *ctx, uint32_t domid,
-                              libxl_device_vtpm *vtpm, libxl_vtpminfo *vtpminfo)
+                              const libxl_device_vtpm *vtpm, libxl_vtpminfo *vtpminfo)
                               LIBXL_EXTERNAL_CALLERS_ONLY;
 
 /* Virtual displays */
@@ -2018,7 +2109,7 @@ libxl_device_vdispl *libxl_device_vdispl_list(libxl_ctx *ctx,
 void libxl_device_vdispl_list_free(libxl_device_vdispl* list, int num)
                                    LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_device_vdispl_getinfo(libxl_ctx *ctx, uint32_t domid,
-                                libxl_device_vdispl *vdispl,
+                                const libxl_device_vdispl *vdispl,
                                 libxl_vdisplinfo *vdisplinfo)
                                 LIBXL_EXTERNAL_CALLERS_ONLY;
 
@@ -2042,7 +2133,7 @@ libxl_device_vsnd *libxl_device_vsnd_list(libxl_ctx *ctx,
 void libxl_device_vsnd_list_free(libxl_device_vsnd* list, int num)
                                  LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_device_vsnd_getinfo(libxl_ctx *ctx, uint32_t domid,
-                              libxl_device_vsnd *vsnd,
+                              const libxl_device_vsnd *vsnd,
                               libxl_vsndinfo *vsndlinfo)
                               LIBXL_EXTERNAL_CALLERS_ONLY;
 
@@ -2065,7 +2156,7 @@ libxl_device_vkb *libxl_device_vkb_list(libxl_ctx *ctx,
 void libxl_device_vkb_list_free(libxl_device_vkb* list, int num)
                                 LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_device_vkb_getinfo(libxl_ctx *ctx, uint32_t domid,
-                             libxl_device_vkb *vkb,
+                             const libxl_device_vkb *vkb,
                              libxl_vkbinfo *vkbinfo)
                              LIBXL_EXTERNAL_CALLERS_ONLY;
 
@@ -2240,7 +2331,19 @@ int libxl_domain_set_nodeaffinity(libxl_ctx *ctx, uint32_t domid,
                                   libxl_bitmap *nodemap);
 int libxl_domain_get_nodeaffinity(libxl_ctx *ctx, uint32_t domid,
                                   libxl_bitmap *nodemap);
-int libxl_set_vcpuonline(libxl_ctx *ctx, uint32_t domid, libxl_bitmap *cpumap);
+int libxl_set_vcpuonline(libxl_ctx *ctx, uint32_t domid,
+                         libxl_bitmap *cpumap,
+                         const libxl_asyncop_how *ao_how)
+                         LIBXL_EXTERNAL_CALLERS_ONLY;
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x041300
+static inline int libxl_set_vcpuonline_0x041200(libxl_ctx *ctx,
+                                                uint32_t domid,
+                                                libxl_bitmap *cpumap)
+{
+    return libxl_set_vcpuonline(ctx, domid, cpumap, NULL);
+}
+#define libxl_set_vcpuonline libxl_set_vcpuonline_0x041200
+#endif
 
 /* A return value less than 0 should be interpreted as a libxl_error, while a
  * return value greater than or equal to 0 should be interpreted as a
@@ -2303,7 +2406,17 @@ int libxl_vcpu_sched_params_set_all(libxl_ctx *ctx, uint32_t domid,
                                     const libxl_vcpu_sched_params *params);
 
 int libxl_send_trigger(libxl_ctx *ctx, uint32_t domid,
-                       libxl_trigger trigger, uint32_t vcpuid);
+                       libxl_trigger trigger, uint32_t vcpuid,
+                       const libxl_asyncop_how *ao_how)
+                       LIBXL_EXTERNAL_CALLERS_ONLY;
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x041300
+static inline int libxl_send_trigger_0x041200(
+    libxl_ctx *ctx, uint32_t domid, libxl_trigger trigger, uint32_t vcpuid)
+{
+    return libxl_send_trigger(ctx, domid, trigger, vcpuid, NULL);
+}
+#define libxl_send_trigger libxl_send_trigger_0x041200
+#endif
 int libxl_send_sysrq(libxl_ctx *ctx, uint32_t domid, char sysrq);
 int libxl_send_debug_keys(libxl_ctx *ctx, char *keys);
 int libxl_set_parameters(libxl_ctx *ctx, char *params);
@@ -2459,7 +2572,18 @@ int libxl_fd_set_nonblock(libxl_ctx *ctx, int fd, int nonblock);
  * via output.
  */
 int libxl_qemu_monitor_command(libxl_ctx *ctx, uint32_t domid,
-                               const char *command_line, char **output);
+                               const char *command_line, char **output,
+                               const libxl_asyncop_how *ao_how)
+                               LIBXL_EXTERNAL_CALLERS_ONLY;
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x041300
+static inline int libxl_qemu_monitor_command_0x041200(libxl_ctx *ctx,
+    uint32_t domid, const char *command_line, char **output)
+{
+    return libxl_qemu_monitor_command(ctx, domid, command_line, output,
+                                      NULL);
+}
+#define libxl_qemu_monitor_command libxl_qemu_monitor_command_0x041200
+#endif
 
 #include <libxl_event.h>
 

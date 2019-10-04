@@ -212,7 +212,7 @@ static void tboot_gen_domain_integrity(const uint8_t key[TB_KEY_SIZE],
     vmac_set_key((uint8_t *)key, &ctx);
     for_each_domain( d )
     {
-        if ( !d->arch.s3_integrity )
+        if ( !(d->options & XEN_DOMCTL_CDF_s3_integrity) )
             continue;
         printk("MACing Domain %u\n", d->domain_id);
 
@@ -280,7 +280,7 @@ static void tboot_gen_xenheap_integrity(const uint8_t key[TB_KEY_SIZE],
 
         if ( !mfn_valid(_mfn(mfn)) )
             continue;
-        if ( is_xen_fixed_mfn(mfn) )
+        if ( is_xen_fixed_mfn(_mfn(mfn)) )
             continue; /* skip Xen */
         if ( (mfn >= PFN_DOWN(g_tboot_shared->tboot_base - 3 * PAGE_SIZE))
              && (mfn < PFN_UP(g_tboot_shared->tboot_base
@@ -370,16 +370,13 @@ void tboot_shutdown(uint32_t shutdown_type)
         g_tboot_shared->num_mac_regions = 3;
         /* S3 resume code (and other real mode trampoline code) */
         g_tboot_shared->mac_regions[0].start = bootsym_phys(trampoline_start);
-        g_tboot_shared->mac_regions[0].size = bootsym_phys(trampoline_end) -
-                                              bootsym_phys(trampoline_start);
+        g_tboot_shared->mac_regions[0].size = trampoline_end - trampoline_start;
         /* hypervisor .text + .rodata */
         g_tboot_shared->mac_regions[1].start = (uint64_t)__pa(&_stext);
-        g_tboot_shared->mac_regions[1].size = __pa(&__2M_rodata_end) -
-                                              __pa(&_stext);
+        g_tboot_shared->mac_regions[1].size = __2M_rodata_end - _stext;
         /* hypervisor .data + .bss */
         g_tboot_shared->mac_regions[2].start = (uint64_t)__pa(&__2M_rwdata_start);
-        g_tboot_shared->mac_regions[2].size = __pa(&__2M_rwdata_end) -
-                                              __pa(&__2M_rwdata_start);
+        g_tboot_shared->mac_regions[2].size = __2M_rwdata_end - __2M_rwdata_start;
 
         /*
          * MAC domains and other Xen memory

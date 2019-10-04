@@ -40,21 +40,25 @@ static bool nvmx_vcpu_in_vmx(const struct vcpu *v)
 
 int nvmx_cpu_up_prepare(unsigned int cpu)
 {
-    if ( per_cpu(vvmcs_buf, cpu) != NULL )
-        return 0;
+    uint64_t **vvmcs_buf;
 
-    per_cpu(vvmcs_buf, cpu) = xzalloc_array(u64, VMCS_BUF_SIZE);
+    if ( cpu_has_vmx_vmcs_shadowing &&
+         *(vvmcs_buf = &per_cpu(vvmcs_buf, cpu)) == NULL )
+    {
+        void *ptr = xzalloc_array(uint64_t, VMCS_BUF_SIZE);
 
-    if ( per_cpu(vvmcs_buf, cpu) != NULL )
-        return 0;
+        if ( !ptr )
+            return -ENOMEM;
 
-    return -ENOMEM;
+        *vvmcs_buf = ptr;
+    }
+
+    return 0;
 }
 
 void nvmx_cpu_dead(unsigned int cpu)
 {
-    xfree(per_cpu(vvmcs_buf, cpu));
-    per_cpu(vvmcs_buf, cpu) = NULL;
+    XFREE(per_cpu(vvmcs_buf, cpu));
 }
 
 int nvmx_vcpu_initialise(struct vcpu *v)
@@ -918,11 +922,11 @@ static void vvmcs_to_shadow_bulk(struct vcpu *v, unsigned int n,
     if ( !cpu_has_vmx_vmcs_shadowing )
         goto fallback;
 
-    if ( !value || n > VMCS_BUF_SIZE )
+    if ( n > VMCS_BUF_SIZE )
     {
-        gdprintk(XENLOG_DEBUG, "vmcs sync fall back to non-bulk mode, \
-                 buffer: %p, buffer size: %d, fields number: %d.\n",
-                 value, VMCS_BUF_SIZE, n);
+        if ( IS_ENABLED(CONFIG_DEBUG) )
+            printk_once(XENLOG_ERR "%pv VMCS sync too many fields %u\n",
+                        v, n);
         goto fallback;
     }
 
@@ -958,11 +962,11 @@ static void shadow_to_vvmcs_bulk(struct vcpu *v, unsigned int n,
     if ( !cpu_has_vmx_vmcs_shadowing )
         goto fallback;
 
-    if ( !value || n > VMCS_BUF_SIZE )
+    if ( n > VMCS_BUF_SIZE )
     {
-        gdprintk(XENLOG_DEBUG, "vmcs sync fall back to non-bulk mode, \
-                 buffer: %p, buffer size: %d, fields number: %d.\n",
-                 value, VMCS_BUF_SIZE, n);
+        if ( IS_ENABLED(CONFIG_DEBUG) )
+            printk_once(XENLOG_ERR "%pv VMCS sync too many fields %u\n",
+                        v, n);
         goto fallback;
     }
 
@@ -1020,11 +1024,11 @@ static void load_shadow_guest_state(struct vcpu *v)
     nvcpu->guest_cr[0] = get_vvmcs(v, CR0_READ_SHADOW);
     nvcpu->guest_cr[4] = get_vvmcs(v, CR4_READ_SHADOW);
 
-    rc = hvm_set_cr0(get_vvmcs(v, GUEST_CR0), true);
+    rc = hvm_set_cr4(get_vvmcs(v, GUEST_CR4), true);
     if ( rc == X86EMUL_EXCEPTION )
         hvm_inject_hw_exception(TRAP_gp_fault, 0);
 
-    rc = hvm_set_cr4(get_vvmcs(v, GUEST_CR4), true);
+    rc = hvm_set_cr0(get_vvmcs(v, GUEST_CR0), true);
     if ( rc == X86EMUL_EXCEPTION )
         hvm_inject_hw_exception(TRAP_gp_fault, 0);
 
@@ -1234,11 +1238,11 @@ static void load_vvmcs_host_state(struct vcpu *v)
         __vmwrite(vmcs_h2g_field[i].guest_field, r);
     }
 
-    rc = hvm_set_cr0(get_vvmcs(v, HOST_CR0), true);
+    rc = hvm_set_cr4(get_vvmcs(v, HOST_CR4), true);
     if ( rc == X86EMUL_EXCEPTION )
         hvm_inject_hw_exception(TRAP_gp_fault, 0);
 
-    rc = hvm_set_cr4(get_vvmcs(v, HOST_CR4), true);
+    rc = hvm_set_cr0(get_vvmcs(v, HOST_CR0), true);
     if ( rc == X86EMUL_EXCEPTION )
         hvm_inject_hw_exception(TRAP_gp_fault, 0);
 

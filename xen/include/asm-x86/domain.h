@@ -83,7 +83,7 @@ void cpuid_policy_updated(struct vcpu *v);
  * Initialise a hypercall-transfer page. The given pointer must be mapped
  * in Xen virtual address space (accesses are not validated or checked).
  */
-void hypercall_page_initialise(struct domain *d, void *);
+void init_hypercall_page(struct domain *d, void *);
 
 /************************************************/
 /*          shadow paging extension             */
@@ -115,7 +115,6 @@ struct shadow_domain {
 
     /* OOS */
     bool_t oos_active;
-    bool_t oos_off;
 
     /* Has this domain ever used HVMOP_pagetable_dying? */
     bool_t pagetable_dying_op;
@@ -296,10 +295,6 @@ struct arch_domain
     uint32_t pci_cf8;
     uint8_t cmos_idx;
 
-    bool_t s3_integrity;
-
-    struct list_head pdev_list;
-
     union {
         struct pv_domain pv;
         struct hvm_domain hvm;
@@ -340,9 +335,6 @@ struct arch_domain
     bool_t is_32bit_pv;
     /* Is shared-info page in 32-bit format? */
     bool_t has_32bit_shinfo;
-
-    /* Domain cannot handle spurious page faults? */
-    bool_t suppress_spurious_page_faults;
 
     /* Is PHYSDEVOP_eoi to automatically unmask the event channel? */
     bool_t auto_unmask;
@@ -475,8 +467,6 @@ struct arch_domain
 #define has_vpit(d)        (!!((d)->arch.emulation_flags & X86_EMU_PIT))
 #define has_pirq(d)        (!!((d)->arch.emulation_flags & X86_EMU_USE_PIRQ))
 #define has_vpci(d)        (!!((d)->arch.emulation_flags & X86_EMU_VPCI))
-
-#define has_arch_pdevs(d)    (!list_empty(&(d)->arch.pdev_list))
 
 #define gdt_ldt_pt_idx(v) \
       ((v)->vcpu_id >> (PAGETABLE_ORDER - GDT_LDT_VCPU_SHIFT))

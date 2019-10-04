@@ -92,6 +92,11 @@ static int modern_apic(void)
     if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
         boot_cpu_data.x86 >= 0xf)
         return 1;
+
+    /* Hygon systems use modern APIC */
+    if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+        return 1;
+
     lvr = apic_read(APIC_LVR);
     version = GET_APIC_VERSION(lvr);
     return version >= 0x14;
@@ -184,19 +189,15 @@ void clear_local_APIC(void)
         v = apic_read(APIC_LVTPC);
         apic_write(APIC_LVTPC, v | APIC_LVT_MASKED);
     }
-
-/* lets not touch this if we didn't frob it */
-#ifdef CONFIG_X86_MCE_THERMAL
     if (maxlvt >= 5) {
         v = apic_read(APIC_LVTTHMR);
         apic_write(APIC_LVTTHMR, v | APIC_LVT_MASKED);
     }
-#endif
-
     if (maxlvt >= 6) {
         v = apic_read(APIC_CMCI);
         apic_write(APIC_CMCI, v | APIC_LVT_MASKED);
     }
+
     /*
      * Clean APIC state for other OSs:
      */
@@ -207,13 +208,14 @@ void clear_local_APIC(void)
         apic_write(APIC_LVTERR, APIC_LVT_MASKED);
     if (maxlvt >= 4)
         apic_write(APIC_LVTPC, APIC_LVT_MASKED);
-
-#ifdef CONFIG_X86_MCE_THERMAL
     if (maxlvt >= 5)
         apic_write(APIC_LVTTHMR, APIC_LVT_MASKED);
-#endif
     if (maxlvt >= 6)
         apic_write(APIC_CMCI, APIC_LVT_MASKED);
+    if (!x2apic_enabled) {
+        v = apic_read(APIC_LDR) & ~APIC_LDR_MASK;
+        apic_write(APIC_LDR, v);
+    }
 
     if (maxlvt > 3)        /* Due to Pentium errata 3AP and 11AP. */
         apic_write(APIC_ESR, 0);
@@ -510,7 +512,7 @@ static void resume_x2apic(void)
     mask_8259A();
     mask_IO_APIC_setup(ioapic_entries);
 
-    iommu_enable_x2apic_IR();
+    iommu_enable_x2apic();
     __enable_x2apic();
 
     restore_IO_APIC_setup(ioapic_entries);
@@ -720,7 +722,7 @@ int lapic_suspend(void)
 
     local_irq_save(flags);
     disable_local_APIC();
-    iommu_disable_x2apic_IR();
+    iommu_disable_x2apic();
     local_irq_restore(flags);
     return 0;
 }
@@ -884,6 +886,7 @@ void x2apic_ap_setup(void)
 void __init x2apic_bsp_setup(void)
 {
     struct IO_APIC_route_entry **ioapic_entries = NULL;
+    const char *orig_name;
 
     if ( !cpu_has_x2apic )
         return;
@@ -898,14 +901,14 @@ void __init x2apic_bsp_setup(void)
         printk("x2APIC: Already enabled by BIOS: Ignoring cmdline disable.\n");
     }
 
-    if ( !iommu_supports_eim() )
+    if ( !iommu_supports_x2apic() )
     {
         if ( !x2apic_enabled )
         {
-            printk("Not enabling x2APIC: depends on iommu_supports_eim.\n");
+            printk("Not enabling x2APIC: depends on IOMMU support\n");
             return;
         }
-        panic("x2APIC: already enabled by BIOS, but iommu_supports_eim failed\n");
+        panic("x2APIC: already enabled by BIOS, but no IOMMU support\n");
     }
 
     if ( (ioapic_entries = alloc_ioapic_entries()) == NULL )
@@ -923,7 +926,7 @@ void __init x2apic_bsp_setup(void)
     mask_8259A();
     mask_IO_APIC_setup(ioapic_entries);
 
-    switch ( iommu_enable_x2apic_IR() )
+    switch ( iommu_enable_x2apic() )
     {
     case 0:
         break;
@@ -946,14 +949,16 @@ void __init x2apic_bsp_setup(void)
 
     force_iommu = 1;
 
-    genapic = *apic_x2apic_probe();
-    printk("Switched to APIC driver %s.\n", genapic.name);
-
     if ( !x2apic_enabled )
     {
         x2apic_enabled = true;
         __enable_x2apic();
     }
+
+    orig_name = genapic.name;
+    genapic = *apic_x2apic_probe();
+    if ( genapic.name != orig_name )
+        printk("Switched to APIC driver %s\n", genapic.name);
 
 restore_out:
     restore_IO_APIC_setup(ioapic_entries);
@@ -1185,7 +1190,7 @@ static void __init check_deadline_errata(void)
     else
         rev = (unsigned long)m->driver_data;
 
-    if ( this_cpu(ucode_cpu_info).cpu_sig.rev >= rev )
+    if ( this_cpu(cpu_sig).rev >= rev )
         return;
 
     setup_clear_cpu_cap(X86_FEATURE_TSC_DEADLINE);

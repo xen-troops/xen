@@ -15,18 +15,18 @@ int pci_find_cap_offset(u16 seg, u8 bus, u8 dev, u8 func, u8 cap)
     u8 pos = PCI_CAPABILITY_LIST;
     u16 status;
 
-    status = pci_conf_read16(seg, bus, dev, func, PCI_STATUS);
+    status = pci_conf_read16(PCI_SBDF(seg, bus, dev, func), PCI_STATUS);
     if ( (status & PCI_STATUS_CAP_LIST) == 0 )
         return 0;
 
     while ( max_cap-- )
     {
-        pos = pci_conf_read8(seg, bus, dev, func, pos);
+        pos = pci_conf_read8(PCI_SBDF(seg, bus, dev, func), pos);
         if ( pos < 0x40 )
             break;
 
         pos &= ~3;
-        id = pci_conf_read8(seg, bus, dev, func, pos + PCI_CAP_LIST_ID);
+        id = pci_conf_read8(PCI_SBDF(seg, bus, dev, func), pos + PCI_CAP_LIST_ID);
 
         if ( id == 0xff )
             break;
@@ -46,13 +46,12 @@ int pci_find_next_cap(u16 seg, u8 bus, unsigned int devfn, u8 pos, int cap)
 
     while ( ttl-- )
     {
-        pos = pci_conf_read8(seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn), pos);
+        pos = pci_conf_read8(PCI_SBDF3(seg, bus, devfn), pos);
         if ( pos < 0x40 )
             break;
 
         pos &= ~3;
-        id = pci_conf_read8(seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
-                            pos + PCI_CAP_LIST_ID);
+        id = pci_conf_read8(PCI_SBDF3(seg, bus, devfn), pos + PCI_CAP_LIST_ID);
 
         if ( id == 0xff )
             break;
@@ -94,7 +93,7 @@ int pci_find_next_ext_capability(int seg, int bus, int devfn, int start, int cap
     int ttl = 480; /* 3840 bytes, minimum 8 bytes per capability */
     int pos = max(start, 0x100);
 
-    header = pci_conf_read32(seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn), pos);
+    header = pci_conf_read32(PCI_SBDF3(seg, bus, devfn), pos);
 
     /*
      * If we have no capabilities, this is indicated by cap ID,
@@ -110,24 +109,20 @@ int pci_find_next_ext_capability(int seg, int bus, int devfn, int start, int cap
         pos = PCI_EXT_CAP_NEXT(header);
         if ( pos < 0x100 )
             break;
-        header = pci_conf_read32(seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn), pos);
+        header = pci_conf_read32(PCI_SBDF3(seg, bus, devfn), pos);
     }
     return 0;
 }
 
 void pci_intx(const struct pci_dev *pdev, bool enable)
 {
-    uint16_t seg = pdev->seg;
-    uint8_t bus = pdev->bus;
-    uint8_t slot = PCI_SLOT(pdev->devfn);
-    uint8_t func = PCI_FUNC(pdev->devfn);
-    uint16_t cmd = pci_conf_read16(seg, bus, slot, func, PCI_COMMAND);
+    uint16_t cmd = pci_conf_read16(pdev->sbdf, PCI_COMMAND);
 
     if ( enable )
         cmd &= ~PCI_COMMAND_INTX_DISABLE;
     else
         cmd |= PCI_COMMAND_INTX_DISABLE;
-    pci_conf_write16(seg, bus, slot, func, PCI_COMMAND, cmd);
+    pci_conf_write16(pdev->sbdf, PCI_COMMAND, cmd);
 }
 
 const char *__init parse_pci(const char *s, unsigned int *seg_p,

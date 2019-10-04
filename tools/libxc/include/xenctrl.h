@@ -44,7 +44,6 @@
 #include <xen/hvm/dm_op.h>
 #include <xen/hvm/params.h>
 #include <xen/xsm/flask_op.h>
-#include <xen/tmem.h>
 #include <xen/kexec.h>
 #include <xen/platform.h>
 
@@ -1245,6 +1244,7 @@ typedef uint32_t xc_node_to_node_dist_t;
 int xc_physinfo(xc_interface *xch, xc_physinfo_t *info);
 int xc_cputopoinfo(xc_interface *xch, unsigned *max_cpus,
                    xc_cputopo_t *cputopo);
+int xc_microcode_update(xc_interface *xch, const void *buf, size_t len);
 int xc_numainfo(xc_interface *xch, unsigned *max_nodes,
                 xc_meminfo_t *meminfo, uint32_t *distance);
 int xc_pcitopoinfo(xc_interface *xch, unsigned num_devs,
@@ -1781,15 +1781,6 @@ int xc_domain_unbind_pt_spi_irq(xc_interface *xch,
                                 uint16_t vspi,
                                 uint16_t spi);
 
-int xc_domain_set_machine_address_size(xc_interface *xch,
-				       uint32_t domid,
-				       unsigned int width);
-int xc_domain_get_machine_address_size(xc_interface *xch,
-				       uint32_t domid);
-
-int xc_domain_suppress_spurious_page_faults(xc_interface *xch,
-					  uint32_t domid);
-
 /* Set the target domain */
 int xc_domain_set_target(xc_interface *xch,
                          uint32_t domid,
@@ -1854,6 +1845,8 @@ int xc_pm_reset_cxstat(xc_interface *xch, int cpuid);
 
 int xc_cpu_online(xc_interface *xch, int cpu);
 int xc_cpu_offline(xc_interface *xch, int cpu);
+int xc_smt_enable(xc_interface *xch);
+int xc_smt_disable(xc_interface *xch);
 
 /* 
  * cpufreq para name of this structure named 
@@ -1905,24 +1898,11 @@ int xc_set_sched_opt_smt(xc_interface *xch, uint32_t value);
 int xc_get_cpuidle_max_cstate(xc_interface *xch, uint32_t *value);
 int xc_set_cpuidle_max_cstate(xc_interface *xch, uint32_t value);
 
+int xc_get_cpuidle_max_csubstate(xc_interface *xch, uint32_t *value);
+int xc_set_cpuidle_max_csubstate(xc_interface *xch, uint32_t value);
+
 int xc_enable_turbo(xc_interface *xch, int cpuid);
 int xc_disable_turbo(xc_interface *xch, int cpuid);
-/**
- * tmem operations
- */
-
-int xc_tmem_control_oid(xc_interface *xch, int32_t pool_id, uint32_t subop,
-                        uint32_t cli_id, uint32_t len, uint32_t arg,
-                        struct xen_tmem_oid oid, void *buf);
-int xc_tmem_control(xc_interface *xch,
-                    int32_t pool_id, uint32_t subop, uint32_t cli_id,
-                    uint32_t len, uint32_t arg, void *buf);
-int xc_tmem_auth(xc_interface *xch, int cli_id, char *uuid_str, int enable);
-int xc_tmem_save(xc_interface *xch, uint32_t domid, int live, int fd, int field_marker);
-int xc_tmem_save_extra(xc_interface *xch, uint32_t domid, int fd, int field_marker);
-void xc_tmem_save_done(xc_interface *xch, uint32_t domid);
-int xc_tmem_restore(xc_interface *xch, uint32_t domid, int fd);
-int xc_tmem_restore_extra(xc_interface *xch, uint32_t domid, int fd);
 
 /**
  * altp2m operations
@@ -1957,6 +1937,8 @@ int xc_altp2m_get_mem_access(xc_interface *handle, uint32_t domid,
 int xc_altp2m_change_gfn(xc_interface *handle, uint32_t domid,
                          uint16_t view_id, xen_pfn_t old_gfn,
                          xen_pfn_t new_gfn);
+int xc_altp2m_get_vcpu_p2m_idx(xc_interface *handle, uint32_t domid,
+                               uint32_t vcpuid, uint16_t *p2midx);
 
 /** 
  * Mem paging operations.

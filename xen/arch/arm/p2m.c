@@ -151,7 +151,7 @@ void p2m_restore_state(struct vcpu *n)
      * when running multiple vCPU of the same domain on a single pCPU.
      */
     if ( *last_vcpu_ran != INVALID_VCPU_ID && *last_vcpu_ran != n->vcpu_id )
-        flush_tlb_local();
+        flush_guest_tlb_local();
 
     *last_vcpu_ran = n->vcpu_id;
 }
@@ -196,7 +196,7 @@ static void p2m_force_tlb_flush_sync(struct p2m_domain *p2m)
         isb();
     }
 
-    flush_tlb();
+    flush_guest_tlb();
 
     if ( ovttbr != READ_SYSREG64(VTTBR_EL2) )
     {
@@ -366,14 +366,7 @@ mfn_t p2m_get_entry(struct p2m_domain *p2m, gfn_t gfn,
     int rc;
     mfn_t mfn = INVALID_MFN;
     p2m_type_t _t;
-
-    /* Convenience aliases */
-    const unsigned int offsets[4] = {
-        zeroeth_table_offset(addr),
-        first_table_offset(addr),
-        second_table_offset(addr),
-        third_table_offset(addr)
-    };
+    DECLARE_OFFSETS(offsets, addr);
 
     ASSERT(p2m_is_locked(p2m));
     BUILD_BUG_ON(THIRD_MASK != PAGE_MASK);
@@ -888,21 +881,13 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
                            p2m_type_t t,
                            p2m_access_t a)
 {
-    paddr_t addr = gfn_to_gaddr(sgfn);
     unsigned int level = 0;
     unsigned int target = 3 - (page_order / LPAE_SHIFT);
     lpae_t *entry, *table, orig_pte;
     int rc;
     /* A mapping is removed if the MFN is invalid. */
     bool removing_mapping = mfn_eq(smfn, INVALID_MFN);
-
-    /* Convenience aliases */
-    const unsigned int offsets[4] = {
-        zeroeth_table_offset(addr),
-        first_table_offset(addr),
-        second_table_offset(addr),
-        third_table_offset(addr)
-    };
+    DECLARE_OFFSETS(offsets, gfn_to_gaddr(sgfn));
 
     ASSERT(p2m_is_write_locked(p2m));
 
@@ -1199,15 +1184,9 @@ bool p2m_resolve_translation_fault(struct domain *d, gfn_t gfn)
     unsigned int level = 0;
     bool resolved = false;
     lpae_t entry, *table;
-    paddr_t addr = gfn_to_gaddr(gfn);
 
     /* Convenience aliases */
-    const unsigned int offsets[4] = {
-        zeroeth_table_offset(addr),
-        first_table_offset(addr),
-        second_table_offset(addr),
-        third_table_offset(addr)
-    };
+    DECLARE_OFFSETS(offsets, gfn_to_gaddr(gfn));
 
     p2m_write_lock(p2m);
 
@@ -1552,7 +1531,7 @@ int p2m_init(struct domain *d)
      * shared with the CPU, Xen has to make sure that the PT changes have
      * reached the memory
      */
-    p2m->clean_pte = iommu_enabled &&
+    p2m->clean_pte = is_iommu_enabled(d) &&
         !iommu_has_feature(d, IOMMU_FEAT_COHERENT_WALK);
 
     rc = p2m_alloc_table(d);
@@ -1969,7 +1948,7 @@ static void setup_virt_paging_one(void *data)
         WRITE_SYSREG(READ_SYSREG(HCR_EL2) | HCR_VM, HCR_EL2);
         isb();
 
-        flush_tlb_all_local();
+        flush_all_guests_tlb_local();
     }
 }
 
@@ -1995,7 +1974,7 @@ void __init setup_virt_paging(void)
         [0] = { 32,      32/*32*/,  0,          1 },
         [1] = { 36,      28/*28*/,  0,          1 },
         [2] = { 40,      24/*24*/,  1,          1 },
-        [3] = { 42,      24/*22*/,  1,          1 },
+        [3] = { 42,      22/*22*/,  3,          1 },
         [4] = { 44,      20/*20*/,  0,          2 },
         [5] = { 48,      16/*16*/,  0,          2 },
         [6] = { 0 }, /* Invalid */

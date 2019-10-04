@@ -552,7 +552,7 @@ void libxl__update_domain_configuration(libxl__gc *gc,
                                         const libxl_domain_config *src)
 {
     int i, idx, num;
-    const struct libxl_device_type *dt;
+    const libxl__device_type *dt;
 
     for (idx = 0;; idx++) {
         dt = device_type_tbl[idx];
@@ -573,6 +573,188 @@ void libxl__update_domain_configuration(libxl__gc *gc,
 
     /* video ram */
     dst->b_info.video_memkb = src->b_info.video_memkb;
+}
+
+void libxl__ev_devlock_init(libxl__ev_devlock *lock)
+{
+    libxl__ev_child_init(&lock->child);
+    lock->path = NULL;
+    lock->fd = -1;
+    lock->held = false;
+}
+
+static void ev_lock_prepare_fork(libxl__egc *egc, libxl__ev_devlock *lock);
+static void ev_lock_child_callback(libxl__egc *egc, libxl__ev_child *child,
+                                   pid_t pid, int status);
+
+void libxl__ev_devlock_lock(libxl__egc *egc, libxl__ev_devlock *lock)
+{
+    STATE_AO_GC(lock->ao);
+    const char *lockfile;
+
+    lockfile = libxl__userdata_path(gc, lock->domid,
+                                    "libxl-device-changes-lock", "l");
+    if (!lockfile) goto out;
+    lock->path = libxl__strdup(NOGC, lockfile);
+
+    ev_lock_prepare_fork(egc, lock);
+    return;
+out:
+    lock->callback(egc, lock, ERROR_LOCK_FAIL);
+}
+
+static void ev_lock_prepare_fork(libxl__egc *egc, libxl__ev_devlock *lock)
+{
+    STATE_AO_GC(lock->ao);
+    pid_t pid;
+    int fd;
+
+    /* Convenience aliases */
+    libxl_domid domid = lock->domid;
+    const char *lockfile = lock->path;
+
+    lock->fd = open(lockfile, O_RDWR|O_CREAT, 0666);
+    if (lock->fd < 0) {
+        LOGED(ERROR, domid, "cannot open lockfile %s", lockfile);
+        goto out;
+    }
+    fd = lock->fd;
+
+    /* Enable this optimisation only in releases, so the fork code is
+     * exercised while libxl is built with debug=y. */
+#ifndef CONFIG_DEBUG
+    /*
+     * We try to grab the lock before forking as it is likely to be free.
+     * Even though we are supposed to CTX_UNLOCK before attempting to grab
+     * the ev_lock, it is fine to do a non-blocking request now with the
+     * CTX_LOCK held as if that fails we'll try again in a fork (CTX_UNLOCK
+     * will be called in libxl), that will avoid deadlocks.
+     */
+    int r = flock(fd, LOCK_EX | LOCK_NB);
+    if (!r) {
+        libxl_fd_set_cloexec(CTX, fd, 1);
+        /* We held a lock, no need to fork but we need to check it. */
+        ev_lock_child_callback(egc, &lock->child, 0, 0);
+        return;
+    }
+#endif
+
+    pid = libxl__ev_child_fork(gc, &lock->child, ev_lock_child_callback);
+    if (pid < 0)
+        goto out;
+    if (!pid) {
+        /* child */
+        int exit_val = 0;
+
+        /* Lock the file in exclusive mode, wait indefinitely to
+         * acquire the lock */
+        while (flock(fd, LOCK_EX)) {
+            switch (errno) {
+            case EINTR:
+                /* Signal received, retry */
+                continue;
+            default:
+                /* All other errno: EBADF, EINVAL, ENOLCK, EWOULDBLOCK */
+                LOGED(ERROR, domid,
+                      "unexpected error while trying to lock %s, fd=%d",
+                      lockfile, fd);
+                exit_val = 1;
+                break;
+            }
+        }
+        _exit(exit_val);
+    }
+
+    /* Now that the child has the fd, set cloexec in the parent to prevent
+     * more leakage than necessary */
+    libxl_fd_set_cloexec(CTX, fd, 1);
+    return;
+out:
+    libxl__ev_devlock_unlock(gc, lock);
+    lock->callback(egc, lock, ERROR_LOCK_FAIL);
+}
+
+static void ev_lock_child_callback(libxl__egc *egc, libxl__ev_child *child,
+                                   pid_t pid, int status)
+{
+    EGC_GC;
+    libxl__ev_devlock *lock = CONTAINER_OF(child, *lock, child);
+    struct stat stab, fstab;
+    int rc = ERROR_LOCK_FAIL;
+
+    /* Convenience aliases */
+    int fd = lock->fd;
+    const char *lockfile = lock->path;
+    libxl_domid domid = lock->domid;
+
+    if (status) {
+        libxl_report_child_exitstatus(CTX, XTL_ERROR, "flock child",
+                                      pid, status);
+        goto out;
+    }
+
+    if (fstat(fd, &fstab)) {
+        LOGED(ERROR, domid, "cannot fstat %s, fd=%d", lockfile, fd);
+        goto out;
+    }
+    if (stat(lockfile, &stab)) {
+        if (errno != ENOENT) {
+            LOGED(ERROR, domid, "cannot stat %s", lockfile);
+            goto out;
+        }
+    } else {
+        if (stab.st_dev == fstab.st_dev && stab.st_ino == fstab.st_ino) {
+            /* We held the lock */
+            lock->held = true;
+            rc = 0;
+            goto out;
+        }
+    }
+
+    /* We didn't grab the lock, let's try again */
+    flock(lock->fd, LOCK_UN);
+    close(lock->fd);
+    lock->fd = -1;
+    ev_lock_prepare_fork(egc, lock);
+    return;
+
+out:
+    if (lock->held) {
+        /* Check the domain is still there, if not we should release the
+         * lock and clean up.  */
+        if (libxl_domain_info(CTX, NULL, domid))
+            rc = ERROR_LOCK_FAIL;
+    }
+    if (rc) {
+        LOGD(ERROR, domid, "Failed to grab qmp-lock");
+        libxl__ev_devlock_unlock(gc, lock);
+    }
+    lock->callback(egc, lock, rc);
+}
+
+void libxl__ev_devlock_unlock(libxl__gc *gc, libxl__ev_devlock *lock)
+{
+    int r;
+
+    assert(!libxl__ev_child_inuse(&lock->child));
+
+    /* See the rationale in libxl__unlock_domain_userdata()
+     * about why we do unlink() before unlock(). */
+
+    if (lock->path && lock->held)
+        unlink(lock->path);
+
+    if (lock->fd >= 0) {
+        /* We need to call unlock as the fd may have leaked into other
+         * processes */
+        r = flock(lock->fd, LOCK_UN);
+        if (r)
+            LOGED(ERROR, lock->domid, "failed to unlock fd=%d, path=%s",
+                  lock->fd, lock->path);
+        close(lock->fd);
+    }
+    free(lock->path);
+    libxl__ev_devlock_init(lock);
 }
 
 /*

@@ -309,10 +309,10 @@ int cmdline_strcmp(const char *frag, const char *name)
         if ( res || n == '\0' )
         {
             /*
-             * NUL in 'name' matching a comma, colon or semicolon in 'frag'
-             * implies success.
+             * NUL in 'name' matching a comma, colon, semicolon or equals in
+             * 'frag' implies success.
              */
-            if ( n == '\0' && (f == ',' || f == ':' || f == ';') )
+            if ( n == '\0' && (f == ',' || f == ':' || f == ';' || f == '=') )
                 res = 0;
 
             return res;
@@ -474,19 +474,14 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             fi.submap |= (1U << XENFEAT_ARM_SMCCC_supported);
 #endif
 #ifdef CONFIG_X86
-            switch ( d->guest_type )
-            {
-            case guest_type_pv:
+            if ( is_pv_domain(d) )
                 fi.submap |= (1U << XENFEAT_mmu_pt_update_preserve_ad) |
                              (1U << XENFEAT_highmem_assist) |
                              (1U << XENFEAT_gnttab_map_avail_bits);
-                break;
-            case guest_type_hvm:
+            else
                 fi.submap |= (1U << XENFEAT_hvm_safe_pvclock) |
                              (1U << XENFEAT_hvm_callback_vector) |
                              (has_pirq(d) ? (1U << XENFEAT_hvm_pirqs) : 0);
-                break;
-            }
 #endif
             break;
         default:

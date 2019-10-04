@@ -23,6 +23,7 @@
 #define PCI_BDF_VDEVFN         "%04x:%02x:%02x.%01x@%02x"
 #define PCI_OPTIONS            "msitranslate=%d,power_mgmt=%d"
 #define PCI_BDF_XSPATH         "%04x-%02x-%02x-%01x"
+#define PCI_PT_QDEV_ID         "pci-pt-%02x_%02x.%01x"
 
 static unsigned int pcidev_encode_bdf(libxl_device_pci *pcidev)
 {
@@ -47,7 +48,10 @@ static void pcidev_struct_fill(libxl_device_pci *pcidev, unsigned int domain,
     pcidev->vdevfn = vdevfn;
 }
 
-static void libxl_create_pci_backend_device(libxl__gc *gc, flexarray_t *back, int num, libxl_device_pci *pcidev)
+static void libxl_create_pci_backend_device(libxl__gc *gc,
+                                            flexarray_t *back,
+                                            int num,
+                                            const libxl_device_pci *pcidev)
 {
     flexarray_append(back, GCSPRINTF("key-%d", num));
     flexarray_append(back, GCSPRINTF(PCI_BDF, pcidev->domain, pcidev->bus, pcidev->dev, pcidev->func));
@@ -64,7 +68,7 @@ static void libxl_create_pci_backend_device(libxl__gc *gc, flexarray_t *back, in
 }
 
 static void libxl__device_from_pcidev(libxl__gc *gc, uint32_t domid,
-                                      libxl_device_pci *pcidev,
+                                      const libxl_device_pci *pcidev,
                                       libxl__device *device)
 {
     device->backend_devid = 0;
@@ -75,8 +79,9 @@ static void libxl__device_from_pcidev(libxl__gc *gc, uint32_t domid,
     device->kind = LIBXL__DEVICE_KIND_PCI;
 }
 
-int libxl__create_pci_backend(libxl__gc *gc, uint32_t domid,
-                              libxl_device_pci *pcidev, int num)
+static int libxl__create_pci_backend(libxl__gc *gc, uint32_t domid,
+                                     const libxl_device_pci *pcidev,
+                                     int num)
 {
     flexarray_t *front = NULL;
     flexarray_t *back = NULL;
@@ -109,21 +114,20 @@ int libxl__create_pci_backend(libxl__gc *gc, uint32_t domid,
                                      NULL);
 }
 
-static int libxl__device_pci_add_xenstore(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcidev, int starting)
+static int libxl__device_pci_add_xenstore(libxl__gc *gc,
+                                          uint32_t domid,
+                                          const libxl_device_pci *pcidev,
+                                          bool starting)
 {
     flexarray_t *back;
     char *num_devs, *be_path;
     int num = 0;
     xs_transaction_t t = XBT_NULL;
-    libxl__device *device;
     int rc;
     libxl_domain_config d_config;
-    libxl_device_pci pcidev_saved;
     libxl__domain_userdata_lock *lock = NULL;
 
     libxl_domain_config_init(&d_config);
-    libxl_device_pci_init(&pcidev_saved);
-    libxl_device_pci_copy(CTX, &pcidev_saved, pcidev);
 
     be_path = libxl__domain_device_backend_path(gc, 0, domid, 0,
                                                 LIBXL__DEVICE_KIND_PCI);
@@ -149,9 +153,6 @@ static int libxl__device_pci_add_xenstore(libxl__gc *gc, uint32_t domid, libxl_d
     if (!starting)
         flexarray_append_pair(back, "state", GCSPRINTF("%d", XenbusStateReconfiguring));
 
-    GCNEW(device);
-    libxl__device_from_pcidev(gc, domid, pcidev, device);
-
     lock = libxl__lock_domain_userdata(gc, domid);
     if (!lock) {
         rc = ERROR_LOCK_FAIL;
@@ -162,7 +163,7 @@ static int libxl__device_pci_add_xenstore(libxl__gc *gc, uint32_t domid, libxl_d
     if (rc) goto out;
 
     device_add_domain_config(gc, &d_config, &libxl__pcidev_devtype,
-                             &pcidev_saved);
+                             pcidev);
 
     rc = libxl__dm_check_start(gc, &d_config, domid);
     if (rc) goto out;
@@ -184,7 +185,6 @@ static int libxl__device_pci_add_xenstore(libxl__gc *gc, uint32_t domid, libxl_d
 out:
     libxl__xs_transaction_abort(gc, &t);
     if (lock) libxl__unlock_domain_userdata(lock);
-    libxl_device_pci_dispose(&pcidev_saved);
     libxl_domain_config_dispose(&d_config);
     return rc;
 }
@@ -984,40 +984,321 @@ static int qemu_pci_add_xenstore(libxl__gc *gc, uint32_t domid,
     return rc;
 }
 
-static int do_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcidev, int starting)
+static int check_qemu_running(libxl__gc *gc,
+                              libxl_domid domid,
+                              libxl__xswait_state *xswa,
+                              int rc,
+                              const char *state)
 {
-    libxl_ctx *ctx = libxl__gc_owner(gc);
+    if (rc) {
+        if (rc == ERROR_TIMEDOUT) {
+            LOGD(ERROR, domid, "%s not ready", xswa->what);
+        }
+        goto out;
+    }
+
+    if (!state || strcmp(state, "running"))
+        return ERROR_NOT_READY;
+
+out:
+    libxl__xswait_stop(gc, xswa);
+    return rc;
+}
+
+typedef struct pci_add_state {
+    /* filled by user of do_pci_add */
+    libxl__ao_device *aodev;
+    libxl_domid domid;
+    bool starting;
+    void (*callback)(libxl__egc *, struct pci_add_state *, int rc);
+
+    /* private to do_pci_add */
+    libxl__xswait_state xswait;
+    libxl__ev_qmp qmp;
+    libxl__ev_time timeout;
+    libxl_device_pci *pcidev;
+    int pci_domid;
+} pci_add_state;
+
+static void pci_add_qemu_trad_watch_state_cb(libxl__egc *egc,
+    libxl__xswait_state *xswa, int rc, const char *state);
+static void pci_add_qmp_device_add(libxl__egc *, pci_add_state *);
+static void pci_add_qmp_device_add_cb(libxl__egc *,
+    libxl__ev_qmp *, const libxl__json_object *, int rc);
+static void pci_add_qmp_query_pci_cb(libxl__egc *,
+    libxl__ev_qmp *, const libxl__json_object *, int rc);
+static void pci_add_timeout(libxl__egc *egc, libxl__ev_time *ev,
+    const struct timeval *requested_abs, int rc);
+static void pci_add_dm_done(libxl__egc *,
+    pci_add_state *, int rc);
+
+static void do_pci_add(libxl__egc *egc,
+                       libxl_domid domid,
+                       libxl_device_pci *pcidev,
+                       pci_add_state *pas)
+{
+    STATE_AO_GC(pas->aodev->ao);
     libxl_domain_type type = libxl__domain_type(gc, domid);
+    int rc;
+
+    /* init pci_add_state */
+    libxl__xswait_init(&pas->xswait);
+    libxl__ev_qmp_init(&pas->qmp);
+    pas->pcidev = pcidev;
+    pas->pci_domid = domid;
+    libxl__ev_time_init(&pas->timeout);
+
+    if (type == LIBXL_DOMAIN_TYPE_INVALID) {
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    if (type == LIBXL_DOMAIN_TYPE_HVM) {
+        switch (libxl__device_model_version_running(gc, domid)) {
+            case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL:
+                pas->xswait.ao = ao;
+                pas->xswait.what = "Device Model";
+                pas->xswait.path = DEVICE_MODEL_XS_PATH(gc,
+                    libxl_get_stubdom_id(CTX, domid), domid, "/state");
+                pas->xswait.timeout_ms = LIBXL_DEVICE_MODEL_START_TIMEOUT * 1000;
+                pas->xswait.callback = pci_add_qemu_trad_watch_state_cb;
+                rc = libxl__xswait_start(gc, &pas->xswait);
+                if (rc) goto out;
+                return;
+            case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
+                pci_add_qmp_device_add(egc, pas); /* must be last */
+                return;
+            default:
+                rc = ERROR_INVAL;
+                break;
+        }
+    }
+
+    rc = 0;
+
+out:
+    pci_add_dm_done(egc, pas, rc); /* must be last */
+}
+
+static void pci_add_qemu_trad_watch_state_cb(libxl__egc *egc,
+                                             libxl__xswait_state *xswa,
+                                             int rc,
+                                             const char *state)
+{
+    pci_add_state *pas = CONTAINER_OF(xswa, *pas, xswait);
+    STATE_AO_GC(pas->aodev->ao);
+
+    /* Convenience aliases */
+    libxl_domid domid = pas->domid;
+    libxl_device_pci *pcidev = pas->pcidev;
+
+    rc = check_qemu_running(gc, domid, xswa, rc, state);
+    if (rc == ERROR_NOT_READY)
+        return;
+    if (rc)
+        goto out;
+
+    rc = qemu_pci_add_xenstore(gc, domid, pcidev);
+out:
+    pci_add_dm_done(egc, pas, rc); /* must be last */
+}
+
+static void pci_add_qmp_device_add(libxl__egc *egc, pci_add_state *pas)
+{
+    STATE_AO_GC(pas->aodev->ao);
+    libxl__json_object *args = NULL;
+    int rc;
+
+    /* Convenience aliases */
+    libxl_domid domid = pas->domid;
+    libxl_device_pci *pcidev = pas->pcidev;
+    libxl__ev_qmp *const qmp = &pas->qmp;
+
+    rc = libxl__ev_time_register_rel(ao, &pas->timeout,
+                                     pci_add_timeout,
+                                     LIBXL_QMP_CMD_TIMEOUT * 1000);
+    if (rc) goto out;
+
+    libxl__qmp_param_add_string(gc, &args, "driver",
+                                "xen-pci-passthrough");
+    QMP_PARAMETERS_SPRINTF(&args, "id", PCI_PT_QDEV_ID,
+                           pcidev->bus, pcidev->dev, pcidev->func);
+    QMP_PARAMETERS_SPRINTF(&args, "hostaddr",
+                           "%04x:%02x:%02x.%01x", pcidev->domain,
+                           pcidev->bus, pcidev->dev, pcidev->func);
+    if (pcidev->vdevfn) {
+        QMP_PARAMETERS_SPRINTF(&args, "addr", "%x.%x",
+                               PCI_SLOT(pcidev->vdevfn),
+                               PCI_FUNC(pcidev->vdevfn));
+    }
+    /*
+     * Version of QEMU prior to the XSA-131 fix did not support
+     * this property and were effectively always in permissive
+     * mode. The fix for XSA-131 switched the default to be
+     * restricted by default and added the permissive property.
+     *
+     * Therefore in order to support both old and new QEMU we only
+     * set the permissive flag if it is true. Users of older QEMU
+     * have no reason to set the flag so this is ok.
+     */
+    if (pcidev->permissive)
+        libxl__qmp_param_add_bool(gc, &args, "permissive", true);
+
+    qmp->ao = pas->aodev->ao;
+    qmp->domid = domid;
+    qmp->payload_fd = -1;
+    qmp->callback = pci_add_qmp_device_add_cb;
+    rc = libxl__ev_qmp_send(gc, qmp, "device_add", args);
+    if (rc) goto out;
+    return;
+
+out:
+    pci_add_dm_done(egc, pas, rc); /* must be last */
+}
+
+static void pci_add_qmp_device_add_cb(libxl__egc *egc,
+                                      libxl__ev_qmp *qmp,
+                                      const libxl__json_object *response,
+                                      int rc)
+{
+    EGC_GC;
+    pci_add_state *pas = CONTAINER_OF(qmp, *pas, qmp);
+
+    if (rc) goto out;
+
+    qmp->callback = pci_add_qmp_query_pci_cb;
+    rc = libxl__ev_qmp_send(gc, qmp, "query-pci", NULL);
+    if (rc) goto out;
+    return;
+
+out:
+    pci_add_dm_done(egc, pas, rc); /* must be last */
+}
+
+static void pci_add_qmp_query_pci_cb(libxl__egc *egc,
+                                     libxl__ev_qmp *qmp,
+                                     const libxl__json_object *response,
+                                     int rc)
+{
+    EGC_GC;
+    pci_add_state *pas = CONTAINER_OF(qmp, *pas, qmp);
+    const libxl__json_object *bus = NULL;
+    char *asked_id;
+    int i, j;
+    const libxl__json_object *devices = NULL;
+    const libxl__json_object *device = NULL;
+    const libxl__json_object *o = NULL;
+    const char *id = NULL;
+    int dev_slot, dev_func;
+
+    /* Convenience aliases */
+    libxl_device_pci *pcidev = pas->pcidev;
+
+    if (rc) goto out;
+
+    /* `query-pci' returns:
+     * [
+     *   {'bus': 'int',
+     *    'devices': [
+     *       {'bus': 'int', 'slot': 'int', 'function': 'int',
+     *        'class_info': 'PciDeviceClass', 'id': 'PciDeviceId',
+     *        '*irq': 'int', 'qdev_id': 'str',
+     *        '*pci_bridge': 'PciBridgeInfo',
+     *        'regions': ['PciMemoryRegion']
+     *       }
+     *    ]
+     *   }
+     * ]
+     * (See qemu.git/qapi/ for the struct that aren't detailed here)
+     */
+
+    asked_id = GCSPRINTF(PCI_PT_QDEV_ID,
+                         pcidev->bus, pcidev->dev, pcidev->func);
+
+    for (i = 0; (bus = libxl__json_array_get(response, i)); i++) {
+        devices = libxl__json_map_get("devices", bus, JSON_ARRAY);
+        if (!devices) {
+            rc = ERROR_QEMU_API;
+            goto out;
+        }
+
+        for (j = 0; (device = libxl__json_array_get(devices, j)); j++) {
+             o = libxl__json_map_get("qdev_id", device, JSON_STRING);
+             if (!o) {
+                 rc = ERROR_QEMU_API;
+                 goto out;
+             }
+             id = libxl__json_object_get_string(o);
+             if (!id || strcmp(asked_id, id))
+                 continue;
+
+             o = libxl__json_map_get("slot", device, JSON_INTEGER);
+             if (!o) {
+                 rc = ERROR_QEMU_API;
+                 goto out;
+             }
+             dev_slot = libxl__json_object_get_integer(o);
+             o = libxl__json_map_get("function", device, JSON_INTEGER);
+             if (!o) {
+                 rc = ERROR_QEMU_API;
+                 goto out;
+             }
+             dev_func = libxl__json_object_get_integer(o);
+
+             pcidev->vdevfn = PCI_DEVFN(dev_slot, dev_func);
+
+             rc = 0;
+             goto out;
+        }
+    }
+
+    rc = ERROR_FAIL;
+    LOGD(ERROR, qmp->domid,
+         "PCI device id '%s' wasn't found in QEMU's 'query-pci' response.",
+         asked_id);
+
+out:
+    if (rc == ERROR_QEMU_API) {
+        LOGD(ERROR, qmp->domid,
+             "Unexpected response to QMP cmd 'query-pci', received:\n%s",
+             JSON(response));
+    }
+    pci_add_dm_done(egc, pas, rc); /* must be last */
+}
+
+static void pci_add_timeout(libxl__egc *egc, libxl__ev_time *ev,
+                            const struct timeval *requested_abs,
+                            int rc)
+{
+    pci_add_state *pas = CONTAINER_OF(ev, *pas, timeout);
+
+    pci_add_dm_done(egc, pas, rc);
+}
+
+static void pci_add_dm_done(libxl__egc *egc,
+                            pci_add_state *pas,
+                            int rc)
+{
+    STATE_AO_GC(pas->aodev->ao);
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+    libxl_domid domid = pas->pci_domid;
     char *sysfs_path;
     FILE *f;
     unsigned long long start, end, flags, size;
-    int irq, i, rc, hvm = 0;
+    int irq, i;
+    int r;
     uint32_t flag = XEN_DOMCTL_DEV_RDM_RELAXED;
     uint32_t domainid = domid;
     bool isstubdom = libxl_is_stubdom(ctx, domid, &domainid);
 
-    if (type == LIBXL_DOMAIN_TYPE_INVALID)
-        return ERROR_FAIL;
+    /* Convenience aliases */
+    bool starting = pas->starting;
+    libxl_device_pci *pcidev = pas->pcidev;
+    bool hvm = libxl__domain_type(gc, domid) == LIBXL_DOMAIN_TYPE_HVM;
 
-    if (type == LIBXL_DOMAIN_TYPE_HVM) {
-        hvm = 1;
-        if (libxl__wait_for_device_model_deprecated(gc, domid, "running",
-                                         NULL, NULL, NULL) < 0) {
-            return ERROR_FAIL;
-        }
-        switch (libxl__device_model_version_running(gc, domid)) {
-            case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL:
-                rc = qemu_pci_add_xenstore(gc, domid, pcidev);
-                break;
-            case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
-                rc = libxl__qmp_pci_add(gc, domid, pcidev);
-                break;
-            default:
-                return ERROR_INVAL;
-        }
-        if ( rc )
-            return ERROR_FAIL;
-    }
+    libxl__ev_qmp_dispose(gc, &pas->qmp);
+
+    if (rc) goto out;
 
     sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/resource", pcidev->domain,
                            pcidev->bus, pcidev->dev, pcidev->func);
@@ -1027,7 +1308,8 @@ static int do_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcidev, i
 
     if (f == NULL) {
         LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
-        return ERROR_FAIL;
+        rc = ERROR_FAIL;
+        goto out;
     }
     for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
         if (fscanf(f, "0x%llx 0x%llx 0x%llx\n", &start, &end, &flags) != 3)
@@ -1035,25 +1317,25 @@ static int do_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcidev, i
         size = end - start + 1;
         if (start) {
             if (flags & PCI_BAR_IO) {
-                rc = xc_domain_ioport_permission(ctx->xch, domid, start, size, 1);
-                if (rc < 0) {
+                r = xc_domain_ioport_permission(ctx->xch, domid, start, size, 1);
+                if (r < 0) {
                     LOGED(ERROR, domainid,
-                          "Error: xc_domain_ioport_permission error 0x%llx/0x%llx",
-                          start,
-                          size);
+                          "xc_domain_ioport_permission 0x%llx/0x%llx (error %d)",
+                          start, size, r);
                     fclose(f);
-                    return ERROR_FAIL;
+                    rc = ERROR_FAIL;
+                    goto out;
                 }
             } else {
-                rc = xc_domain_iomem_permission(ctx->xch, domid, start>>XC_PAGE_SHIFT,
+                r = xc_domain_iomem_permission(ctx->xch, domid, start>>XC_PAGE_SHIFT,
                                                 (size+(XC_PAGE_SIZE-1))>>XC_PAGE_SHIFT, 1);
-                if (rc < 0) {
+                if (r < 0) {
                     LOGED(ERROR, domainid,
-                          "Error: xc_domain_iomem_permission error 0x%llx/0x%llx",
-                          start,
-                          size);
+                          "xc_domain_iomem_permission 0x%llx/0x%llx (error %d)",
+                          start, size, r);
                     fclose(f);
-                    return ERROR_FAIL;
+                    rc = ERROR_FAIL;
+                    goto out;
                 }
             }
         }
@@ -1064,20 +1346,24 @@ static int do_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcidev, i
     f = fopen(sysfs_path, "r");
     if (f == NULL) {
         LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
-        goto out;
+        goto out_no_irq;
     }
     if ((fscanf(f, "%u", &irq) == 1) && irq) {
-        rc = xc_physdev_map_pirq(ctx->xch, domid, irq, &irq);
-        if (rc < 0) {
-            LOGED(ERROR, domainid, "Error: xc_physdev_map_pirq irq=%d", irq);
+        r = xc_physdev_map_pirq(ctx->xch, domid, irq, &irq);
+        if (r < 0) {
+            LOGED(ERROR, domainid, "xc_physdev_map_pirq irq=%d (error=%d)",
+                  irq, r);
             fclose(f);
-            return ERROR_FAIL;
+            rc = ERROR_FAIL;
+            goto out;
         }
-        rc = xc_domain_irq_permission(ctx->xch, domid, irq, 1);
-        if (rc < 0) {
-            LOGED(ERROR, domainid, "Error: xc_domain_irq_permission irq=%d", irq);
+        r = xc_domain_irq_permission(ctx->xch, domid, irq, 1);
+        if (r < 0) {
+            LOGED(ERROR, domainid,
+                  "xc_domain_irq_permission irq=%d (error=%d)", irq, r);
             fclose(f);
-            return ERROR_FAIL;
+            rc = ERROR_FAIL;
+            goto out;
         }
     }
     fclose(f);
@@ -1087,22 +1373,25 @@ static int do_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcidev, i
         if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/permissive",
                              pcidev) < 0 ) {
             LOGD(ERROR, domainid, "Setting permissive for device");
-            return ERROR_FAIL;
+            rc = ERROR_FAIL;
+            goto out;
         }
     }
 
-out:
+out_no_irq:
     if (!isstubdom) {
         if (pcidev->rdm_policy == LIBXL_RDM_RESERVE_POLICY_STRICT) {
             flag &= ~XEN_DOMCTL_DEV_RDM_RELAXED;
         } else if (pcidev->rdm_policy != LIBXL_RDM_RESERVE_POLICY_RELAXED) {
             LOGED(ERROR, domainid, "unknown rdm check flag.");
-            return ERROR_FAIL;
+            rc = ERROR_FAIL;
+            goto out;
         }
-        rc = xc_assign_device(ctx->xch, domid, pcidev_encode_bdf(pcidev), flag);
-        if (rc < 0 && (hvm || errno != ENOSYS)) {
+        r = xc_assign_device(ctx->xch, domid, pcidev_encode_bdf(pcidev), flag);
+        if (r < 0 && (hvm || errno != ENOSYS)) {
             LOGED(ERROR, domainid, "xc_assign_device failed");
-            return ERROR_FAIL;
+            rc = ERROR_FAIL;
+            goto out;
         }
     }
 
@@ -1110,7 +1399,9 @@ out:
         rc = libxl__device_pci_add_xenstore(gc, domid, pcidev, starting);
     else
         rc = 0;
-    return rc;
+out:
+    libxl__ev_time_deregister(gc, &pas->timeout);
+    pas->callback(egc, pas, rc);
 }
 
 static int libxl__device_pci_reset(libxl__gc *gc, unsigned int domain, unsigned int bus,
@@ -1164,9 +1455,14 @@ int libxl_device_pci_add(libxl_ctx *ctx, uint32_t domid,
                          const libxl_asyncop_how *ao_how)
 {
     AO_CREATE(ctx, domid, ao_how);
-    int rc;
-    rc = libxl__device_pci_add(gc, domid, pcidev, 0);
-    libxl__ao_complete(egc, ao, rc);
+    libxl__ao_device *aodev;
+
+    GCNEW(aodev);
+    libxl__prepare_ao_device(ao, aodev);
+    aodev->action = LIBXL__DEVICE_ACTION_ADD;
+    aodev->callback = device_addrm_aocomplete;
+    aodev->update_json = true;
+    libxl__device_pci_add(egc, domid, pcidev, false, aodev);
     return AO_INPROGRESS;
 }
 
@@ -1187,13 +1483,31 @@ static int libxl_pcidev_assignable(libxl_ctx *ctx, libxl_device_pci *pcidev)
     return i != num;
 }
 
-int libxl__device_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcidev, int starting)
+static void device_pci_add_stubdom_done(libxl__egc *egc,
+    pci_add_state *, int rc);
+static void device_pci_add_done(libxl__egc *egc,
+    pci_add_state *, int rc);
+
+void libxl__device_pci_add(libxl__egc *egc, uint32_t domid,
+                           libxl_device_pci *pcidev, bool starting,
+                           libxl__ao_device *aodev)
 {
+    STATE_AO_GC(aodev->ao);
     libxl_ctx *ctx = libxl__gc_owner(gc);
-    unsigned int orig_vdev, pfunc_mask;
     libxl_device_pci *assigned;
-    int num_assigned, i, rc;
+    int num_assigned, rc;
     int stubdomid = 0;
+    pci_add_state *pas;
+
+    /* Store *pcidev to be used by callbacks */
+    aodev->device_config = pcidev;
+    aodev->device_type = &libxl__pcidev_devtype;
+
+    GCNEW(pas);
+    pas->aodev = aodev;
+    pas->domid = domid;
+    pas->starting = starting;
+    pas->callback = device_pci_add_stubdom_done;
 
     if (libxl__domain_type(gc, domid) == LIBXL_DOMAIN_TYPE_HVM) {
         rc = xc_test_assign_device(ctx->xch, domid, pcidev_encode_bdf(pcidev));
@@ -1240,12 +1554,38 @@ int libxl__device_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcide
 
     stubdomid = libxl_get_stubdom_id(ctx, domid);
     if (stubdomid != 0) {
-        libxl_device_pci pcidev_s = *pcidev;
+        libxl_device_pci *pcidev_s;
+
+        GCNEW(pcidev_s);
+        libxl_device_pci_init(pcidev_s);
+        libxl_device_pci_copy(CTX, pcidev_s, pcidev);
         /* stubdomain is always running by now, even at create time */
-        rc = do_pci_add(gc, stubdomid, &pcidev_s, 0);
-        if ( rc )
-            goto out;
+        pas->callback = device_pci_add_stubdom_done;
+        do_pci_add(egc, stubdomid, pcidev_s, pas); /* must be last */
+        return;
     }
+
+    device_pci_add_stubdom_done(egc, pas, 0); /* must be last */
+    return;
+
+out:
+    device_pci_add_done(egc, pas, rc); /* must be last */
+}
+
+static void device_pci_add_stubdom_done(libxl__egc *egc,
+                                        pci_add_state *pas,
+                                        int rc)
+{
+    STATE_AO_GC(pas->aodev->ao);
+    unsigned int orig_vdev, pfunc_mask;
+    int i;
+
+    /* Convenience aliases */
+    libxl__ao_device *aodev = pas->aodev;
+    libxl_domid domid = pas->domid;
+    libxl_device_pci *pcidev = aodev->device_config;
+
+    if (rc) goto out;
 
     orig_vdev = pcidev->vdevfn & ~7U;
 
@@ -1277,30 +1617,82 @@ int libxl__device_pci_add(libxl__gc *gc, uint32_t domid, libxl_device_pci *pcide
                  */
                 pcidev->vdevfn = orig_vdev;
             }
-            if ( do_pci_add(gc, domid, pcidev, starting) )
-                rc = ERROR_FAIL;
+            pas->callback = device_pci_add_done;
+            do_pci_add(egc, domid, pcidev, pas); /* must be last */
+            return;
         }
     }
 
 out:
-    return rc;
+    device_pci_add_done(egc, pas, rc);
 }
+
+static void device_pci_add_done(libxl__egc *egc,
+                                pci_add_state *pas,
+                                int rc)
+{
+    EGC_GC;
+    libxl__ao_device *aodev = pas->aodev;
+    libxl_domid domid = pas->domid;
+    libxl_device_pci *pcidev = aodev->device_config;
+
+    if (rc) {
+        LOGD(ERROR, domid,
+             "libxl__device_pci_add  failed for "
+             "PCI device %x:%x:%x.%x (rc %d)",
+             pcidev->domain, pcidev->bus, pcidev->dev, pcidev->func,
+             rc);
+    }
+    aodev->rc = rc;
+    aodev->callback(egc, aodev);
+}
+
+typedef struct {
+    libxl__multidev multidev;
+    libxl__ao_device *outer_aodev;
+    libxl_domain_config *d_config;
+    libxl_domid domid;
+} add_pcidevs_state;
+
+static void add_pcidevs_done(libxl__egc *, libxl__multidev *, int rc);
 
 static void libxl__add_pcidevs(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
                                libxl_domain_config *d_config,
                                libxl__multidev *multidev)
 {
     AO_GC;
-    libxl__ao_device *aodev = libxl__multidev_prepare(multidev);
-    int i, rc = 0;
+    add_pcidevs_state *apds;
+    int i;
+
+    /* We need to start a new multidev in order to be able to execute
+     * libxl__create_pci_backend only once. */
+
+    GCNEW(apds);
+    apds->outer_aodev = libxl__multidev_prepare(multidev);
+    apds->d_config = d_config;
+    apds->domid = domid;
+    apds->multidev.callback = add_pcidevs_done;
+    libxl__multidev_begin(ao, &apds->multidev);
 
     for (i = 0; i < d_config->num_pcidevs; i++) {
-        rc = libxl__device_pci_add(gc, domid, &d_config->pcidevs[i], 1);
-        if (rc < 0) {
-            LOGD(ERROR, domid, "libxl_device_pci_add failed: %d", rc);
-            goto out;
-        }
+        libxl__ao_device *aodev = libxl__multidev_prepare(&apds->multidev);
+        libxl__device_pci_add(egc, domid, &d_config->pcidevs[i],
+                              true, aodev);
     }
+
+    libxl__multidev_prepared(egc, &apds->multidev, 0);
+}
+
+static void add_pcidevs_done(libxl__egc *egc, libxl__multidev *multidev,
+                             int rc)
+{
+    EGC_GC;
+    add_pcidevs_state *apds = CONTAINER_OF(multidev, *apds, multidev);
+
+    /* Convenience aliases */
+    libxl_domain_config *d_config = apds->d_config;
+    libxl_domid domid = apds->domid;
+    libxl__ao_device *aodev = apds->outer_aodev;
 
     if (d_config->num_pcidevs > 0) {
         rc = libxl__create_pci_backend(gc, domid, d_config->pcidevs,
@@ -1352,24 +1744,64 @@ static int qemu_pci_remove_xenstore(libxl__gc *gc, uint32_t domid,
     return 0;
 }
 
-static int libxl__device_pci_remove_common(libxl__gc *gc, uint32_t domid,
-                                           libxl_device_pci *pcidev, int force);
+typedef struct pci_remove_state {
+    libxl__ao_device *aodev;
+    libxl_domid domid;
+    libxl_device_pci *pcidev;
+    bool force;
+    bool hvm;
+    unsigned int orig_vdev;
+    unsigned int pfunc_mask;
+    int next_func;
+    libxl__ao_device stubdom_aodev;
+    libxl__xswait_state xswait;
+    libxl__ev_qmp qmp;
+    libxl__ev_time timeout;
+    libxl__ev_time retry_timer;
+} pci_remove_state;
 
-static int do_pci_remove(libxl__gc *gc, uint32_t domid,
-                         libxl_device_pci *pcidev, int force)
+static void libxl__device_pci_remove_common(libxl__egc *egc,
+    uint32_t domid, libxl_device_pci *pcidev, bool force,
+    libxl__ao_device *aodev);
+static void device_pci_remove_common_next(libxl__egc *egc,
+    pci_remove_state *prs, int rc);
+
+static void pci_remove_qemu_trad_watch_state_cb(libxl__egc *egc,
+    libxl__xswait_state *xswa, int rc, const char *state);
+static void pci_remove_qmp_device_del(libxl__egc *egc,
+    pci_remove_state *prs);
+static void pci_remove_qmp_device_del_cb(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *response, int rc);
+static void pci_remove_qmp_retry_timer_cb(libxl__egc *egc,
+    libxl__ev_time *ev, const struct timeval *requested_abs, int rc);
+static void pci_remove_qmp_query_cb(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *response, int rc);
+static void pci_remove_detatched(libxl__egc *egc,
+    pci_remove_state *prs, int rc);
+static void pci_remove_stubdom_done(libxl__egc *egc,
+    libxl__ao_device *aodev);
+static void pci_remove_timeout(libxl__egc *egc,
+    libxl__ev_time *ev, const struct timeval *requested_abs, int rc);
+static void pci_remove_done(libxl__egc *egc,
+    pci_remove_state *prs, int rc);
+
+static void do_pci_remove(libxl__egc *egc, uint32_t domid,
+                          libxl_device_pci *pcidev, int force,
+                          pci_remove_state *prs)
 {
+    STATE_AO_GC(prs->aodev->ao);
     libxl_ctx *ctx = libxl__gc_owner(gc);
     libxl_device_pci *assigned;
     libxl_domain_type type = libxl__domain_type(gc, domid);
-    int hvm = 0, rc, num;
-    int stubdomid = 0;
+    int rc, num;
     uint32_t domainid = domid;
-    bool isstubdom = libxl_is_stubdom(ctx, domid, &domainid);
-
 
     assigned = libxl_device_pci_list(ctx, domid, &num);
-    if ( assigned == NULL )
-        return ERROR_FAIL;
+    if (assigned == NULL) {
+        rc = ERROR_FAIL;
+        goto out_fail;
+    }
+    libxl__ptr_add(gc, assigned);
 
     rc = ERROR_INVAL;
     if ( !is_pcidev_in_array(assigned, num, pcidev->domain,
@@ -1380,24 +1812,23 @@ static int do_pci_remove(libxl__gc *gc, uint32_t domid,
 
     rc = ERROR_FAIL;
     if (type == LIBXL_DOMAIN_TYPE_HVM) {
-        hvm = 1;
-        if (libxl__wait_for_device_model_deprecated(gc, domid, "running",
-                                         NULL, NULL, NULL) < 0)
-            goto out_fail;
-
+        prs->hvm = true;
         switch (libxl__device_model_version_running(gc, domid)) {
         case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL:
-            rc = qemu_pci_remove_xenstore(gc, domid, pcidev, force);
-            break;
+            prs->xswait.ao = ao;
+            prs->xswait.what = "Device Model";
+            prs->xswait.path = DEVICE_MODEL_XS_PATH(gc,
+                libxl_get_stubdom_id(CTX, domid), domid, "/state");
+            prs->xswait.timeout_ms = LIBXL_DEVICE_MODEL_START_TIMEOUT * 1000;
+            prs->xswait.callback = pci_remove_qemu_trad_watch_state_cb;
+            rc = libxl__xswait_start(gc, &prs->xswait);
+            if (rc) goto out_fail;
+            return;
         case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
-            rc = libxl__qmp_pci_del(gc, domid, pcidev);
-            break;
+            pci_remove_qmp_device_del(egc, prs); /* must be last */
+            return;
         default:
             rc = ERROR_INVAL;
-            goto out_fail;
-        }
-        if (rc && !force) {
-            rc = ERROR_FAIL;
             goto out_fail;
         }
     } else {
@@ -1444,7 +1875,7 @@ skip1:
         f = fopen(sysfs_path, "r");
         if (f == NULL) {
             LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
-            goto out;
+            goto skip_irq;
         }
         if ((fscanf(f, "%u", &irq) == 1) && irq) {
             rc = xc_physdev_unmap_pirq(ctx->xch, domid, irq);
@@ -1458,52 +1889,304 @@ skip1:
         }
         fclose(f);
     }
+skip_irq:
+    rc = 0;
+out_fail:
+    pci_remove_detatched(egc, prs, rc); /* must be last */
+}
+
+static void pci_remove_qemu_trad_watch_state_cb(libxl__egc *egc,
+                                                libxl__xswait_state *xswa,
+                                                int rc,
+                                                const char *state)
+{
+    pci_remove_state *prs = CONTAINER_OF(xswa, *prs, xswait);
+    STATE_AO_GC(prs->aodev->ao);
+
+    /* Convenience aliases */
+    libxl_domid domid = prs->domid;
+    libxl_device_pci *const pcidev = prs->pcidev;
+
+    rc = check_qemu_running(gc, domid, xswa, rc, state);
+    if (rc == ERROR_NOT_READY)
+        return;
+    if (rc)
+        goto out;
+
+    rc = qemu_pci_remove_xenstore(gc, domid, pcidev, prs->force);
+
 out:
+    pci_remove_detatched(egc, prs, rc);
+}
+
+static void pci_remove_qmp_device_del(libxl__egc *egc,
+                                      pci_remove_state *prs)
+{
+    STATE_AO_GC(prs->aodev->ao);
+    libxl__json_object *args = NULL;
+    int rc;
+
+    /* Convenience aliases */
+    libxl_device_pci *const pcidev = prs->pcidev;
+
+    rc = libxl__ev_time_register_rel(ao, &prs->timeout,
+                                     pci_remove_timeout,
+                                     LIBXL_QMP_CMD_TIMEOUT * 1000);
+    if (rc) goto out;
+
+    QMP_PARAMETERS_SPRINTF(&args, "id", PCI_PT_QDEV_ID,
+                           pcidev->bus, pcidev->dev, pcidev->func);
+    prs->qmp.callback = pci_remove_qmp_device_del_cb;
+    rc = libxl__ev_qmp_send(gc, &prs->qmp, "device_del", args);
+    if (rc) goto out;
+    return;
+
+out:
+    pci_remove_detatched(egc, prs, rc);
+}
+
+static void pci_remove_qmp_device_del_cb(libxl__egc *egc,
+                                         libxl__ev_qmp *qmp,
+                                         const libxl__json_object *response,
+                                         int rc)
+{
+    EGC_GC;
+    pci_remove_state *prs = CONTAINER_OF(qmp, *prs, qmp);
+
+    if (rc) goto out;
+
+    /* Now that the command is sent, we want to wait until QEMU has
+     * confirmed that the device is removed. */
+    /* TODO: Instead of using a poll loop { ev_timer ; query-pci }, it
+     * could be possible to listen to events sent by QEMU via QMP in order
+     * to wait for the passthrough pci-device to be removed from QEMU.  */
+    pci_remove_qmp_retry_timer_cb(egc, &prs->retry_timer, NULL,
+                                  ERROR_TIMEDOUT);
+    return;
+
+out:
+    pci_remove_detatched(egc, prs, rc);
+}
+
+static void pci_remove_qmp_retry_timer_cb(libxl__egc *egc, libxl__ev_time *ev,
+                                          const struct timeval *requested_abs,
+                                          int rc)
+{
+    EGC_GC;
+    pci_remove_state *prs = CONTAINER_OF(ev, *prs, retry_timer);
+
+    prs->qmp.callback = pci_remove_qmp_query_cb;
+    rc = libxl__ev_qmp_send(gc, &prs->qmp, "query-pci", NULL);
+    if (rc) goto out;
+    return;
+
+out:
+    pci_remove_detatched(egc, prs, rc);
+}
+
+static void pci_remove_qmp_query_cb(libxl__egc *egc,
+                                    libxl__ev_qmp *qmp,
+                                    const libxl__json_object *response,
+                                    int rc)
+{
+    EGC_GC;
+    pci_remove_state *prs = CONTAINER_OF(qmp, *prs, qmp);
+    const libxl__json_object *bus = NULL;
+    const char *asked_id;
+    int i, j;
+
+    /* Convenience aliases */
+    libxl__ao *const ao = prs->aodev->ao;
+    libxl_device_pci *const pcidev = prs->pcidev;
+
+    if (rc) goto out;
+
+    asked_id = GCSPRINTF(PCI_PT_QDEV_ID,
+                         pcidev->bus, pcidev->dev, pcidev->func);
+
+    /* query-pci response:
+     * [{ 'devices': [ 'qdev_id': 'str', ...  ], ... }]
+     * */
+
+    for (i = 0; (bus = libxl__json_array_get(response, i)); i++) {
+        const libxl__json_object *devices = NULL;
+        const libxl__json_object *device = NULL;
+        const libxl__json_object *o = NULL;
+        const char *id = NULL;
+
+        devices = libxl__json_map_get("devices", bus, JSON_ARRAY);
+        if (!devices) {
+            rc = ERROR_QEMU_API;
+            goto out;
+        }
+
+        for (j = 0; (device = libxl__json_array_get(devices, j)); j++) {
+             o = libxl__json_map_get("qdev_id", device, JSON_STRING);
+             if (!o) {
+                 rc = ERROR_QEMU_API;
+                 goto out;
+             }
+             id = libxl__json_object_get_string(o);
+
+             if (id && !strcmp(asked_id, id)) {
+                 /* Device still in QEMU, need to wait longuer. */
+                 rc = libxl__ev_time_register_rel(ao, &prs->retry_timer,
+                     pci_remove_qmp_retry_timer_cb, 1000);
+                 if (rc) goto out;
+                 return;
+             }
+        }
+    }
+
+out:
+    pci_remove_detatched(egc, prs, rc); /* must be last */
+}
+
+static void pci_remove_detatched(libxl__egc *egc,
+                                 pci_remove_state *prs,
+                                 int rc)
+{
+    STATE_AO_GC(prs->aodev->ao);
+    int stubdomid = 0;
+    uint32_t domainid = prs->domid;
+    bool isstubdom;
+
+    /* Convenience aliases */
+    libxl_device_pci *const pcidev = prs->pcidev;
+    libxl_domid domid = prs->domid;
+
+    if (rc && !prs->force)
+        goto out;
+
+    isstubdom = libxl_is_stubdom(CTX, domid, &domainid);
+
     /* don't do multiple resets while some functions are still passed through */
     if ( (pcidev->vdevfn & 0x7) == 0 ) {
         libxl__device_pci_reset(gc, pcidev->domain, pcidev->bus, pcidev->dev, pcidev->func);
     }
 
     if (!isstubdom) {
-        rc = xc_deassign_device(ctx->xch, domid, pcidev_encode_bdf(pcidev));
-        if (rc < 0 && (hvm || errno != ENOSYS))
+        rc = xc_deassign_device(CTX->xch, domid, pcidev_encode_bdf(pcidev));
+        if (rc < 0 && (prs->hvm || errno != ENOSYS))
             LOGED(ERROR, domainid, "xc_deassign_device failed");
     }
 
-    stubdomid = libxl_get_stubdom_id(ctx, domid);
+    stubdomid = libxl_get_stubdom_id(CTX, domid);
     if (stubdomid != 0) {
-        libxl_device_pci pcidev_s = *pcidev;
-        libxl__device_pci_remove_common(gc, stubdomid, &pcidev_s, force);
+        libxl_device_pci *pcidev_s;
+        libxl__ao_device *const stubdom_aodev = &prs->stubdom_aodev;
+
+        GCNEW(pcidev_s);
+        libxl_device_pci_init(pcidev_s);
+        libxl_device_pci_copy(CTX, pcidev_s, pcidev);
+
+        libxl__prepare_ao_device(ao, stubdom_aodev);
+        stubdom_aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
+        stubdom_aodev->callback = pci_remove_stubdom_done;
+        stubdom_aodev->update_json = prs->aodev->update_json;
+        libxl__device_pci_remove_common(egc, stubdomid, pcidev_s,
+                                        prs->force, stubdom_aodev);
+        return;
     }
 
-    libxl__device_pci_remove_xenstore(gc, domid, pcidev);
-
     rc = 0;
-out_fail:
-    free(assigned);
-    return rc;
-
+out:
+    pci_remove_done(egc, prs, rc);
 }
 
-static int libxl__device_pci_remove_common(libxl__gc *gc, uint32_t domid,
-                                           libxl_device_pci *pcidev, int force)
+static void pci_remove_stubdom_done(libxl__egc *egc,
+                                    libxl__ao_device *aodev)
 {
-    unsigned int orig_vdev, pfunc_mask;
-    int i, rc;
+    pci_remove_state *prs = CONTAINER_OF(aodev, *prs, stubdom_aodev);
 
-    orig_vdev = pcidev->vdevfn & ~7U;
+    pci_remove_done(egc, prs, 0);
+}
+
+static void pci_remove_timeout(libxl__egc *egc, libxl__ev_time *ev,
+                               const struct timeval *requested_abs,
+                               int rc)
+{
+    pci_remove_state *prs = CONTAINER_OF(ev, *prs, timeout);
+
+    pci_remove_done(egc, prs, rc);
+}
+
+static void pci_remove_done(libxl__egc *egc,
+                            pci_remove_state *prs,
+                            int rc)
+{
+    EGC_GC;
+
+    if (rc) goto out;
+
+    libxl__ev_qmp_dispose(gc, &prs->qmp);
+    libxl__ev_time_deregister(gc, &prs->timeout);
+    libxl__ev_time_deregister(gc, &prs->retry_timer);
+
+    libxl__device_pci_remove_xenstore(gc, prs->domid, prs->pcidev);
+out:
+    device_pci_remove_common_next(egc, prs, rc);
+}
+
+static void libxl__device_pci_remove_common(libxl__egc *egc,
+                                            uint32_t domid,
+                                            libxl_device_pci *pcidev,
+                                            bool force,
+                                            libxl__ao_device *aodev)
+{
+    STATE_AO_GC(aodev->ao);
+    int rc;
+    pci_remove_state *prs;
+
+    GCNEW(prs);
+    prs->aodev = aodev;
+    prs->domid = domid;
+    prs->pcidev = pcidev;
+    prs->force = force;
+    libxl__xswait_init(&prs->xswait);
+    libxl__ev_qmp_init(&prs->qmp);
+    prs->qmp.ao = prs->aodev->ao;
+    prs->qmp.domid = prs->domid;
+    prs->qmp.payload_fd = -1;
+    libxl__ev_time_init(&prs->timeout);
+    libxl__ev_time_init(&prs->retry_timer);
+
+    prs->orig_vdev = pcidev->vdevfn & ~7U;
 
     if ( pcidev->vfunc_mask == LIBXL_PCI_FUNC_ALL ) {
-        if ( pci_multifunction_check(gc, pcidev, &pfunc_mask) ) {
+        if ( pci_multifunction_check(gc, pcidev, &prs->pfunc_mask) ) {
             rc = ERROR_FAIL;
             goto out;
         }
-        pcidev->vfunc_mask &= pfunc_mask;
+        pcidev->vfunc_mask &= prs->pfunc_mask;
     }else{
-        pfunc_mask = (1 << pcidev->func);
+        prs->pfunc_mask = (1 << pcidev->func);
     }
 
-    for(rc = 0, i = 7; i >= 0; --i) {
+    rc = 0;
+    prs->next_func = 7;
+out:
+    device_pci_remove_common_next(egc, prs, rc);
+}
+
+static void device_pci_remove_common_next(libxl__egc *egc,
+                                          pci_remove_state *prs,
+                                          int rc)
+{
+    EGC_GC;
+
+    /* Convenience aliases */
+    libxl_domid domid = prs->domid;
+    libxl_device_pci *const pcidev = prs->pcidev;
+    libxl__ao_device *const aodev = prs->aodev;
+    const unsigned int pfunc_mask = prs->pfunc_mask;
+    const unsigned int orig_vdev = prs->orig_vdev;
+
+    if (rc) goto out;
+
+    while (prs->next_func >= 0) {
+        const int i = prs->next_func;
+        prs->next_func--;
         if ( (1 << i) & pfunc_mask ) {
             if ( pcidev->vfunc_mask == pfunc_mask ) {
                 pcidev->func = i;
@@ -1511,13 +2194,19 @@ static int libxl__device_pci_remove_common(libxl__gc *gc, uint32_t domid,
             }else{
                 pcidev->vdevfn = orig_vdev;
             }
-            if ( do_pci_remove(gc, domid, pcidev, force) )
-                rc = ERROR_FAIL;
+            do_pci_remove(egc, domid, pcidev, prs->force, prs);
+            return;
         }
     }
 
+    rc = 0;
 out:
-    return rc;
+    libxl__ev_qmp_dispose(gc, &prs->qmp);
+    libxl__xswait_stop(gc, &prs->xswait);
+    libxl__ev_time_deregister(gc, &prs->timeout);
+    libxl__ev_time_deregister(gc, &prs->retry_timer);
+    aodev->rc = rc;
+    aodev->callback(egc, aodev);
 }
 
 int libxl_device_pci_remove(libxl_ctx *ctx, uint32_t domid,
@@ -1526,11 +2215,14 @@ int libxl_device_pci_remove(libxl_ctx *ctx, uint32_t domid,
 
 {
     AO_CREATE(ctx, domid, ao_how);
-    int rc;
+    libxl__ao_device *aodev;
 
-    rc = libxl__device_pci_remove_common(gc, domid, pcidev, 0);
-
-    libxl__ao_complete(egc, ao, rc);
+    GCNEW(aodev);
+    libxl__prepare_ao_device(ao, aodev);
+    aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
+    aodev->callback = device_addrm_aocomplete;
+    aodev->update_json = true;
+    libxl__device_pci_remove_common(egc, domid, pcidev, false, aodev);
     return AO_INPROGRESS;
 }
 
@@ -1539,20 +2231,24 @@ int libxl_device_pci_destroy(libxl_ctx *ctx, uint32_t domid,
                              const libxl_asyncop_how *ao_how)
 {
     AO_CREATE(ctx, domid, ao_how);
-    int rc;
+    libxl__ao_device *aodev;
 
-    rc = libxl__device_pci_remove_common(gc, domid, pcidev, 1);
-
-    libxl__ao_complete(egc, ao, rc);
+    GCNEW(aodev);
+    libxl__prepare_ao_device(ao, aodev);
+    aodev->action = LIBXL__DEVICE_ACTION_REMOVE;
+    aodev->callback = device_addrm_aocomplete;
+    aodev->update_json = true;
+    libxl__device_pci_remove_common(egc, domid, pcidev, true, aodev);
     return AO_INPROGRESS;
 }
 
-static void libxl__device_pci_from_xs_be(libxl__gc *gc,
-                                         const char *be_path,
-                                         int nr, libxl_device_pci *pci)
+static int libxl__device_pci_from_xs_be(libxl__gc *gc,
+                                        const char *be_path,
+                                        libxl_devid nr, void *data)
 {
     char *s;
     unsigned int domain = 0, bus = 0, dev = 0, func = 0, vdevfn = 0;
+    libxl_device_pci *pci = data;
 
     s = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/dev-%d", be_path, nr));
     sscanf(s, PCI_BDF, &domain, &bus, &dev, &func);
@@ -1582,24 +2278,39 @@ static void libxl__device_pci_from_xs_be(libxl__gc *gc,
             }
         } while ((p = strtok_r(NULL, ",=", &saveptr)) != NULL);
     }
+
+    return 0;
+}
+
+static int libxl__device_pci_get_num(libxl__gc *gc, const char *be_path,
+                                     unsigned int *num)
+{
+    char *num_devs;
+    int rc = 0;
+
+    num_devs = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/num_devs", be_path));
+    if (!num_devs)
+        rc = ERROR_FAIL;
+    else
+        *num = atoi(num_devs);
+
+    return rc;
 }
 
 libxl_device_pci *libxl_device_pci_list(libxl_ctx *ctx, uint32_t domid, int *num)
 {
     GC_INIT(ctx);
-    char *be_path, *num_devs;
-    int n, i;
+    char *be_path;
+    unsigned int n, i;
     libxl_device_pci *pcidevs = NULL;
 
     *num = 0;
 
     be_path = libxl__domain_device_backend_path(gc, 0, domid, 0,
                                                 LIBXL__DEVICE_KIND_PCI);
-    num_devs = libxl__xs_read(gc, XBT_NULL, GCSPRINTF("%s/num_devs", be_path));
-    if (!num_devs)
+    if (libxl__device_pci_get_num(gc, be_path, &n))
         goto out;
 
-    n = atoi(num_devs);
     pcidevs = calloc(n, sizeof(libxl_device_pci));
 
     for (i = 0; i < n; i++)
@@ -1611,27 +2322,27 @@ out:
     return pcidevs;
 }
 
-int libxl__device_pci_destroy_all(libxl__gc *gc, uint32_t domid)
+void libxl__device_pci_destroy_all(libxl__egc *egc, uint32_t domid,
+                                   libxl__multidev *multidev)
 {
-    libxl_ctx *ctx = libxl__gc_owner(gc);
+    STATE_AO_GC(multidev->ao);
     libxl_device_pci *pcidevs;
-    int num, i, rc = 0;
+    int num, i;
 
-    pcidevs = libxl_device_pci_list(ctx, domid, &num);
+    pcidevs = libxl_device_pci_list(CTX, domid, &num);
     if ( pcidevs == NULL )
-        return 0;
+        return;
+    libxl__ptr_add(gc, pcidevs);
 
     for (i = 0; i < num; i++) {
         /* Force remove on shutdown since, on HVM, qemu will not always
          * respond to SCI interrupt because the guest kernel has shut down the
          * devices by the time we even get here!
          */
-        if (libxl__device_pci_remove_common(gc, domid, pcidevs + i, 1) < 0)
-            rc = ERROR_FAIL;
+        libxl__ao_device *aodev = libxl__multidev_prepare(multidev);
+        libxl__device_pci_remove_common(egc, domid, pcidevs + i, true,
+                                        aodev);
     }
-
-    free(pcidevs);
-    return rc;
 }
 
 int libxl__grant_vga_iomem_permission(libxl__gc *gc, const uint32_t domid,
@@ -1679,8 +2390,8 @@ int libxl__grant_vga_iomem_permission(libxl__gc *gc, const uint32_t domid,
     return 0;
 }
 
-static int libxl_device_pci_compare(libxl_device_pci *d1,
-                                    libxl_device_pci *d2)
+static int libxl_device_pci_compare(const libxl_device_pci *d1,
+                                    const libxl_device_pci *d2)
 {
     return COMPARE_PCI(d1, d2);
 }
@@ -1688,7 +2399,8 @@ static int libxl_device_pci_compare(libxl_device_pci *d1,
 #define libxl__device_pci_update_devid NULL
 
 DEFINE_DEVICE_TYPE_STRUCT_X(pcidev, pci, PCI,
-    .from_xenstore = (device_from_xenstore_fn_t)libxl__device_pci_from_xs_be,
+    .get_num = libxl__device_pci_get_num,
+    .from_xenstore = libxl__device_pci_from_xs_be,
 );
 
 /*

@@ -574,8 +574,9 @@ void __init paging_init(void)
                     page_to_mfn(l1_pg),
                     1UL << (2 * PAGETABLE_ORDER),
                     PAGE_HYPERVISOR);
+                /* Fill with INVALID_M2P_ENTRY. */
                 memset((void *)(RDWR_MPT_VIRT_START + (i << L2_PAGETABLE_SHIFT)),
-                       0x77, 1UL << L3_PAGETABLE_SHIFT);
+                       0xFF, 1UL << L3_PAGETABLE_SHIFT);
 
                 ASSERT(!l2_table_offset(va));
                 /* NB. Cannot be GLOBAL: guest user mode should not see it. */
@@ -666,10 +667,10 @@ void __init paging_init(void)
             page_to_mfn(l1_pg),
             1UL << PAGETABLE_ORDER,
             PAGE_HYPERVISOR);
+        /* Fill with INVALID_M2P_ENTRY. */
         memset((void *)(RDWR_COMPAT_MPT_VIRT_START +
                         (i << L2_PAGETABLE_SHIFT)),
-               0x55,
-               1UL << L2_PAGETABLE_SHIFT);
+               0xFF, 1UL << L2_PAGETABLE_SHIFT);
         /* NB. Cannot be GLOBAL as the ptes get copied into per-VM space. */
         l2e_write(l2_ro_mpt, l2e_from_page(l1_pg, _PAGE_PSE|_PAGE_PRESENT));
     }
@@ -993,8 +994,10 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_paging_op:
         return mem_paging_memop(guest_handle_cast(arg, xen_mem_paging_op_t));
 
+#ifdef CONFIG_MEM_SHARING
     case XENMEM_sharing_op:
         return mem_sharing_memop(guest_handle_cast(arg, xen_mem_sharing_op_t));
+#endif
 
     default:
         rc = -ENOSYS;
@@ -1105,7 +1108,7 @@ int check_descriptor(const struct domain *dom, seg_desc_t *d)
              * 0xf6800000. Extend these to allow access to the larger read-only
              * M2P table available in 32on64 mode.
              */
-            base = (b & (0xff << 24)) | ((b & 0xff) << 16) | (a >> 16);
+            base = (b & 0xff000000) | ((b & 0xff) << 16) | (a >> 16);
 
             limit = (b & 0xf0000) | (a & 0xffff);
             limit++; /* We add one because limit is inclusive. */

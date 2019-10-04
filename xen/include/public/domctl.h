@@ -50,8 +50,8 @@ struct xen_domctl_createdomain {
     uint32_t ssidref;
     xen_domain_handle_t handle;
  /* Is this an HVM guest (as opposed to a PV guest)? */
-#define _XEN_DOMCTL_CDF_hvm_guest     0
-#define XEN_DOMCTL_CDF_hvm_guest      (1U<<_XEN_DOMCTL_CDF_hvm_guest)
+#define _XEN_DOMCTL_CDF_hvm           0
+#define XEN_DOMCTL_CDF_hvm            (1U<<_XEN_DOMCTL_CDF_hvm)
  /* Use hardware-assisted paging if available? */
 #define _XEN_DOMCTL_CDF_hap           1
 #define XEN_DOMCTL_CDF_hap            (1U<<_XEN_DOMCTL_CDF_hap)
@@ -64,6 +64,13 @@ struct xen_domctl_createdomain {
  /* Is this a xenstore domain? */
 #define _XEN_DOMCTL_CDF_xs_domain     4
 #define XEN_DOMCTL_CDF_xs_domain      (1U<<_XEN_DOMCTL_CDF_xs_domain)
+ /* Should this domain be permitted to use the IOMMU? */
+#define _XEN_DOMCTL_CDF_iommu         5
+#define XEN_DOMCTL_CDF_iommu          (1U<<_XEN_DOMCTL_CDF_iommu)
+
+/* Max XEN_DOMCTL_CDF_* constant.  Used for ABI checking. */
+#define XEN_DOMCTL_CDF_MAX XEN_DOMCTL_CDF_iommu
+
     uint32_t flags;
 
     /*
@@ -691,18 +698,6 @@ struct xen_domctl_subscribe {
     uint32_t port; /* IN */
 };
 
-/*
- * Define the maximum machine address size which should be allocated
- * to a guest.
- */
-/* XEN_DOMCTL_set_machine_address_size */
-/* XEN_DOMCTL_get_machine_address_size */
-
-/*
- * Do not inject spurious page faults into this domain.
- */
-/* XEN_DOMCTL_suppress_spurious_page_faults */
-
 /* XEN_DOMCTL_debug_op */
 #define XEN_DOMCTL_DEBUG_OP_SINGLE_STEP_OFF         0
 #define XEN_DOMCTL_DEBUG_OP_SINGLE_STEP_ON          1
@@ -1170,9 +1165,9 @@ struct xen_domctl {
 #define XEN_DOMCTL_unbind_pt_irq                 48
 #define XEN_DOMCTL_set_cpuid                     49
 #define XEN_DOMCTL_get_device_group              50
-#define XEN_DOMCTL_set_machine_address_size      51
-#define XEN_DOMCTL_get_machine_address_size      52
-#define XEN_DOMCTL_suppress_spurious_page_faults 53
+/* #define XEN_DOMCTL_set_machine_address_size   51 - Obsolete */
+/* #define XEN_DOMCTL_get_machine_address_size   52 - Obsolete */
+/* #define XEN_DOMCTL_suppress_spurious_page_faults 53 - Obsolete */
 #define XEN_DOMCTL_debug_op                      54
 #define XEN_DOMCTL_gethvmcontext_partial         55
 #define XEN_DOMCTL_vm_event_op                   56

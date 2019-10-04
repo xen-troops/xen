@@ -779,12 +779,18 @@ static void vmx_load_cpu_state(struct vcpu *v, struct hvm_hw_cpu *data)
 
 static void vmx_save_vmcs_ctxt(struct vcpu *v, struct hvm_hw_cpu *ctxt)
 {
+    if ( v == current )
+        vmx_save_guest_msrs(v);
+
     vmx_save_cpu_state(v, ctxt);
     vmx_vmcs_save(v, ctxt);
 }
 
 static int vmx_load_vmcs_ctxt(struct vcpu *v, struct hvm_hw_cpu *ctxt)
 {
+    /* Not currently safe to use in current context. */
+    ASSERT(v != current);
+
     vmx_load_cpu_state(v, ctxt);
 
     if ( vmx_vmcs_restore(v, ctxt) )
@@ -795,71 +801,6 @@ static int vmx_load_vmcs_ctxt(struct vcpu *v, struct hvm_hw_cpu *ctxt)
     }
 
     return 0;
-}
-
-static unsigned int __init vmx_init_msr(void)
-{
-    return (cpu_has_mpx && cpu_has_vmx_mpx) +
-           (cpu_has_xsaves && cpu_has_vmx_xsaves);
-}
-
-static void vmx_save_msr(struct vcpu *v, struct hvm_msr *ctxt)
-{
-    vmx_vmcs_enter(v);
-
-    if ( cpu_has_mpx && cpu_has_vmx_mpx )
-    {
-        __vmread(GUEST_BNDCFGS, &ctxt->msr[ctxt->count].val);
-        if ( ctxt->msr[ctxt->count].val )
-            ctxt->msr[ctxt->count++].index = MSR_IA32_BNDCFGS;
-    }
-
-    vmx_vmcs_exit(v);
-
-    if ( cpu_has_xsaves && cpu_has_vmx_xsaves )
-    {
-        ctxt->msr[ctxt->count].val = v->arch.hvm.msr_xss;
-        if ( ctxt->msr[ctxt->count].val )
-            ctxt->msr[ctxt->count++].index = MSR_IA32_XSS;
-    }
-}
-
-static int vmx_load_msr(struct vcpu *v, struct hvm_msr *ctxt)
-{
-    unsigned int i;
-    int err = 0;
-
-    vmx_vmcs_enter(v);
-
-    for ( i = 0; i < ctxt->count; ++i )
-    {
-        switch ( ctxt->msr[i].index )
-        {
-        case MSR_IA32_BNDCFGS:
-            if ( cpu_has_mpx && cpu_has_vmx_mpx &&
-                 is_canonical_address(ctxt->msr[i].val) &&
-                 !(ctxt->msr[i].val & IA32_BNDCFGS_RESERVED) )
-                __vmwrite(GUEST_BNDCFGS, ctxt->msr[i].val);
-            else if ( ctxt->msr[i].val )
-                err = -ENXIO;
-            break;
-        case MSR_IA32_XSS:
-            if ( cpu_has_xsaves && cpu_has_vmx_xsaves )
-                v->arch.hvm.msr_xss = ctxt->msr[i].val;
-            else
-                err = -ENXIO;
-            break;
-        default:
-            continue;
-        }
-        if ( err )
-            break;
-        ctxt->msr[i]._rsvd = 1;
-    }
-
-    vmx_vmcs_exit(v);
-
-    return err;
 }
 
 static void vmx_fpu_enter(struct vcpu *v)
@@ -1269,7 +1210,7 @@ static void vmx_handle_cd(struct vcpu *v, unsigned long value)
         {
             v->arch.hvm.cache_mode = NORMAL_CACHE_MODE;
             vmx_set_guest_pat(v, *pat);
-            if ( !iommu_enabled || iommu_snoop )
+            if ( !is_iommu_enabled(v->domain) || iommu_snoop )
                 vmx_clear_msr_intercept(v, MSR_IA32_CR_PAT, VMX_MSR_RW);
             hvm_asid_flush_vcpu(v); /* no need to flush cache */
         }
@@ -1321,17 +1262,20 @@ static void vmx_set_descriptor_access_exiting(struct vcpu *v, bool enable)
     vmx_vmcs_exit(v);
 }
 
-static void vmx_init_hypercall_page(struct domain *d, void *hypercall_page)
+static void vmx_init_hypercall_page(void *p)
 {
-    char *p;
-    int i;
+    unsigned int i;
 
-    for ( i = 0; i < (PAGE_SIZE / 32); i++ )
+    for ( i = 0; i < (PAGE_SIZE / 32); i++, p += 32 )
     {
-        if ( i == __HYPERVISOR_iret )
-            continue;
+        if ( unlikely(i == __HYPERVISOR_iret) )
+        {
+            /* HYPERVISOR_iret isn't supported */
+            *(u16 *)p = 0x0b0f; /* ud2 */
 
-        p = (char *)(hypercall_page + (i * 32));
+            continue;
+        }
+
         *(u8  *)(p + 0) = 0xb8; /* mov imm32, %eax */
         *(u32 *)(p + 1) = i;
         *(u8  *)(p + 5) = 0x0f; /* vmcall */
@@ -1339,9 +1283,6 @@ static void vmx_init_hypercall_page(struct domain *d, void *hypercall_page)
         *(u8  *)(p + 7) = 0xc1;
         *(u8  *)(p + 8) = 0xc3; /* ret */
     }
-
-    /* Don't support HYPERVISOR_iret at the moment */
-    *(u16 *)(hypercall_page + (__HYPERVISOR_iret * 32)) = 0x0b0f; /* ud2 */
 }
 
 static unsigned int vmx_get_interrupt_shadow(struct vcpu *v)
@@ -2298,9 +2239,6 @@ static struct hvm_function_table __initdata vmx_function_table = {
     .vcpu_destroy         = vmx_vcpu_destroy,
     .save_cpu_ctxt        = vmx_save_vmcs_ctxt,
     .load_cpu_ctxt        = vmx_load_vmcs_ctxt,
-    .init_msr             = vmx_init_msr,
-    .save_msr             = vmx_save_msr,
-    .load_msr             = vmx_load_msr,
     .get_interrupt_shadow = vmx_get_interrupt_shadow,
     .set_interrupt_shadow = vmx_set_interrupt_shadow,
     .guest_x86_mode       = vmx_guest_x86_mode,
@@ -2339,12 +2277,6 @@ static struct hvm_function_table __initdata vmx_function_table = {
     .nhvm_vcpu_vmexit_event = nvmx_vmexit_event,
     .nhvm_intr_blocked    = nvmx_intr_blocked,
     .nhvm_domain_relinquish_resources = nvmx_domain_relinquish_resources,
-    .update_eoi_exit_bitmap = vmx_update_eoi_exit_bitmap,
-    .process_isr          = vmx_process_isr,
-    .deliver_posted_intr  = vmx_deliver_posted_intr,
-    .sync_pir_to_irr      = vmx_sync_pir_to_irr,
-    .test_pir             = vmx_test_pir,
-    .handle_eoi           = vmx_handle_eoi,
     .nhvm_hap_walk_L1_p2m = nvmx_hap_walk_L1_p2m,
     .enable_msr_interception = vmx_enable_msr_interception,
     .is_singlestep_supported = vmx_is_singlestep_supported,
@@ -2472,26 +2404,23 @@ const struct hvm_function_table * __init start_vmx(void)
         setup_ept_dump();
     }
 
-    if ( !cpu_has_vmx_virtual_intr_delivery )
+    if ( cpu_has_vmx_virtual_intr_delivery )
     {
-        vmx_function_table.update_eoi_exit_bitmap = NULL;
-        vmx_function_table.process_isr = NULL;
-        vmx_function_table.handle_eoi = NULL;
-    }
-    else
+        vmx_function_table.update_eoi_exit_bitmap = vmx_update_eoi_exit_bitmap;
+        vmx_function_table.process_isr = vmx_process_isr;
+        vmx_function_table.handle_eoi = vmx_handle_eoi;
         vmx_function_table.virtual_intr_delivery_enabled = true;
+    }
 
     if ( cpu_has_vmx_posted_intr_processing )
     {
         alloc_direct_apic_vector(&posted_intr_vector, pi_notification_interrupt);
         if ( iommu_intpost )
             alloc_direct_apic_vector(&pi_wakeup_vector, pi_wakeup_interrupt);
-    }
-    else
-    {
-        vmx_function_table.deliver_posted_intr = NULL;
-        vmx_function_table.sync_pir_to_irr = NULL;
-        vmx_function_table.test_pir = NULL;
+
+        vmx_function_table.deliver_posted_intr = vmx_deliver_posted_intr;
+        vmx_function_table.sync_pir_to_irr     = vmx_sync_pir_to_irr;
+        vmx_function_table.test_pir            = vmx_test_pir;
     }
 
     if ( cpu_has_vmx_tsc_scaling )

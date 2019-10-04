@@ -13,7 +13,6 @@
 #include <asm/types.h>
 #include <asm/cpufeature.h>
 #include <asm/desc.h>
-#include <asm/x86_emulate.h>
 #endif
 
 #include <asm/x86-defns.h>
@@ -170,10 +169,6 @@ extern void setup_force_cpu_cap(unsigned int);
 extern void print_cpu_info(unsigned int cpu);
 extern unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c);
 
-extern void detect_extended_topology(struct cpuinfo_x86 *c);
-
-extern void detect_ht(struct cpuinfo_x86 *c);
-
 #define cpu_to_core(_cpu)   (cpu_data[_cpu].cpu_core_id)
 #define cpu_to_socket(_cpu) (cpu_data[_cpu].phys_proc_id)
 
@@ -292,9 +287,9 @@ static inline unsigned long cr3_pa(unsigned long cr3)
     return cr3 & X86_CR3_ADDR_MASK;
 }
 
-static inline unsigned long cr3_pcid(unsigned long cr3)
+static inline unsigned int cr3_pcid(unsigned long cr3)
 {
-    return cr3 & X86_CR3_PCID_MASK;
+    return IS_ENABLED(CONFIG_PV) ? cr3 & X86_CR3_PCID_MASK : 0;
 }
 
 static inline unsigned long read_cr4(void)
@@ -306,8 +301,12 @@ static inline void write_cr4(unsigned long val)
 {
     struct cpu_info *info = get_cpu_info();
 
+#ifdef CONFIG_PV
     /* No global pages in case of PCIDs enabled! */
     ASSERT(!(val & X86_CR4_PGE) || !(val & X86_CR4_PCIDE));
+#else
+    ASSERT(!(val & X86_CR4_PCIDE));
+#endif
 
     /*
      * On hardware supporting FSGSBASE, the value in %cr4 is the kernel's
@@ -416,7 +415,7 @@ static always_inline void __mwait(unsigned long eax, unsigned long ecx)
 #define IOBMP_BYTES             8192
 #define IOBMP_INVALID_OFFSET    0x8000
 
-struct __packed __cacheline_aligned tss_struct {
+struct __packed tss64 {
     uint32_t :32;
     uint64_t rsp0, rsp1, rsp2;
     uint64_t :64;
@@ -427,9 +426,11 @@ struct __packed __cacheline_aligned tss_struct {
     uint64_t ist[7];
     uint64_t :64;
     uint16_t :16, bitmap;
-    /* Pads the TSS to be cacheline-aligned (total size is 0x80). */
-    uint8_t __cacheline_filler[24];
 };
+struct tss_page {
+    struct tss64 __aligned(PAGE_SIZE) tss;
+};
+DECLARE_PER_CPU(struct tss_page, tss_page);
 
 #define IST_NONE 0UL
 #define IST_DF   1UL
@@ -468,7 +469,6 @@ static inline void disable_each_ist(idt_entry_t *idt)
 extern idt_entry_t idt_table[];
 extern idt_entry_t *idt_tables[];
 
-DECLARE_PER_CPU(struct tss_struct, init_tss);
 DECLARE_PER_CPU(root_pgentry_t *, root_pgt);
 
 extern void write_ptbase(struct vcpu *v);
@@ -573,18 +573,11 @@ int guest_wrmsr_xen(struct vcpu *v, uint32_t idx, uint64_t val);
 
 void microcode_set_module(unsigned int);
 int microcode_update(XEN_GUEST_HANDLE_PARAM(const_void), unsigned long len);
-int microcode_resume_cpu(unsigned int cpu);
+int microcode_resume_cpu(void);
 int early_microcode_update_cpu(bool start_update);
 int early_microcode_init(void);
 int microcode_init_intel(void);
 int microcode_init_amd(void);
-
-enum get_cpu_vendor {
-    gcv_host,
-    gcv_guest,
-};
-
-int get_cpu_vendor(uint32_t b, uint32_t c, uint32_t d, enum get_cpu_vendor mode);
 
 static inline uint8_t get_cpu_family(uint32_t raw, uint8_t *model,
                                      uint8_t *stepping)

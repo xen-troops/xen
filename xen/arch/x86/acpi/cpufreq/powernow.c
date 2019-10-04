@@ -32,7 +32,6 @@
 #include <asm/msr.h>
 #include <asm/io.h>
 #include <asm/processor.h>
-#include <asm/percpu.h>
 #include <asm/cpufeature.h>
 #include <acpi/acpi.h>
 #include <acpi/cpufreq/cpufreq.h>
@@ -360,7 +359,7 @@ unsigned int __init powernow_register_driver()
 
     for_each_online_cpu(i) {
         struct cpuinfo_x86 *c = &cpu_data[i];
-        if (c->x86_vendor != X86_VENDOR_AMD)
+        if (!(c->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)))
             ret = -ENODEV;
         else
         {

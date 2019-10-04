@@ -621,17 +621,20 @@ static void __init set_interrupt(gic_interrupt_t interrupt,
  *  "interrupts": contains the list of interrupts
  *  "interrupt-parent": link to the GIC
  */
-static int __init fdt_property_interrupts(void *fdt, gic_interrupt_t *intr,
+static int __init fdt_property_interrupts(const struct kernel_info *kinfo,
+                                          gic_interrupt_t *intr,
                                           unsigned num_irq)
 {
     int res;
+    uint32_t phandle = is_hardware_domain(kinfo->d) ?
+                       dt_interrupt_controller->phandle : GUEST_PHANDLE_GIC;
 
-    res = fdt_property(fdt, "interrupts", intr, sizeof (intr[0]) * num_irq);
+    res = fdt_property(kinfo->fdt, "interrupts",
+                       intr, sizeof(intr[0]) * num_irq);
     if ( res )
         return res;
 
-    res = fdt_property_cell(fdt, "interrupt-parent",
-                            dt_interrupt_controller->phandle);
+    res = fdt_property_cell(kinfo->fdt, "interrupt-parent", phandle);
 
     return res;
 }
@@ -639,11 +642,11 @@ static int __init fdt_property_interrupts(void *fdt, gic_interrupt_t *intr,
 static int __init make_memory_node(const struct domain *d,
                                    void *fdt,
                                    int addrcells, int sizecells,
-                                   const struct kernel_info *kinfo)
+                                   struct meminfo *mem)
 {
     int res, i;
     int reg_size = addrcells + sizecells;
-    int nr_cells = reg_size*kinfo->mem.nr_banks;
+    int nr_cells = reg_size * mem->nr_banks;
     __be32 reg[NR_MEM_BANKS * 4 /* Worst case addrcells + sizecells */];
     __be32 *cells;
 
@@ -662,10 +665,10 @@ static int __init make_memory_node(const struct domain *d,
         return res;
 
     cells = &reg[0];
-    for ( i = 0 ; i < kinfo->mem.nr_banks; i++ )
+    for ( i = 0 ; i < mem->nr_banks; i++ )
     {
-        u64 start = kinfo->mem.bank[i].start;
-        u64 size = kinfo->mem.bank[i].size;
+        u64 start = mem->bank[i].start;
+        u64 size = mem->bank[i].size;
 
         dt_dprintk("  Bank %d: %#"PRIx64"->%#"PRIx64"\n",
                    i, start, start + size);
@@ -733,7 +736,7 @@ static int __init make_hypervisor_node(struct domain *d,
      *  TODO: Handle properly the cpumask;
      */
     set_interrupt(intr, d->arch.evtchn_irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-    res = fdt_property_interrupts(fdt, &intr, 1);
+    res = fdt_property_interrupts(kinfo, &intr, 1);
     if ( res )
         return res;
 
@@ -742,8 +745,7 @@ static int __init make_hypervisor_node(struct domain *d,
     return res;
 }
 
-static int __init make_psci_node(void *fdt,
-                                 const struct dt_device_node *parent)
+static int __init make_psci_node(void *fdt)
 {
     int res;
     const char compat[] =
@@ -779,8 +781,7 @@ static int __init make_psci_node(void *fdt,
     return res;
 }
 
-static int __init make_cpus_node(const struct domain *d, void *fdt,
-                                 const struct dt_device_node *parent)
+static int __init make_cpus_node(const struct domain *d, void *fdt)
 {
     int res;
     const struct dt_device_node *cpus = dt_find_node_by_path("/cpus");
@@ -962,9 +963,9 @@ static int __init make_gic_node(const struct domain *d, void *fdt,
     return res;
 }
 
-static int __init make_timer_node(const struct domain *d, void *fdt,
-                                  const struct dt_device_node *node)
+static int __init make_timer_node(const struct kernel_info *kinfo)
 {
+    void *fdt = kinfo->fdt;
     static const struct dt_device_match timer_ids[] __initconst =
     {
         DT_MATCH_COMPATIBLE("arm,armv7-timer"),
@@ -972,10 +973,8 @@ static int __init make_timer_node(const struct domain *d, void *fdt,
         { /* sentinel */ },
     };
     struct dt_device_node *dev;
-    u32 len;
-    const void *compatible;
     int res;
-    unsigned int irq;
+    unsigned int irq[MAX_TIMER_PPI];
     gic_interrupt_t intrs[3];
     u32 clock_frequency;
     bool clock_valid;
@@ -989,37 +988,45 @@ static int __init make_timer_node(const struct domain *d, void *fdt,
         return -FDT_ERR_XEN(ENOENT);
     }
 
-    compatible = dt_get_property(dev, "compatible", &len);
-    if ( !compatible )
-    {
-        dprintk(XENLOG_ERR, "Can't find compatible property for timer node\n");
-        return -FDT_ERR_XEN(ENOENT);
-    }
-
     res = fdt_begin_node(fdt, "timer");
     if ( res )
         return res;
 
-    res = fdt_property(fdt, "compatible", compatible, len);
+    if ( !is_64bit_domain(kinfo->d) )
+        res = fdt_property_string(fdt, "compatible", "arm,armv7-timer");
+    else
+        res = fdt_property_string(fdt, "compatible", "arm,armv8-timer");
     if ( res )
         return res;
 
-    /* The timer IRQ is emulated by Xen. It always exposes an active-low
-     * level-sensitive interrupt */
+    /*
+     * The timer IRQ is emulated by Xen.
+     * It always exposes an active-low level-sensitive interrupt.
+     */
 
-    irq = timer_get_irq(TIMER_PHYS_SECURE_PPI);
-    dt_dprintk("  Secure interrupt %u\n", irq);
-    set_interrupt(intrs[0], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    if ( is_hardware_domain(kinfo->d) )
+    {
+        irq[TIMER_PHYS_SECURE_PPI] = timer_get_irq(TIMER_PHYS_SECURE_PPI);
+        irq[TIMER_PHYS_NONSECURE_PPI] =
+                                    timer_get_irq(TIMER_PHYS_NONSECURE_PPI);
+        irq[TIMER_VIRT_PPI] = timer_get_irq(TIMER_VIRT_PPI);
+    }
+    else
+    {
+        irq[TIMER_PHYS_SECURE_PPI] = GUEST_TIMER_PHYS_S_PPI;
+        irq[TIMER_PHYS_NONSECURE_PPI] = GUEST_TIMER_PHYS_NS_PPI;
+        irq[TIMER_VIRT_PPI] = GUEST_TIMER_VIRT_PPI;
+    }
+    dt_dprintk("  Secure interrupt %u\n", irq[TIMER_PHYS_SECURE_PPI]);
+    set_interrupt(intrs[0], irq[TIMER_PHYS_SECURE_PPI],
+                  0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    dt_dprintk("  Non secure interrupt %u\n", irq[TIMER_PHYS_NONSECURE_PPI]);
+    set_interrupt(intrs[1], irq[TIMER_PHYS_NONSECURE_PPI],
+                  0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    dt_dprintk("  Virt interrupt %u\n", irq[TIMER_VIRT_PPI]);
+    set_interrupt(intrs[2], irq[TIMER_VIRT_PPI], 0xf, DT_IRQ_TYPE_LEVEL_LOW);
 
-    irq = timer_get_irq(TIMER_PHYS_NONSECURE_PPI);
-    dt_dprintk("  Non secure interrupt %u\n", irq);
-    set_interrupt(intrs[1], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-
-    irq = timer_get_irq(TIMER_VIRT_PPI);
-    dt_dprintk("  Virt interrupt %u\n", irq);
-    set_interrupt(intrs[2], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-
-    res = fdt_property_interrupts(fdt, intrs, 3);
+    res = fdt_property_interrupts(kinfo, intrs, 3);
     if ( res )
         return res;
 
@@ -1158,15 +1165,24 @@ static int __init map_range_to_domain(const struct dt_device_node *dev,
     bool need_mapping = !dt_device_for_passthrough(dev);
     int res;
 
-    res = iomem_permit_access(d, paddr_to_pfn(addr),
-                              paddr_to_pfn(PAGE_ALIGN(addr + len - 1)));
-    if ( res )
+    /*
+     * reserved-memory regions are RAM carved out for a special purpose.
+     * They are not MMIO and therefore a domain should not be able to
+     * manage them via the IOMEM interface.
+     */
+    if ( strnicmp(dt_node_full_name(dev), "/reserved-memory/",
+         strlen("/reserved-memory/")) != 0 )
     {
-        printk(XENLOG_ERR "Unable to permit to dom%d access to"
-               " 0x%"PRIx64" - 0x%"PRIx64"\n",
-               d->domain_id,
-               addr & PAGE_MASK, PAGE_ALIGN(addr + len) - 1);
-        return res;
+        res = iomem_permit_access(d, paddr_to_pfn(addr),
+                paddr_to_pfn(PAGE_ALIGN(addr + len - 1)));
+        if ( res )
+        {
+            printk(XENLOG_ERR "Unable to permit to dom%d access to"
+                    " 0x%"PRIx64" - 0x%"PRIx64"\n",
+                    d->domain_id,
+                    addr & PAGE_MASK, PAGE_ALIGN(addr + len) - 1);
+            return res;
+        }
     }
 
     if ( need_mapping )
@@ -1353,7 +1369,7 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
         { /* sentinel */ },
     };
     struct dt_device_node *child;
-    int res;
+    int res, i, nirq, irq_id;
     const char *name;
     const char *path;
 
@@ -1380,7 +1396,7 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
     if ( device_get_class(node) == DEVICE_GIC )
         return make_gic_node(d, kinfo->fdt, node);
     if ( dt_match_node(timer_matches, node) )
-        return make_timer_node(d, kinfo->fdt, node);
+        return make_timer_node(kinfo);
 
     /* Skip nodes used by Xen */
     if ( dt_device_used_by(node) == DOMID_XEN )
@@ -1397,6 +1413,24 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
     {
         dt_dprintk(" IOMMU, skip it\n");
         return 0;
+    }
+
+    /*
+     * The vGIC does not support routing hardware PPIs to guest. So
+     * we need to skip any node using PPIs.
+     */
+    nirq = dt_number_of_irq(node);
+
+    for ( i = 0 ; i < nirq ; i++ )
+    {
+        irq_id = platform_get_irq(node, i);
+
+        /* PPIs ranges from ID 16 to 31 */
+        if ( irq_id >= 16 && irq_id < 32 )
+        {
+            dt_dprintk(" Skip it (using PPIs)\n");
+            return 0;
+        }
     }
 
     /*
@@ -1454,18 +1488,26 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
         if ( res )
             return res;
 
-        res = make_psci_node(kinfo->fdt, node);
+        res = make_psci_node(kinfo->fdt);
         if ( res )
             return res;
 
-        res = make_cpus_node(d, kinfo->fdt, node);
+        res = make_cpus_node(d, kinfo->fdt);
         if ( res )
             return res;
 
-        res = make_memory_node(d, kinfo->fdt, addrcells, sizecells, kinfo);
+        res = make_memory_node(d, kinfo->fdt, addrcells, sizecells, &kinfo->mem);
         if ( res )
             return res;
 
+        /*
+         * Create a second memory node to store the ranges covering
+         * reserved-memory regions.
+         */
+        res = make_memory_node(d, kinfo->fdt, addrcells, sizecells,
+                               &bootinfo.reserved_mem);
+        if ( res )
+            return res;
     }
 
     res = fdt_end_node(kinfo->fdt);
@@ -1584,46 +1626,6 @@ static int __init make_gic_domU_node(const struct domain *d, void *fdt)
     }
 }
 
-static int __init make_timer_domU_node(const struct domain *d, void *fdt)
-{
-    int res;
-    gic_interrupt_t intrs[3];
-
-    res = fdt_begin_node(fdt, "timer");
-    if ( res )
-        return res;
-
-    if ( !is_64bit_domain(d) )
-    {
-        res = fdt_property_string(fdt, "compatible", "arm,armv7-timer");
-        if ( res )
-            return res;
-    }
-    else
-    {
-        res = fdt_property_string(fdt, "compatible", "arm,armv8-timer");
-        if ( res )
-            return res;
-    }
-
-    set_interrupt(intrs[0], GUEST_TIMER_PHYS_S_PPI, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-    set_interrupt(intrs[1], GUEST_TIMER_PHYS_NS_PPI, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-    set_interrupt(intrs[2], GUEST_TIMER_VIRT_PPI, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-
-    res = fdt_property(fdt, "interrupts", intrs, sizeof (intrs[0]) * 3);
-    if ( res )
-        return res;
-
-    res = fdt_property_cell(fdt, "interrupt-parent",
-                            GUEST_PHANDLE_GIC);
-    if (res)
-        return res;
-
-    res = fdt_end_node(fdt);
-
-    return res;
-}
-
 #ifdef CONFIG_SBSA_VUART_CONSOLE
 static int __init make_vpl011_uart_node(const struct domain *d, void *fdt)
 {
@@ -1697,7 +1699,7 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     if ( ret < 0 )
         goto err;
 
-    ret = fdt_begin_node(kinfo->fdt, "/");
+    ret = fdt_begin_node(kinfo->fdt, "");
     if ( ret < 0 )
         goto err;
 
@@ -1713,15 +1715,15 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     if ( ret )
         goto err;
 
-    ret = make_psci_node(kinfo->fdt, NULL);
+    ret = make_psci_node(kinfo->fdt);
     if ( ret )
         goto err;
 
-    ret = make_cpus_node(d, kinfo->fdt, NULL);
+    ret = make_cpus_node(d, kinfo->fdt);
     if ( ret )
         goto err;
 
-    ret = make_memory_node(d, kinfo->fdt, addrcells, sizecells, kinfo);
+    ret = make_memory_node(d, kinfo->fdt, addrcells, sizecells, &kinfo->mem);
     if ( ret )
         goto err;
 
@@ -1729,7 +1731,7 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     if ( ret )
         goto err;
 
-    ret = make_timer_domU_node(d, kinfo->fdt);
+    ret = make_timer_node(kinfo);
     if ( ret )
         goto err;
 
@@ -2068,7 +2070,7 @@ void __init create_domUs(void)
         struct xen_domctl_createdomain d_cfg = {
             .arch.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE,
             .arch.nr_spis = 0,
-            .flags = XEN_DOMCTL_CDF_hvm_guest | XEN_DOMCTL_CDF_hap,
+            .flags = XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap,
             .max_evtchn_port = -1,
             .max_grant_frames = 64,
             .max_maptrack_frames = 1024,

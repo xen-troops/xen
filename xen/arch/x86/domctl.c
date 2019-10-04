@@ -176,6 +176,7 @@ static int update_domain_cpuid_info(struct domain *d,
                 break;
 
             case X86_VENDOR_AMD:
+            case X86_VENDOR_HYGON:
                 mask &= ((uint64_t)ecx << 32) | edx;
 
                 /*
@@ -217,11 +218,16 @@ static int update_domain_cpuid_info(struct domain *d,
         if ( is_pv_domain(d) && ((levelling_caps & LCAP_7ab0) == LCAP_7ab0) )
         {
             uint64_t mask = cpuidmask_defaults._7ab0;
-            uint32_t eax = ctl->eax;
-            uint32_t ebx = p->feat._7b0;
 
-            if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
-                mask &= ((uint64_t)eax << 32) | ebx;
+            /*
+             * Leaf 7[0].eax is max_subleaf, not a feature mask.  Take it
+             * wholesale from the policy, but clamp the features in 7[0].ebx
+             * per usual.
+             */
+            if ( boot_cpu_data.x86_vendor &
+                 (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
+                mask = (((uint64_t)p->feat.max_subleaf << 32) |
+                        ((uint32_t)mask & p->feat._7b0));
 
             d->arch.pv.cpuidmasks->_7ab0 = mask;
         }
@@ -281,8 +287,11 @@ static int update_domain_cpuid_info(struct domain *d,
             if ( cpu_has_cmp_legacy )
                 ecx |= cpufeat_mask(X86_FEATURE_CMP_LEGACY);
 
-            /* If not emulating AMD, clear the duplicated features in e1d. */
-            if ( p->x86_vendor != X86_VENDOR_AMD )
+            /*
+             * If not emulating AMD or Hygon, clear the duplicated features
+             * in e1d.
+             */
+            if ( !(p->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
                 edx &= ~CPUID_COMMON_1D_FEATURES;
 
             switch ( boot_cpu_data.x86_vendor )
@@ -292,6 +301,7 @@ static int update_domain_cpuid_info(struct domain *d,
                 break;
 
             case X86_VENDOR_AMD:
+            case X86_VENDOR_HYGON:
                 mask &= ((uint64_t)ecx << 32) | edx;
 
                 /*
@@ -517,7 +527,7 @@ long arch_do_domctl(
         }
 
         hypercall_page = __map_domain_page(page);
-        hypercall_page_initialise(d, hypercall_page);
+        init_hypercall_page(d, hypercall_page);
         unmap_domain_page(hypercall_page);
 
         put_page_and_type(page);
@@ -638,18 +648,6 @@ long arch_do_domctl(
             ASSERT_UNREACHABLE();
         break;
 
-    case XEN_DOMCTL_set_machine_address_size:
-        if ( d->tot_pages > 0 )
-            ret = -EBUSY;
-        else
-            d->arch.physaddr_bitsize = domctl->u.address_size.size;
-        break;
-
-    case XEN_DOMCTL_get_machine_address_size:
-        domctl->u.address_size.size = d->arch.physaddr_bitsize;
-        copyback = true;
-        break;
-
     case XEN_DOMCTL_sendtrigger:
     {
         struct vcpu *v;
@@ -710,7 +708,7 @@ long arch_do_domctl(
             break;
 
         ret = -ESRCH;
-        if ( iommu_enabled )
+        if ( is_iommu_enabled(d) )
         {
             pcidevs_lock();
             ret = pt_irq_create_bind(d, bind);
@@ -739,7 +737,7 @@ long arch_do_domctl(
         if ( ret )
             break;
 
-        if ( iommu_enabled )
+        if ( is_iommu_enabled(d) )
         {
             pcidevs_lock();
             ret = pt_irq_destroy_bind(d, bind);
@@ -981,10 +979,6 @@ long arch_do_domctl(
                                domctl->u.tsc_info.incarnation);
             domain_unpause(d);
         }
-        break;
-
-    case XEN_DOMCTL_suppress_spurious_page_faults:
-        d->arch.suppress_spurious_page_faults = 1;
         break;
 
 #ifdef CONFIG_HVM
@@ -1231,9 +1225,11 @@ long arch_do_domctl(
         break;
     }
 
+#ifdef CONFIG_MEM_SHARING
     case XEN_DOMCTL_mem_sharing_op:
         ret = mem_sharing_domctl(d, &domctl->u.mem_sharing_op);
         break;
+#endif
 
 #if P2M_AUDIT && defined(CONFIG_HVM)
     case XEN_DOMCTL_audit_p2m:

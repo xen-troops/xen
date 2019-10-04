@@ -53,10 +53,24 @@ static inline bool_t dfn_eq(dfn_t x, dfn_t y)
 }
 
 extern bool_t iommu_enable, iommu_enabled;
-extern bool_t force_iommu, iommu_verbose;
-extern bool_t iommu_workaround_bios_bug, iommu_igfx;
+extern bool_t force_iommu, iommu_verbose, iommu_igfx;
 extern bool_t iommu_snoop, iommu_qinval, iommu_intremap, iommu_intpost;
-extern bool_t iommu_hap_pt_share;
+
+#ifdef CONFIG_HVM
+extern bool iommu_hap_pt_share;
+#else
+#define iommu_hap_pt_share false
+#endif
+
+static inline void clear_iommu_hap_pt_share(void)
+{
+#ifndef iommu_hap_pt_share
+    iommu_hap_pt_share = false;
+#elif iommu_hap_pt_share
+    ASSERT_UNREACHABLE();
+#endif
+}
+
 extern bool_t iommu_debug;
 extern bool_t amd_iommu_perdev_intremap;
 
@@ -66,11 +80,11 @@ extern int8_t iommu_hwdom_reserved;
 extern unsigned int iommu_dev_iotlb_timeout;
 
 int iommu_setup(void);
+int iommu_hardware_setup(void);
 
 int iommu_domain_init(struct domain *d);
 void iommu_hwdom_init(struct domain *d);
 void iommu_domain_destroy(struct domain *d);
-int deassign_device(struct domain *d, u16 seg, u8 bus, u8 devfn);
 
 void arch_iommu_domain_destroy(struct domain *d);
 int arch_iommu_domain_init(struct domain *d);
@@ -217,11 +231,19 @@ struct iommu_ops {
                                     unsigned int *flags);
 
     void (*free_page_table)(struct page_info *);
+
 #ifdef CONFIG_X86
+    int (*enable_x2apic)(void);
+    void (*disable_x2apic)(void);
+
     void (*update_ire_from_apic)(unsigned int apic, unsigned int reg, unsigned int value);
     unsigned int (*read_apic_from_ire)(unsigned int apic, unsigned int reg);
+
     int (*setup_hpet_msi)(struct msi_desc *);
+
+    int (*adjust_irq_affinities)(void);
 #endif /* CONFIG_X86 */
+
     int __must_check (*suspend)(void);
     void (*resume)(void);
     void (*share_p2m)(struct domain *d);
@@ -235,6 +257,11 @@ struct iommu_ops {
 };
 
 #include <asm/iommu.h>
+
+#ifndef iommu_call
+# define iommu_call(ops, fn, args...) ((ops)->fn(args))
+# define iommu_vcall iommu_call
+#endif
 
 enum iommu_status
 {
@@ -252,6 +279,11 @@ struct domain_iommu {
 #ifdef CONFIG_HAS_DEVICE_TREE
     /* List of DT devices assigned to this domain */
     struct list_head dt_devices;
+#endif
+
+#ifdef CONFIG_NUMA
+    /* NUMA node to do IOMMU related allocations against. */
+    nodeid_t node;
 #endif
 
     /* Features supported by the IOMMU */

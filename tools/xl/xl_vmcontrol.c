@@ -34,12 +34,12 @@ static int fd_lock = -1;
 
 static void pause_domain(uint32_t domid)
 {
-    libxl_domain_pause(ctx, domid);
+    libxl_domain_pause(ctx, domid, NULL);
 }
 
 static void unpause_domain(uint32_t domid)
 {
-    libxl_domain_unpause(ctx, domid);
+    libxl_domain_unpause(ctx, domid, NULL);
 }
 
 static void destroy_domain(uint32_t domid, int force)
@@ -108,7 +108,7 @@ static void reboot_domain(uint32_t domid, libxl_evgen_domain_death **deathw,
         if (fallback_trigger) {
             fprintf(stderr, "PV control interface not available:"
                     " sending ACPI reset button event.\n");
-            rc = libxl_send_trigger(ctx, domid, LIBXL_TRIGGER_RESET, 0);
+            rc = libxl_send_trigger(ctx, domid, LIBXL_TRIGGER_RESET, 0, NULL);
         } else {
             fprintf(stderr, "PV control interface not available:"
                     " external graceful reboot not possible.\n");
@@ -141,7 +141,7 @@ static void shutdown_domain(uint32_t domid,
         if (fallback_trigger) {
             fprintf(stderr, "PV control interface not available:"
                     " sending ACPI power button event.\n");
-            rc = libxl_send_trigger(ctx, domid, LIBXL_TRIGGER_POWER, 0);
+            rc = libxl_send_trigger(ctx, domid, LIBXL_TRIGGER_POWER, 0, NULL);
         } else {
             fprintf(stderr, "PV control interface not available:"
                     " external graceful shutdown not possible.\n");
@@ -377,7 +377,8 @@ static void reload_domain_config(uint32_t domid,
     }
 
     libxl_domain_config_init(&d_config_new);
-    rc = libxl_retrieve_domain_configuration(ctx, domid, &d_config_new);
+    rc = libxl_retrieve_domain_configuration(ctx, domid, &d_config_new,
+                                             NULL);
     if (rc) {
         LOG("failed to retrieve guest configuration (rc=%d). "
             "reusing old configuration", rc);
@@ -972,7 +973,7 @@ start:
     }
 
     if (!paused)
-        libxl_domain_unpause(ctx, domid);
+        libxl_domain_unpause(ctx, domid, NULL);
 
     ret = domid; /* caller gets success in parent */
     if (!daemonize && !monitor)

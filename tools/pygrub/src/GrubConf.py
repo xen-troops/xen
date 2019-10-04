@@ -233,10 +233,14 @@ class _GrubConfigFile(object):
         if val == "saved":
             self._default = 0
         else:
-            self._default = val
+            try:
+                self._default = int(val)
+            except ValueError:
+                logging.warning("Invalid value %s, setting default to 0" %(val,))
+                self._default = 0
 
         if self._default < 0:
-            raise ValueError("default must be positive number")
+            raise ValueError("default must be non-negative number")
     default = property(_get_default, _set_default)
 
     def set_splash(self, val):
@@ -436,7 +440,7 @@ class Grub2ConfigFile(_GrubConfigFile):
                     arg_strip = arg.strip()
                     if arg_strip == "${saved_entry}" or arg_strip == "${next_entry}":
                         logging.warning("grub2's saved_entry/next_entry not supported")
-                        arg = "0"
+                        arg_strip = "0"
                     setattr(self, self.commands[com], arg_strip)
                 else:
                     logging.info("Ignored directive %s" %(com,))

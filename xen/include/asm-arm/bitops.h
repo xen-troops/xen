@@ -21,10 +21,8 @@
 #define __clear_bit(n,p)          clear_bit(n,p)
 
 #define BITS_PER_WORD           32
-#define BIT(nr)                 (1UL << (nr))
 #define BIT_MASK(nr)            (1UL << ((nr) % BITS_PER_WORD))
 #define BIT_WORD(nr)            ((nr) / BITS_PER_WORD)
-#define BIT_ULL(nr)             (1ULL << (nr))
 #define BITS_PER_BYTE           8
 
 #define ADDR (*(volatile int *) addr)
@@ -37,6 +35,44 @@
 #else
 # error "unknown ARM variant"
 #endif
+
+/*
+ * Atomic bitops
+ *
+ * The helpers below *should* only be used on memory shared between
+ * trusted threads or we know the memory cannot be accessed by another
+ * thread.
+ */
+
+void set_bit(int nr, volatile void *p);
+void clear_bit(int nr, volatile void *p);
+void change_bit(int nr, volatile void *p);
+int test_and_set_bit(int nr, volatile void *p);
+int test_and_clear_bit(int nr, volatile void *p);
+int test_and_change_bit(int nr, volatile void *p);
+
+void clear_mask16(uint16_t mask, volatile void *p);
+
+/*
+ * The helpers below may fail to update the memory if the action takes
+ * too long.
+ *
+ * @max_try: Maximum number of iterations
+ *
+ * The helpers will return true when the update has succeeded (i.e no
+ * timeout) and false if the update has failed.
+ */
+bool set_bit_timeout(int nr, volatile void *p, unsigned int max_try);
+bool clear_bit_timeout(int nr, volatile void *p, unsigned int max_try);
+bool change_bit_timeout(int nr, volatile void *p, unsigned int max_try);
+bool test_and_set_bit_timeout(int nr, volatile void *p,
+                              int *oldbit, unsigned int max_try);
+bool test_and_clear_bit_timeout(int nr, volatile void *p,
+                                int *oldbit, unsigned int max_try);
+bool test_and_change_bit_timeout(int nr, volatile void *p,
+                                 int *oldbit, unsigned int max_try);
+bool clear_mask16_timeout(uint16_t mask, volatile void *p,
+                          unsigned int max_try);
 
 /**
  * __test_and_set_bit - Set a bit and return its old value

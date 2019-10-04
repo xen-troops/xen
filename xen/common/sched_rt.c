@@ -344,8 +344,7 @@ rt_dump_vcpu(const struct scheduler *ops, const struct rt_vcpu *svc)
             has_extratime(svc),
             vcpu_on_q(svc),
             vcpu_runnable(svc->vcpu),
-            svc->flags,
-            nr_cpu_ids, cpumask_bits(mask));
+            svc->flags, CPUMASK_PR(mask));
 }
 
 static void
@@ -729,7 +728,7 @@ rt_init_pdata(const struct scheduler *ops, void *pdata, int cpu)
 }
 
 /* Change the scheduler of cpu to us (RTDS). */
-static void
+static spinlock_t *
 rt_switch_sched(struct scheduler *new_ops, unsigned int cpu,
                 void *pdata, void *vdata)
 {
@@ -761,16 +760,8 @@ rt_switch_sched(struct scheduler *new_ops, unsigned int cpu,
     }
 
     idle_vcpu[cpu]->sched_priv = vdata;
-    per_cpu(scheduler, cpu) = new_ops;
-    per_cpu(schedule_data, cpu).sched_priv = NULL; /* no pdata */
 
-    /*
-     * (Re?)route the lock to the per pCPU lock as /last/ thing. In fact,
-     * if it is free (and it can be) we want that anyone that manages
-     * taking it, find all the initializations we've done above in place.
-     */
-    smp_mb();
-    per_cpu(schedule_data, cpu).schedule_lock = &prv->lock;
+    return &prv->lock;
 }
 
 static void

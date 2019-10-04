@@ -38,13 +38,16 @@ struct domain *console_input_domain(void);
  * Steal output from the console. Returns +ve identifier, else -ve error.
  * Takes the handle of the serial line to steal, and steal callback function.
  */
-int console_steal(int handle, void (*fn)(const char *));
+int console_steal(int handle, void (*fn)(const char *, size_t nr));
 
 /* Give back stolen console. Takes the identifier returned by console_steal. */
 void console_giveback(int id);
 
 int console_suspend(void);
 int console_resume(void);
+
+/* Emit a string via the serial console. */
+void console_serial_puts(const char *s, size_t nr);
 
 extern int8_t opt_console_xen;
 

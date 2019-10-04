@@ -31,7 +31,6 @@
 #include <xen/sched.h>
 #include <xen/sched-if.h>
 #include <xen/softirq.h>
-#include <xen/keyhandler.h>
 #include <xen/trace.h>
 
 /*
@@ -168,16 +167,9 @@ static void init_pdata(struct null_private *prv, unsigned int cpu)
 static void null_init_pdata(const struct scheduler *ops, void *pdata, int cpu)
 {
     struct null_private *prv = null_priv(ops);
-    struct schedule_data *sd = &per_cpu(schedule_data, cpu);
 
     /* alloc_pdata is not implemented, so we want this to be NULL. */
     ASSERT(!pdata);
-
-    /*
-     * The scheduler lock points already to the default per-cpu spinlock,
-     * so there is no remapping to be done.
-     */
-    ASSERT(sd->schedule_lock == &sd->_lock && !spin_is_locked(&sd->_lock));
 
     init_pdata(prv, cpu);
 }
@@ -340,6 +332,8 @@ static unsigned int pick_cpu(struct null_private *prv, struct vcpu *v)
 static void vcpu_assign(struct null_private *prv, struct vcpu *v,
                         unsigned int cpu)
 {
+    ASSERT(is_vcpu_online(v));
+
     per_cpu(npc, cpu).vcpu = v;
     v->processor = cpu;
     cpumask_clear_cpu(cpu, &prv->cpus_free);
@@ -359,9 +353,17 @@ static void vcpu_assign(struct null_private *prv, struct vcpu *v,
     }
 }
 
-static void vcpu_deassign(struct null_private *prv, struct vcpu *v,
-                          unsigned int cpu)
+/* Returns true if a cpu was tickled */
+static bool vcpu_deassign(struct null_private *prv, struct vcpu *v)
 {
+    unsigned int bs;
+    unsigned int cpu = v->processor;
+    struct null_vcpu *wvc;
+
+    ASSERT(list_empty(&null_vcpu(v)->waitq_elem));
+    ASSERT(per_cpu(npc, v->processor).vcpu == v);
+    ASSERT(!cpumask_test_cpu(v->processor, &prv->cpus_free));
+
     per_cpu(npc, cpu).vcpu = NULL;
     cpumask_set_cpu(cpu, &prv->cpus_free);
 
@@ -378,11 +380,40 @@ static void vcpu_deassign(struct null_private *prv, struct vcpu *v,
         d.cpu = cpu;
         __trace_var(TRC_SNULL_VCPU_DEASSIGN, 1, sizeof(d), &d);
     }
+
+    spin_lock(&prv->waitq_lock);
+
+    /*
+     * If v is assigned to a pCPU, let's see if there is someone waiting,
+     * suitable to be assigned to it (prioritizing vcpus that have
+     * soft-affinity with cpu).
+     */
+    for_each_affinity_balance_step( bs )
+    {
+        list_for_each_entry( wvc, &prv->waitq, waitq_elem )
+        {
+            if ( bs == BALANCE_SOFT_AFFINITY && !has_soft_affinity(wvc->vcpu) )
+                continue;
+
+            if ( vcpu_check_affinity(wvc->vcpu, cpu, bs) )
+            {
+                list_del_init(&wvc->waitq_elem);
+                vcpu_assign(prv, wvc->vcpu, cpu);
+                cpu_raise_softirq(cpu, SCHEDULE_SOFTIRQ);
+                spin_unlock(&prv->waitq_lock);
+                return true;
+            }
+        }
+    }
+    spin_unlock(&prv->waitq_lock);
+
+    return false;
 }
 
 /* Change the scheduler of cpu to us (null). */
-static void null_switch_sched(struct scheduler *new_ops, unsigned int cpu,
-                              void *pdata, void *vdata)
+static spinlock_t *null_switch_sched(struct scheduler *new_ops,
+                                     unsigned int cpu,
+                                     void *pdata, void *vdata)
 {
     struct schedule_data *sd = &per_cpu(schedule_data, cpu);
     struct null_private *prv = null_priv(new_ops);
@@ -401,16 +432,7 @@ static void null_switch_sched(struct scheduler *new_ops, unsigned int cpu,
 
     init_pdata(prv, cpu);
 
-    per_cpu(scheduler, cpu) = new_ops;
-    per_cpu(schedule_data, cpu).sched_priv = pdata;
-
-    /*
-     * (Re?)route the lock to the per pCPU lock as /last/ thing. In fact,
-     * if it is free (and it can be) we want that anyone that manages
-     * taking it, finds all the initializations we've done above in place.
-     */
-    smp_mb();
-    sd->schedule_lock = &sd->_lock;
+    return &sd->_lock;
 }
 
 static void null_vcpu_insert(const struct scheduler *ops, struct vcpu *v)
@@ -423,8 +445,14 @@ static void null_vcpu_insert(const struct scheduler *ops, struct vcpu *v)
     ASSERT(!is_idle_vcpu(v));
 
     lock = vcpu_schedule_lock_irq(v);
- retry:
 
+    if ( unlikely(!is_vcpu_online(v)) )
+    {
+        vcpu_schedule_unlock_irq(lock, v);
+        return;
+    }
+
+ retry:
     cpu = v->processor = pick_cpu(prv, v);
 
     spin_unlock(lock);
@@ -468,43 +496,6 @@ static void null_vcpu_insert(const struct scheduler *ops, struct vcpu *v)
     SCHED_STAT_CRANK(vcpu_insert);
 }
 
-static void _vcpu_remove(struct null_private *prv, struct vcpu *v)
-{
-    unsigned int bs;
-    unsigned int cpu = v->processor;
-    struct null_vcpu *wvc;
-
-    ASSERT(list_empty(&null_vcpu(v)->waitq_elem));
-
-    vcpu_deassign(prv, v, cpu);
-
-    spin_lock(&prv->waitq_lock);
-
-    /*
-     * If v is assigned to a pCPU, let's see if there is someone waiting,
-     * suitable to be assigned to it (prioritizing vcpus that have
-     * soft-affinity with cpu).
-     */
-    for_each_affinity_balance_step( bs )
-    {
-        list_for_each_entry( wvc, &prv->waitq, waitq_elem )
-        {
-            if ( bs == BALANCE_SOFT_AFFINITY && !has_soft_affinity(wvc->vcpu) )
-                continue;
-
-            if ( vcpu_check_affinity(wvc->vcpu, cpu, bs) )
-            {
-                list_del_init(&wvc->waitq_elem);
-                vcpu_assign(prv, wvc->vcpu, cpu);
-                cpu_raise_softirq(cpu, SCHEDULE_SOFTIRQ);
-                spin_unlock(&prv->waitq_lock);
-                return;
-            }
-        }
-    }
-    spin_unlock(&prv->waitq_lock);
-}
-
 static void null_vcpu_remove(const struct scheduler *ops, struct vcpu *v)
 {
     struct null_private *prv = null_priv(ops);
@@ -514,6 +505,14 @@ static void null_vcpu_remove(const struct scheduler *ops, struct vcpu *v)
     ASSERT(!is_idle_vcpu(v));
 
     lock = vcpu_schedule_lock_irq(v);
+
+    /* If offline, the vcpu shouldn't be assigned, nor in the waitqueue */
+    if ( unlikely(!is_vcpu_online(v)) )
+    {
+        ASSERT(per_cpu(npc, v->processor).vcpu != v);
+        ASSERT(list_empty(&nvc->waitq_elem));
+        goto out;
+    }
 
     /* If v is in waitqueue, just get it out of there and bail */
     if ( unlikely(!list_empty(&nvc->waitq_elem)) )
@@ -525,10 +524,7 @@ static void null_vcpu_remove(const struct scheduler *ops, struct vcpu *v)
         goto out;
     }
 
-    ASSERT(per_cpu(npc, v->processor).vcpu == v);
-    ASSERT(!cpumask_test_cpu(v->processor, &prv->cpus_free));
-
-    _vcpu_remove(prv, v);
+    vcpu_deassign(prv, v);
 
  out:
     vcpu_schedule_unlock_irq(lock, v);
@@ -538,15 +534,19 @@ static void null_vcpu_remove(const struct scheduler *ops, struct vcpu *v)
 
 static void null_vcpu_wake(const struct scheduler *ops, struct vcpu *v)
 {
+    struct null_private *prv = null_priv(ops);
+    struct null_vcpu *nvc = null_vcpu(v);
+    unsigned int cpu = v->processor;
+
     ASSERT(!is_idle_vcpu(v));
 
-    if ( unlikely(curr_on_cpu(v->processor) == v) )
+    if ( unlikely(curr_on_cpu(cpu) == v) )
     {
         SCHED_STAT_CRANK(vcpu_wake_running);
         return;
     }
 
-    if ( unlikely(!list_empty(&null_vcpu(v)->waitq_elem)) )
+    if ( unlikely(!list_empty(&nvc->waitq_elem)) )
     {
         /* Not exactly "on runq", but close enough for reusing the counter */
         SCHED_STAT_CRANK(vcpu_wake_onrunq);
@@ -558,17 +558,81 @@ static void null_vcpu_wake(const struct scheduler *ops, struct vcpu *v)
     else
         SCHED_STAT_CRANK(vcpu_wake_not_runnable);
 
+    /*
+     * If a vcpu is neither on a pCPU nor in the waitqueue, it means it was
+     * offline, and that it is now coming back being online.
+     */
+    if ( unlikely(per_cpu(npc, cpu).vcpu != v && list_empty(&nvc->waitq_elem)) )
+    {
+        spin_lock(&prv->waitq_lock);
+        list_add_tail(&nvc->waitq_elem, &prv->waitq);
+        spin_unlock(&prv->waitq_lock);
+
+        cpumask_and(cpumask_scratch_cpu(cpu), v->cpu_hard_affinity,
+                    cpupool_domain_cpumask(v->domain));
+
+        if ( !cpumask_intersects(&prv->cpus_free, cpumask_scratch_cpu(cpu)) )
+        {
+            dprintk(XENLOG_G_WARNING, "WARNING: d%dv%d not assigned to any CPU!\n",
+                    v->domain->domain_id, v->vcpu_id);
+            return;
+        }
+
+        /*
+         * Now we would want to assign the vcpu to cpu, but we can't, because
+         * we don't have the lock. So, let's do the following:
+         * - try to remove cpu from the list of free cpus, to avoid races with
+         *   other onlining, inserting or migrating operations;
+         * - tickle the cpu, which will pickup work from the waitqueue, and
+         *   assign it to itself;
+         * - if we're racing already, and if there still are free cpus, try
+         *   again.
+         */
+        while ( cpumask_intersects(&prv->cpus_free, cpumask_scratch_cpu(cpu)) )
+        {
+            unsigned int new_cpu = pick_cpu(prv, v);
+
+            if ( test_and_clear_bit(new_cpu, &prv->cpus_free) )
+            {
+                cpu_raise_softirq(new_cpu, SCHEDULE_SOFTIRQ);
+                return;
+            }
+        }
+    }
+
     /* Note that we get here only for vCPUs assigned to a pCPU */
     cpu_raise_softirq(v->processor, SCHEDULE_SOFTIRQ);
 }
 
 static void null_vcpu_sleep(const struct scheduler *ops, struct vcpu *v)
 {
+    struct null_private *prv = null_priv(ops);
+    unsigned int cpu = v->processor;
+    bool tickled = false;
+
     ASSERT(!is_idle_vcpu(v));
 
+    /* 
+     * Check if the vcpu is in the process of being offlined. if yes,
+     * we need to remove it from either its pCPU or the waitqueue.
+     */
+    if ( unlikely(!is_vcpu_online(v)) )
+    {
+        struct null_vcpu *nvc = null_vcpu(v);
+
+        if ( unlikely(!list_empty(&nvc->waitq_elem)) )
+        {
+            spin_lock(&prv->waitq_lock);
+            list_del_init(&nvc->waitq_elem);
+            spin_unlock(&prv->waitq_lock);
+        }
+        else if ( per_cpu(npc, cpu).vcpu == v )
+            tickled = vcpu_deassign(prv, v);
+    }
+
     /* If v is not assigned to a pCPU, or is not running, no need to bother */
-    if ( curr_on_cpu(v->processor) == v )
-        cpu_raise_softirq(v->processor, SCHEDULE_SOFTIRQ);
+    if ( likely(!tickled && curr_on_cpu(cpu) == v) )
+        cpu_raise_softirq(cpu, SCHEDULE_SOFTIRQ);
 
     SCHED_STAT_CRANK(vcpu_sleep);
 }
@@ -604,23 +668,33 @@ static void null_vcpu_migrate(const struct scheduler *ops, struct vcpu *v,
     }
 
     /*
-     * v is either assigned to a pCPU, or in the waitqueue.
-     *
-     * In the former case, the pCPU to which it was assigned would
-     * become free, and we, therefore, should check whether there is
-     * anyone in the waitqueue that can be assigned to it.
-     *
-     * In the latter, there is just nothing to do.
+     * If v is assigned to a pCPU, then such pCPU becomes free, and we
+     * should look in the waitqueue if anyone else can be assigned to it.
      */
-    if ( likely(list_empty(&nvc->waitq_elem)) )
+    if ( likely(per_cpu(npc, v->processor).vcpu == v) )
     {
-        _vcpu_remove(prv, v);
+        vcpu_deassign(prv, v);
         SCHED_STAT_CRANK(migrate_running);
     }
-    else
+    else if ( !list_empty(&nvc->waitq_elem) )
         SCHED_STAT_CRANK(migrate_on_runq);
 
     SCHED_STAT_CRANK(migrated);
+
+    /*
+     * If a vcpu is (going) offline, we want it to be neither assigned
+     * to a pCPU, nor in the waitqueue.
+     *
+     * If it was on a cpu, we've removed it from there above. If it is
+     * in the waitqueue, we remove it from there now. And then we bail.
+     */
+    if ( unlikely(!is_vcpu_online(v)) )
+    {
+        spin_lock(&prv->waitq_lock);
+        list_del_init(&nvc->waitq_elem);
+        spin_unlock(&prv->waitq_lock);
+        goto out;
+    }
 
     /*
      * Let's now consider new_cpu, which is where v is being sent. It can be
@@ -661,6 +735,7 @@ static void null_vcpu_migrate(const struct scheduler *ops, struct vcpu *v,
      * at least. In case of suspend, any temporary inconsistency caused
      * by this, will be fixed-up during resume.
      */
+ out:
     v->processor = new_cpu;
 }
 
@@ -771,6 +846,9 @@ static struct task_slice null_schedule(const struct scheduler *ops,
         }
  unlock:
         spin_unlock(&prv->waitq_lock);
+
+        if ( ret.task == NULL && !cpumask_test_cpu(cpu, &prv->cpus_free) )
+            cpumask_set_cpu(cpu, &prv->cpus_free);
     }
 
     if ( unlikely(ret.task == NULL || !vcpu_runnable(ret.task)) )
@@ -797,9 +875,8 @@ static void null_dump_pcpu(const struct scheduler *ops, int cpu)
     lock = pcpu_schedule_lock_irqsave(cpu, &flags);
 
     printk("CPU[%02d] sibling=%*pb, core=%*pb",
-           cpu,
-           nr_cpu_ids, cpumask_bits(per_cpu(cpu_sibling_mask, cpu)),
-           nr_cpu_ids, cpumask_bits(per_cpu(cpu_core_mask, cpu)));
+           cpu, CPUMASK_PR(per_cpu(cpu_sibling_mask, cpu)),
+           CPUMASK_PR(per_cpu(cpu_core_mask, cpu)));
     if ( per_cpu(npc, cpu).vcpu != NULL )
         printk(", vcpu=%pv", per_cpu(npc, cpu).vcpu);
     printk("\n");
@@ -825,7 +902,7 @@ static void null_dump(const struct scheduler *ops)
 
     spin_lock_irqsave(&prv->lock, flags);
 
-    printk("\tcpus_free = %*pbl\n", nr_cpu_ids, cpumask_bits(&prv->cpus_free));
+    printk("\tcpus_free = %*pbl\n", CPUMASK_PR(&prv->cpus_free));
 
     printk("Domain info:\n");
     loop = 0;
@@ -871,7 +948,7 @@ static void null_dump(const struct scheduler *ops)
     spin_unlock_irqrestore(&prv->lock, flags);
 }
 
-const struct scheduler sched_null_def = {
+static const struct scheduler sched_null_def = {
     .name           = "null Scheduler",
     .opt_name       = "null",
     .sched_id       = XEN_SCHEDULER_NULL,

@@ -41,7 +41,6 @@
 #include <public/vcpu.h>
 #include <xsm/xsm.h>
 #include <xen/trace.h>
-#include <xen/tmem.h>
 #include <asm/setup.h>
 
 #ifdef CONFIG_X86
@@ -70,6 +69,13 @@ struct domain *hardware_domain __read_mostly;
 #ifdef CONFIG_LATE_HWDOM
 domid_t hardware_domid __read_mostly;
 integer_param("hardware_dom", hardware_domid);
+#endif
+
+/* Private domain structs for DOMID_XEN, DOMID_IO, etc. */
+struct domain *__read_mostly dom_xen;
+struct domain *__read_mostly dom_io;
+#ifdef CONFIG_MEM_SHARING
+struct domain *__read_mostly dom_cow;
 #endif
 
 struct vcpu *idle_vcpu[NR_CPUS] __read_mostly;
@@ -127,7 +133,6 @@ static void vcpu_info_reset(struct vcpu *v)
 static void vcpu_destroy(struct vcpu *v)
 {
     free_cpumask_var(v->cpu_hard_affinity);
-    free_cpumask_var(v->cpu_hard_affinity_tmp);
     free_cpumask_var(v->cpu_hard_affinity_saved);
     free_cpumask_var(v->cpu_soft_affinity);
 
@@ -155,7 +160,6 @@ struct vcpu *vcpu_create(
     grant_table_init_vcpu(v);
 
     if ( !zalloc_cpumask_var(&v->cpu_hard_affinity) ||
-         !zalloc_cpumask_var(&v->cpu_hard_affinity_tmp) ||
          !zalloc_cpumask_var(&v->cpu_hard_affinity_saved) ||
          !zalloc_cpumask_var(&v->cpu_soft_affinity) )
         goto fail;
@@ -293,11 +297,12 @@ static void _domain_destroy(struct domain *d)
 
 static int sanitise_domain_config(struct xen_domctl_createdomain *config)
 {
-    if ( config->flags & ~(XEN_DOMCTL_CDF_hvm_guest |
+    if ( config->flags & ~(XEN_DOMCTL_CDF_hvm |
                            XEN_DOMCTL_CDF_hap |
                            XEN_DOMCTL_CDF_s3_integrity |
                            XEN_DOMCTL_CDF_oos_off |
-                           XEN_DOMCTL_CDF_xs_domain) )
+                           XEN_DOMCTL_CDF_xs_domain |
+                           XEN_DOMCTL_CDF_iommu) )
     {
         dprintk(XENLOG_INFO, "Unknown CDF flags %#x\n", config->flags);
         return -EINVAL;
@@ -306,6 +311,19 @@ static int sanitise_domain_config(struct xen_domctl_createdomain *config)
     if ( config->max_vcpus < 1 )
     {
         dprintk(XENLOG_INFO, "No vCPUS\n");
+        return -EINVAL;
+    }
+
+    if ( !(config->flags & XEN_DOMCTL_CDF_hvm) &&
+         (config->flags & XEN_DOMCTL_CDF_hap) )
+    {
+        dprintk(XENLOG_INFO, "HAP requested for non-HVM guest\n");
+        return -EINVAL;
+    }
+
+    if ( (config->flags & XEN_DOMCTL_CDF_iommu) && !iommu_enabled )
+    {
+        dprintk(XENLOG_INFO, "IOMMU is not enabled\n");
         return -EINVAL;
     }
 
@@ -327,6 +345,8 @@ struct domain *domain_create(domid_t domid,
     if ( (d = alloc_domain_struct()) == NULL )
         return ERR_PTR(-ENOMEM);
 
+    d->options = config ? config->flags : 0;
+
     /* Sort out our idea of is_system_domain(). */
     d->domain_id = domid;
 
@@ -342,15 +362,10 @@ struct domain *domain_create(domid_t domid,
         if ( hardware_domid < 0 || hardware_domid >= DOMID_FIRST_RESERVED )
             panic("The value of hardware_dom must be a valid domain ID\n");
 
-        d->is_pinned = opt_dom0_vcpus_pin;
-        d->disable_migrate = 1;
+        d->disable_migrate = true;
         old_hwdom = hardware_domain;
         hardware_domain = d;
     }
-
-    /* Sort out our idea of is_{pv,hvm}_domain().  All system domains are PV. */
-    d->guest_type = ((config && (config->flags & XEN_DOMCTL_CDF_hvm_guest))
-                     ? guest_type_hvm : guest_type_pv);
 
     TRACE_1D(TRC_DOM0_DOM_ADD, d->domain_id);
 
@@ -391,6 +406,10 @@ struct domain *domain_create(domid_t domid,
 
     rwlock_init(&d->vnuma_rwlock);
 
+#ifdef CONFIG_HAS_PCI
+    INIT_LIST_HEAD(&d->pdev_list);
+#endif
+
     err = -ENOMEM;
     if ( !zalloc_cpumask_var(&d->dirty_cpumask) )
         goto fail;
@@ -422,11 +441,8 @@ struct domain *domain_create(domid_t domid,
         watchdog_domain_init(d);
         init_status |= INIT_watchdog;
 
-        if ( config->flags & XEN_DOMCTL_CDF_xs_domain )
-        {
-            d->is_xenstore = 1;
-            d->disable_migrate = 1;
-        }
+        if ( is_xenstore_domain(d) )
+            d->disable_migrate = true;
 
         d->iomem_caps = rangeset_new(d, "I/O Memory", RANGESETF_prettyprint_hex);
         d->irq_caps   = rangeset_new(d, "Interrupts", 0);
@@ -518,6 +534,38 @@ struct domain *domain_create(domid_t domid,
     return ERR_PTR(err);
 }
 
+void __init setup_system_domains(void)
+{
+    /*
+     * Initialise our DOMID_XEN domain.
+     * Any Xen-heap pages that we will allow to be mapped will have
+     * their domain field set to dom_xen.
+     * Hidden PCI devices will also be associated with this domain
+     * (but be [partly] controlled by Dom0 nevertheless).
+     */
+    dom_xen = domain_create(DOMID_XEN, NULL, false);
+    if ( IS_ERR(dom_xen) )
+        panic("Failed to create d[XEN]: %ld\n", PTR_ERR(dom_xen));
+
+    /*
+     * Initialise our DOMID_IO domain.
+     * This domain owns I/O pages that are within the range of the page_info
+     * array. Mappings occur at the priv of the caller.
+     */
+    dom_io = domain_create(DOMID_IO, NULL, false);
+    if ( IS_ERR(dom_io) )
+        panic("Failed to create d[IO]: %ld\n", PTR_ERR(dom_io));
+
+#ifdef CONFIG_MEM_SHARING
+    /*
+     * Initialise our COW domain.
+     * This domain owns sharable pages.
+     */
+    dom_cow = domain_create(DOMID_COW, NULL, false);
+    if ( IS_ERR(dom_cow) )
+        panic("Failed to create d[COW]: %ld\n", PTR_ERR(dom_cow));
+#endif
+}
 
 void domain_update_node_affinity(struct domain *d)
 {
@@ -590,8 +638,8 @@ void domain_update_node_affinity(struct domain *d)
 
 int domain_set_node_affinity(struct domain *d, const nodemask_t *affinity)
 {
-    /* Being affine with no nodes is just wrong */
-    if ( nodes_empty(*affinity) )
+    /* Being disjoint with the system is just wrong. */
+    if ( !nodes_intersects(*affinity, node_online_map) )
         return -EINVAL;
 
     spin_lock(&d->node_affinity_lock);
@@ -726,10 +774,8 @@ int domain_kill(struct domain *d)
         argo_destroy(d);
         evtchn_destroy(d);
         gnttab_release_mappings(d);
-        tmem_destroy(d->tmem_client);
         vnuma_destroy(d->vnuma);
         domain_set_outstanding_pages(d, 0);
-        d->tmem_client = NULL;
         /* fallthrough */
     case DOMDYING_dying:
         rc = domain_relinquish_resources(d);
@@ -927,7 +973,7 @@ static void complete_domain_destroy(struct rcu_head *head)
     xfree(d->vm_event_paging);
 #endif
     xfree(d->vm_event_monitor);
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
     xfree(d->vm_event_share);
 #endif
 
@@ -1230,7 +1276,7 @@ int vcpu_reset(struct vcpu *v)
     v->async_exception_mask = 0;
     memset(v->async_exception_state, 0, sizeof(v->async_exception_state));
 #endif
-    cpumask_clear(v->cpu_hard_affinity_tmp);
+    v->affinity_broken = 0;
     clear_bit(_VPF_blocked, &v->pause_flags);
     clear_bit(_VPF_in_reset, &v->pause_flags);
 
@@ -1365,7 +1411,7 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
     struct vcpu *v;
     long rc = 0;
 
-    if ( vcpuid >= d->max_vcpus || (v = d->vcpu[vcpuid]) == NULL )
+    if ( (v = domain_vcpu(d, vcpuid)) == NULL )
         return -ENOENT;
 
     switch ( cmd )

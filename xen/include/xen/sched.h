@@ -174,9 +174,6 @@ struct vcpu
     } runstate_guest; /* guest address */
 #endif
 
-    /* last time when vCPU is scheduled out */
-    uint64_t last_run_time;
-
     /* Has the FPU been initialised? */
     bool             fpu_initialised;
     /* Has the FPU been used since it was last saved? */
@@ -203,7 +200,9 @@ struct vcpu
     /* VCPU is paused following shutdown request (d->is_shutting_down)? */
     bool             paused_for_shutdown;
     /* VCPU need affinity restored */
-    bool             affinity_broken;
+    uint8_t          affinity_broken;
+#define VCPU_AFFINITY_OVERRIDE    0x01
+#define VCPU_AFFINITY_WAIT        0x02
 
     /* A hypercall has been preempted. */
     bool             hcall_preempted;
@@ -248,9 +247,7 @@ struct vcpu
 
     /* Bitmask of CPUs on which this VCPU may run. */
     cpumask_var_t    cpu_hard_affinity;
-    /* Used to change affinity temporarily. */
-    cpumask_var_t    cpu_hard_affinity_tmp;
-    /* Used to restore affinity across S3. */
+    /* Used to save affinity during temporary pinning. */
     cpumask_var_t    cpu_hard_affinity_saved;
 
     /* Bitmask of CPUs on which this VCPU prefers to run. */
@@ -282,8 +279,7 @@ struct vcpu
 /* VM event */
 struct vm_event_domain
 {
-    /* ring lock */
-    spinlock_t ring_lock;
+    spinlock_t lock;
     /* The ring has 64 entries */
     unsigned char foreign_producers;
     unsigned char target_producers;
@@ -305,10 +301,6 @@ struct vm_event_domain
 };
 
 struct evtchn_port_ops;
-
-enum guest_type {
-    guest_type_pv, guest_type_hvm
-};
 
 struct domain
 {
@@ -360,7 +352,7 @@ struct domain
     struct radix_tree_root pirq_tree;
     unsigned int     nr_pirqs;
 
-    enum guest_type guest_type;
+    unsigned int     options;         /* copy of createdomain flags */
 
     /* Is this guest dying (i.e., a zombie)? */
     enum { DOMDYING_alive, DOMDYING_dying, DOMDYING_dead } is_dying;
@@ -369,6 +361,10 @@ struct domain
     int              controller_pause_count;
 
     int64_t          time_offset_seconds;
+
+#ifdef CONFIG_HAS_PCI
+    struct list_head pdev_list;
+#endif
 
 #ifdef CONFIG_HAS_PASSTHROUGH
     struct domain_iommu iommu;
@@ -379,10 +375,6 @@ struct domain
     bool             is_privileged;
     /* Can this guest access the Xen console? */
     bool             is_console;
-    /* Is this a xenstore domain (not dom0)? */
-    bool             is_xenstore;
-    /* Domain's VCPUs are pinned 1:1 to physical CPUs? */
-    bool             is_pinned;
     /* Non-migratable and non-restoreable? */
     bool             disable_migrate;
     /* Is this guest being debugged by dom0? */
@@ -456,15 +448,12 @@ struct domain
      */
     spinlock_t hypercall_deadlock_mutex;
 
-    /* transcendent memory, auto-allocated on first tmem op by each domain */
-    struct client *tmem_client;
-
     struct lock_profile_qhead profile_head;
 
     /* Various vm_events */
 
     /* Memory sharing support */
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
     struct vm_event_domain *vm_event_share;
 #endif
     /* Memory paging support */
@@ -880,10 +869,10 @@ int cpu_disable_scheduler(unsigned int cpu);
 /* We need it in dom0_setup_vcpu */
 void sched_set_affinity(struct vcpu *v, const cpumask_t *hard,
                         const cpumask_t *soft);
+int vcpu_temporary_affinity(struct vcpu *v, unsigned int cpu, uint8_t reason);
 int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity);
 int vcpu_set_soft_affinity(struct vcpu *v, const cpumask_t *affinity);
 void restore_vcpu_affinity(struct domain *d);
-int vcpu_pin_override(struct vcpu *v, int cpu);
 
 void vcpu_runstate_get(struct vcpu *v, struct vcpu_runstate_info *runstate);
 uint64_t get_cpu_idle_time(unsigned int cpu);
@@ -913,16 +902,17 @@ void watchdog_domain_destroy(struct domain *d);
  *    (that is, this would not be suitable for a driver domain)
  *  - There is never a reason to deny the hardware domain access to this
  */
-#define is_hardware_domain(_d) ((_d) == hardware_domain)
+#define is_hardware_domain(_d) evaluate_nospec((_d) == hardware_domain)
 
 /* This check is for functionality specific to a control domain */
-#define is_control_domain(_d) ((_d)->is_privileged)
+#define is_control_domain(_d) evaluate_nospec((_d)->is_privileged)
 
 #define VM_ASSIST(d, t) (test_bit(VMASST_TYPE_ ## t, &(d)->vm_assist))
 
 static inline bool is_pv_domain(const struct domain *d)
 {
-    return IS_ENABLED(CONFIG_PV) ? d->guest_type == guest_type_pv : false;
+    return IS_ENABLED(CONFIG_PV) &&
+        evaluate_nospec(!(d->options & XEN_DOMCTL_CDF_hvm));
 }
 
 static inline bool is_pv_vcpu(const struct vcpu *v)
@@ -953,7 +943,8 @@ static inline bool is_pv_64bit_vcpu(const struct vcpu *v)
 #endif
 static inline bool is_hvm_domain(const struct domain *d)
 {
-    return IS_ENABLED(CONFIG_HVM) ? d->guest_type == guest_type_hvm : false;
+    return IS_ENABLED(CONFIG_HVM) &&
+        evaluate_nospec(d->options & XEN_DOMCTL_CDF_hvm);
 }
 
 static inline bool is_hvm_vcpu(const struct vcpu *v)
@@ -961,8 +952,19 @@ static inline bool is_hvm_vcpu(const struct vcpu *v)
     return is_hvm_domain(v->domain);
 }
 
-#define is_pinned_vcpu(v) ((v)->domain->is_pinned || \
-                           cpumask_weight((v)->cpu_hard_affinity) == 1)
+static inline bool hap_enabled(const struct domain *d)
+{
+    /* sanitise_domain_config() rejects HAP && !HVM */
+    return IS_ENABLED(CONFIG_HVM) &&
+        evaluate_nospec(d->options & XEN_DOMCTL_CDF_hap);
+}
+
+static inline bool is_hwdom_pinned_vcpu(const struct vcpu *v)
+{
+    return (is_hardware_domain(v->domain) &&
+            cpumask_weight(v->cpu_hard_affinity) == 1);
+}
+
 #ifdef CONFIG_HAS_PASSTHROUGH
 #define has_iommu_pt(d) (dom_iommu(d)->status != IOMMU_STATUS_disabled)
 #define need_iommu_pt_sync(d) (dom_iommu(d)->need_sync)
@@ -974,6 +976,16 @@ static inline bool is_hvm_vcpu(const struct vcpu *v)
 static inline bool is_vcpu_online(const struct vcpu *v)
 {
     return !test_bit(_VPF_down, &v->pause_flags);
+}
+
+static inline bool is_xenstore_domain(const struct domain *d)
+{
+    return d->options & XEN_DOMCTL_CDF_xs_domain;
+}
+
+static inline bool is_iommu_enabled(const struct domain *d)
+{
+    return evaluate_nospec(d->options & XEN_DOMCTL_CDF_iommu);
 }
 
 extern bool sched_smt_power_savings;

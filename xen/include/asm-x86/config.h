@@ -21,7 +21,6 @@
 
 #define CONFIG_X86_PM_TIMER 1
 #define CONFIG_HPET_TIMER 1
-#define CONFIG_X86_MCE_THERMAL 1
 #define CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS 1
 #define CONFIG_DISCONTIGMEM 1
 #define CONFIG_NUMA_EMU 1
@@ -34,7 +33,6 @@
 /* Intel P4 currently has largest cache line (L2 line size is 128 bytes). */
 #define CONFIG_X86_L1_CACHE_SHIFT 7
 
-#define CONFIG_ACPI_SLEEP 1
 #define CONFIG_ACPI_NUMA 1
 #define CONFIG_ACPI_SRAT 1
 #define CONFIG_ACPI_CSTATE 1
@@ -93,14 +91,16 @@ extern unsigned long trampoline_phys;
 #define bootsym_phys(sym)                                 \
     (((unsigned long)&(sym)-(unsigned long)&trampoline_start)+trampoline_phys)
 #define bootsym(sym)                                      \
-    (*RELOC_HIDE((typeof(&(sym)))__va(__pa(&(sym))),      \
-                 trampoline_phys-__pa(trampoline_start)))
+    (*((typeof(sym) *)__va(bootsym_phys(sym))))
+
 extern char trampoline_start[], trampoline_end[];
 extern char trampoline_realmode_entry[];
 extern unsigned int trampoline_xen_phys_start;
 extern unsigned char trampoline_cpu_started;
 extern char wakeup_start[];
-extern unsigned int video_mode, video_flags;
+
+extern unsigned char video_flags;
+
 extern unsigned short boot_edid_caps;
 extern unsigned char boot_edid_info[128];
 #endif
@@ -265,9 +265,7 @@ extern unsigned char boot_edid_info[128];
 
 #endif
 
-#define __HYPERVISOR_CS64 0xe008
-#define __HYPERVISOR_CS32 0xe038
-#define __HYPERVISOR_CS   __HYPERVISOR_CS64
+#define __HYPERVISOR_CS   0xe008
 #define __HYPERVISOR_DS64 0x0000
 #define __HYPERVISOR_DS32 0xe010
 #define __HYPERVISOR_DS   __HYPERVISOR_DS64

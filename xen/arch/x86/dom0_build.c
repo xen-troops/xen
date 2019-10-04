@@ -213,7 +213,7 @@ struct vcpu *__init dom0_setup_vcpu(struct domain *d,
         }
         else
         {
-            if ( !d->is_pinned && !dom0_affinity_relaxed )
+            if ( !opt_dom0_vcpus_pin && !dom0_affinity_relaxed )
                 sched_set_affinity(v, &dom0_cpus, NULL);
             sched_set_affinity(v, NULL, &dom0_cpus);
         }
@@ -261,7 +261,7 @@ unsigned int __init dom0_max_vcpus(void)
         max_vcpus = opt_dom0_max_vcpus_min;
     if ( opt_dom0_max_vcpus_max < max_vcpus )
         max_vcpus = opt_dom0_max_vcpus_max;
-    limit = dom0_pvh ? HVM_MAX_VCPUS : MAX_VIRT_CPUS;
+    limit = opt_dom0_pvh ? HVM_MAX_VCPUS : MAX_VIRT_CPUS;
     if ( max_vcpus > limit )
         max_vcpus = limit;
 
@@ -280,8 +280,8 @@ struct vcpu *__init alloc_dom0_vcpu0(struct domain *dom0)
 #ifdef CONFIG_SHADOW_PAGING
 bool __initdata opt_dom0_shadow;
 #endif
-bool __initdata dom0_pvh = !IS_ENABLED(CONFIG_PV);
-bool __initdata dom0_verbose;
+bool __initdata opt_dom0_pvh = !IS_ENABLED(CONFIG_PV);
+bool __initdata opt_dom0_verbose = IS_ENABLED(CONFIG_VERBOSE_DEBUG);
 
 static int __init parse_dom0_param(const char *s)
 {
@@ -296,15 +296,15 @@ static int __init parse_dom0_param(const char *s)
             ss = strchr(s, '\0');
 
         if ( IS_ENABLED(CONFIG_PV) && !cmdline_strcmp(s, "pv") )
-            dom0_pvh = false;
+            opt_dom0_pvh = false;
         else if ( IS_ENABLED(CONFIG_HVM) && !cmdline_strcmp(s, "pvh") )
-            dom0_pvh = true;
+            opt_dom0_pvh = true;
 #ifdef CONFIG_SHADOW_PAGING
         else if ( (val = parse_boolean("shadow", s, ss)) >= 0 )
             opt_dom0_shadow = val;
 #endif
         else if ( (val = parse_boolean("verbose", s, ss)) >= 0 )
-            dom0_verbose = val;
+            opt_dom0_verbose = val;
         else
             rc = -EINVAL;
 
@@ -356,7 +356,7 @@ unsigned long __init dom0_compute_nr_pages(
         avail -= d->max_vcpus - 1;
 
     /* Reserve memory for iommu_dom0_init() (rough estimate). */
-    if ( iommu_enabled )
+    if ( is_iommu_enabled(d) )
     {
         unsigned int s;
 
@@ -542,7 +542,7 @@ int __init dom0_setup_permissions(struct domain *d)
                             paddr_to_pfn(MSI_ADDR_BASE_LO +
                                          MSI_ADDR_DEST_ID_MASK));
     /* HyperTransport range. */
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+    if ( boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
         rc |= iomem_deny_access(d, paddr_to_pfn(0xfdULL << 32),
                                 paddr_to_pfn((1ULL << 40) - 1));
 
@@ -587,14 +587,6 @@ int __init construct_dom0(struct domain *d, const module_t *image,
     BUG_ON(d->vcpu[0]->is_initialised);
 
     process_pending_softirqs();
-
-#ifdef CONFIG_SHADOW_PAGING
-    if ( opt_dom0_shadow && !dom0_pvh )
-    {
-        opt_dom0_shadow = false;
-        printk(XENLOG_WARNING "Shadow Dom0 requires PVH. Option ignored.\n");
-    }
-#endif
 
     if ( is_hvm_domain(d) )
         rc = dom0_construct_pvh(d, image, image_headroom, initrd, cmdline);

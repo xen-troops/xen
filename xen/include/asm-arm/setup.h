@@ -66,6 +66,7 @@ struct bootcmdlines {
 
 struct bootinfo {
     struct meminfo mem;
+    struct meminfo reserved_mem;
     struct bootmodules modules;
     struct bootcmdlines cmdlines;
 #ifdef CONFIG_ACPI
@@ -76,8 +77,6 @@ struct bootinfo {
 extern struct bootinfo bootinfo;
 
 extern domid_t max_init_domid;
-
-void arch_init_memory(void);
 
 void copy_from_paddr(void *dst, paddr_t paddr, unsigned long len);
 

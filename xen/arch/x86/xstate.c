@@ -369,15 +369,14 @@ void xrstor(struct vcpu *v, uint64_t mask)
     unsigned int faults, prev_faults;
 
     /*
-     * AMD CPUs don't save/restore FDP/FIP/FOP unless an exception
+     * Some CPUs don't save/restore FDP/FIP/FOP unless an exception
      * is pending. Clear the x87 state here by setting it to fixed
      * values. The hypervisor data segment can be sometimes 0 and
      * sometimes new user value. Both should be ok. Use the FPU saved
      * data block as a safe address because it should be in L1.
      */
-    if ( (mask & ptr->xsave_hdr.xstate_bv & X86_XCR0_FP) &&
-         !(ptr->fpu_sse.fsw & ~ptr->fpu_sse.fcw & 0x003f) &&
-         boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+    if ( cpu_bug_fpu_ptrs &&
+         !(ptr->fpu_sse.fsw & ~ptr->fpu_sse.fcw & 0x003f) )
         asm volatile ( "fnclex\n\t"        /* clear exceptions */
                        "ffree %%st(7)\n\t" /* clear stack tag */
                        "fildl %0"          /* load to clear state */
@@ -577,7 +576,11 @@ unsigned int xstate_ctxt_size(u64 xcr0)
 /* Collect the information of processor's extended state */
 void xstate_init(struct cpuinfo_x86 *c)
 {
-    static bool __initdata use_xsave = true;
+    /*
+     * NB: use_xsave cannot live in initdata because llvm might optimize
+     * reading it, see: https://bugs.llvm.org/show_bug.cgi?id=39707
+     */
+    static bool __read_mostly use_xsave = true;
     boolean_param("xsave", use_xsave);
 
     bool bsp = c == &boot_cpu_data;
@@ -660,9 +663,7 @@ static bool valid_xcr0(u64 xcr0)
 int validate_xstate(const struct domain *d, uint64_t xcr0, uint64_t xcr0_accum,
                     const struct xsave_hdr *hdr)
 {
-    const struct cpuid_policy *cp = d->arch.cpuid;
-    uint64_t xcr0_max =
-        ((uint64_t)cp->xstate.xcr0_high << 32) | cp->xstate.xcr0_low;
+    uint64_t xcr0_max = cpuid_policy_xcr0_max(d->arch.cpuid);
     unsigned int i;
 
     if ( (hdr->xstate_bv & ~xcr0_accum) ||
@@ -686,9 +687,7 @@ int validate_xstate(const struct domain *d, uint64_t xcr0, uint64_t xcr0_accum,
 int handle_xsetbv(u32 index, u64 new_bv)
 {
     struct vcpu *curr = current;
-    const struct cpuid_policy *cp = curr->domain->arch.cpuid;
-    uint64_t xcr0_max =
-        ((uint64_t)cp->xstate.xcr0_high << 32) | cp->xstate.xcr0_low;
+    uint64_t xcr0_max = cpuid_policy_xcr0_max(curr->domain->arch.cpuid);
     u64 mask;
 
     if ( index != XCR_XFEATURE_ENABLED_MASK )
@@ -725,8 +724,7 @@ int handle_xsetbv(u32 index, u64 new_bv)
     curr->arch.xcr0 = new_bv;
     curr->arch.xcr0_accum |= new_bv;
 
-    /* LWP sets nonlazy_xstate_used independently. */
-    if ( new_bv & (XSTATE_NONLAZY & ~X86_XCR0_LWP) )
+    if ( new_bv & XSTATE_NONLAZY )
         curr->arch.nonlazy_xstate_used = 1;
 
     mask &= curr->fpu_dirtied ? ~XSTATE_FP_SSE : XSTATE_NONLAZY;

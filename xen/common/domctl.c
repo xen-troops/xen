@@ -123,14 +123,14 @@ int xenctl_bitmap_to_cpumask(cpumask_var_t *cpumask,
 static int nodemask_to_xenctl_bitmap(struct xenctl_bitmap *xenctl_nodemap,
                                      const nodemask_t *nodemask)
 {
-    return bitmap_to_xenctl_bitmap(xenctl_nodemap, nodes_addr(*nodemask),
+    return bitmap_to_xenctl_bitmap(xenctl_nodemap, nodemask_bits(nodemask),
                                    MAX_NUMNODES);
 }
 
 static int xenctl_bitmap_to_nodemask(nodemask_t *nodemask,
                                      const struct xenctl_bitmap *xenctl_nodemap)
 {
-    return xenctl_bitmap_to_bitmap(nodes_addr(*nodemask), xenctl_nodemap,
+    return xenctl_bitmap_to_bitmap(nodemask_bits(nodemask), xenctl_nodemap,
                                    MAX_NUMNODES);
 }
 
@@ -186,17 +186,9 @@ void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info)
         (d->is_shut_down                ? XEN_DOMINF_shutdown  : 0) |
         (d->controller_pause_count > 0  ? XEN_DOMINF_paused    : 0) |
         (d->debugger_attached           ? XEN_DOMINF_debugged  : 0) |
-        (d->is_xenstore                 ? XEN_DOMINF_xs_domain : 0) |
+        (is_xenstore_domain(d)          ? XEN_DOMINF_xs_domain : 0) |
+        (is_hvm_domain(d)               ? XEN_DOMINF_hvm_guest : 0) |
         d->shutdown_code << XEN_DOMINF_shutdownshift;
-
-    switch ( d->guest_type )
-    {
-    case guest_type_hvm:
-        info->flags |= XEN_DOMINF_hvm_guest;
-        break;
-    default:
-        break;
-    }
 
     xsm_security_domaininfo(d, info);
 
@@ -523,6 +515,19 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             rover = dom;
         }
 
+        /*
+         * For now, make sure the createdomain IOMMU flag is set if the
+         * IOMMU is enabled. When the flag comes under toolstack control
+         * this can go away.
+         */
+        if ( op->u.createdomain.flags & XEN_DOMCTL_CDF_iommu )
+        {
+            ASSERT_UNREACHABLE();
+            return -EINVAL;
+        }
+        if ( iommu_enabled )
+            op->u.createdomain.flags |= XEN_DOMCTL_CDF_iommu;
+
         d = domain_create(dom, &op->u.createdomain, false);
         if ( IS_ERR(d) )
         {
@@ -654,7 +659,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
             /* Undo a stuck SCHED_pin_override? */
             if ( vcpuaff->flags & XEN_VCPUAFFINITY_FORCE )
-                vcpu_pin_override(v, -1);
+                vcpu_temporary_affinity(v, NR_CPUS, VCPU_AFFINITY_OVERRIDE);
 
             ret = 0;
 
@@ -1018,9 +1023,9 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         break;
 
     case XEN_DOMCTL_vm_event_op:
-        ret = vm_event_domctl(d, &op->u.vm_event_op,
-                              guest_handle_cast(u_domctl, void));
-        copyback = 1;
+        ret = vm_event_domctl(d, &op->u.vm_event_op);
+        if ( ret == 0 )
+            copyback = true;
         break;
 
 #ifdef CONFIG_MEM_ACCESS

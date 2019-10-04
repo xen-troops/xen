@@ -384,7 +384,7 @@ void panic_PAR(uint64_t par)
 
 static void cpsr_switch_mode(struct cpu_user_regs *regs, int mode)
 {
-    uint32_t sctlr = READ_SYSREG32(SCTLR_EL1);
+    register_t sctlr = READ_SYSREG(SCTLR_EL1);
 
     regs->cpsr &= ~(PSR_MODE_MASK|PSR_IT_MASK|PSR_JAZELLE|PSR_BIG_ENDIAN|PSR_THUMB);
 
@@ -392,17 +392,17 @@ static void cpsr_switch_mode(struct cpu_user_regs *regs, int mode)
     regs->cpsr |= PSR_IRQ_MASK;
     if ( mode == PSR_MODE_ABT )
         regs->cpsr |= PSR_ABT_MASK;
-    if ( sctlr & SCTLR_TE )
+    if ( sctlr & SCTLR_A32_ELx_TE )
         regs->cpsr |= PSR_THUMB;
-    if ( sctlr & SCTLR_EE )
+    if ( sctlr & SCTLR_Axx_ELx_EE )
         regs->cpsr |= PSR_BIG_ENDIAN;
 }
 
 static vaddr_t exception_handler32(vaddr_t offset)
 {
-    uint32_t sctlr = READ_SYSREG32(SCTLR_EL1);
+    register_t sctlr = READ_SYSREG(SCTLR_EL1);
 
-    if ( sctlr & SCTLR_V )
+    if ( sctlr & SCTLR_A32_EL1_V )
         return 0xffff0000 + offset;
     else /* always have security exceptions */
         return READ_SYSREG(VBAR_EL1) + offset;
@@ -719,7 +719,7 @@ crash_system:
 
 struct reg_ctxt {
     /* Guest-side state */
-    uint32_t sctlr_el1;
+    register_t sctlr_el1;
     register_t tcr_el1;
     uint64_t ttbr0_el1, ttbr1_el1;
 #ifdef CONFIG_ARM_32
@@ -797,7 +797,7 @@ static void show_registers_32(const struct cpu_user_regs *regs,
 
     if ( guest_mode )
     {
-        printk("USR: SP: %08"PRIx32" LR: %08"PRIregister"\n",
+        printk("USR: SP: %08"PRIx32" LR: %"PRIregister"\n",
                regs->sp_usr, regs->lr);
         printk("SVC: SP: %08"PRIx32" LR: %08"PRIx32" SPSR:%08"PRIx32"\n",
                regs->sp_svc, regs->lr_svc, regs->spsr_svc);
@@ -815,15 +815,15 @@ static void show_registers_32(const struct cpu_user_regs *regs,
 #ifndef CONFIG_ARM_64
     else
     {
-        printk("HYP: SP: %08"PRIx32" LR: %08"PRIregister"\n", regs->sp, regs->lr);
+        printk("HYP: SP: %08"PRIx32" LR: %"PRIregister"\n", regs->sp, regs->lr);
     }
 #endif
     printk("\n");
 
     if ( guest_mode )
     {
-        printk("     SCTLR: %08"PRIx32"\n", ctxt->sctlr_el1);
-        printk("       TCR: %08"PRIregister"\n", ctxt->tcr_el1);
+        printk("     SCTLR: %"PRIregister"\n", ctxt->sctlr_el1);
+        printk("       TCR: %"PRIregister"\n", ctxt->tcr_el1);
         printk("     TTBR0: %016"PRIx64"\n", ctxt->ttbr0_el1);
         printk("     TTBR1: %016"PRIx64"\n", ctxt->ttbr1_el1);
         printk("      IFAR: %08"PRIx32", IFSR: %08"PRIx32"\n"
@@ -894,8 +894,8 @@ static void show_registers_64(const struct cpu_user_regs *regs,
         printk("   ESR_EL1: %08"PRIx32"\n", ctxt->esr_el1);
         printk("   FAR_EL1: %016"PRIx64"\n", ctxt->far);
         printk("\n");
-        printk(" SCTLR_EL1: %08"PRIx32"\n", ctxt->sctlr_el1);
-        printk("   TCR_EL1: %08"PRIregister"\n", ctxt->tcr_el1);
+        printk(" SCTLR_EL1: %"PRIregister"\n", ctxt->sctlr_el1);
+        printk("   TCR_EL1: %"PRIregister"\n", ctxt->tcr_el1);
         printk(" TTBR0_EL1: %016"PRIx64"\n", ctxt->ttbr0_el1);
         printk(" TTBR1_EL1: %016"PRIx64"\n", ctxt->ttbr1_el1);
         printk("\n");
@@ -914,21 +914,11 @@ static void _show_registers(const struct cpu_user_regs *regs,
 
     if ( guest_mode )
     {
-        if ( is_32bit_domain(v->domain) )
+        if ( psr_mode_is_32bit(regs) )
             show_registers_32(regs, ctxt, guest_mode, v);
 #ifdef CONFIG_ARM_64
-        else if ( is_64bit_domain(v->domain) )
-        {
-            if ( psr_mode_is_32bit(regs->cpsr) )
-            {
-                BUG_ON(!usr_mode(regs));
-                show_registers_32(regs, ctxt, guest_mode, v);
-            }
-            else
-            {
-                show_registers_64(regs, ctxt, guest_mode, v);
-            }
-        }
+        else
+            show_registers_64(regs, ctxt, guest_mode, v);
 #endif
     }
     else
@@ -944,11 +934,11 @@ static void _show_registers(const struct cpu_user_regs *regs,
     printk("\n");
 
     printk(" SCTLR_EL2: %08"PRIx32"\n", READ_SYSREG32(SCTLR_EL2));
-    printk("   HCR_EL2: %016"PRIregister"\n", READ_SYSREG(HCR_EL2));
+    printk("   HCR_EL2: %"PRIregister"\n", READ_SYSREG(HCR_EL2));
     printk(" TTBR0_EL2: %016"PRIx64"\n", READ_SYSREG64(TTBR0_EL2));
     printk("\n");
     printk("   ESR_EL2: %08"PRIx32"\n", regs->hsr);
-    printk(" HPFAR_EL2: %016"PRIregister"\n", READ_SYSREG(HPFAR_EL2));
+    printk(" HPFAR_EL2: %"PRIregister"\n", READ_SYSREG(HPFAR_EL2));
 
 #ifdef CONFIG_ARM_32
     printk("     HDFAR: %08"PRIx32"\n", READ_CP32(HDFAR));
@@ -1314,10 +1304,15 @@ int do_bug_frame(const struct cpu_user_regs *regs, vaddr_t pc)
 #ifdef CONFIG_ARM_64
 static void do_trap_brk(struct cpu_user_regs *regs, const union hsr hsr)
 {
-    /* HCR_EL2.TGE and MDCR_EL2.TDE are not set so we never receive
-     * software breakpoint exception for EL1 and EL0 here.
+    /*
+     * HCR_EL2.TGE and MDCR_EL2.TDR are currently not set. So we should
+     * never receive software breakpoing exception for EL1 and EL0 here.
      */
-    BUG_ON(!hyp_mode(regs));
+    if ( !hyp_mode(regs) )
+    {
+        domain_crash(current->domain);
+        return;
+    }
 
     switch ( hsr.brk.comment )
     {
@@ -1625,7 +1620,7 @@ int check_conditional_instr(struct cpu_user_regs *regs, const union hsr hsr)
     {
         unsigned long it;
 
-        BUG_ON( !psr_mode_is_32bit(regs->cpsr) || !(cpsr&PSR_THUMB) );
+        BUG_ON( !psr_mode_is_32bit(regs) || !(cpsr & PSR_THUMB) );
 
         it = ( (cpsr >> (10-2)) & 0xfc) | ((cpsr >> 25) & 0x3 );
 
@@ -1650,12 +1645,9 @@ int check_conditional_instr(struct cpu_user_regs *regs, const union hsr hsr)
 void advance_pc(struct cpu_user_regs *regs, const union hsr hsr)
 {
     unsigned long itbits, cond, cpsr = regs->cpsr;
+    bool is_thumb = psr_mode_is_32bit(regs) && (cpsr & PSR_THUMB);
 
-    /* PSR_IT_MASK bits can only be set for 32-bit processors in Thumb mode. */
-    BUG_ON( (!psr_mode_is_32bit(cpsr)||!(cpsr&PSR_THUMB))
-            && (cpsr&PSR_IT_MASK) );
-
-    if ( cpsr&PSR_IT_MASK )
+    if ( is_thumb && (cpsr & PSR_IT_MASK) )
     {
         /* The ITSTATE[7:0] block is contained in CPSR[15:10],CPSR[26:25]
          *
@@ -1767,7 +1759,7 @@ void dump_guest_s1_walk(struct domain *d, vaddr_t addr)
     mfn = gfn_to_mfn(d, gaddr_to_gfn(ttbr0));
 
     printk("dom%d VA 0x%08"PRIvaddr"\n", d->domain_id, addr);
-    printk("    TTBCR: 0x%08"PRIregister"\n", ttbcr);
+    printk("    TTBCR: 0x%"PRIregister"\n", ttbcr);
     printk("    TTBR0: 0x%016"PRIx64" = 0x%"PRIpaddr"\n",
            ttbr0, mfn_to_maddr(mfn));
 
@@ -1924,7 +1916,7 @@ static void do_trap_stage2_abort_guest(struct cpu_user_regs *regs,
          * still be inaccurate.
          */
         if ( !is_data )
-            flush_tlb_local();
+            flush_guest_tlb_local();
 
         rc = gva_to_ipa(gva, &gpa, GV2M_READ);
         /*
@@ -2081,32 +2073,32 @@ void do_trap_guest_sync(struct cpu_user_regs *regs)
         advance_pc(regs, hsr);
         break;
     case HSR_EC_CP15_32:
-        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs));
         perfc_incr(trap_cp15_32);
         do_cp15_32(regs, hsr);
         break;
     case HSR_EC_CP15_64:
-        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs));
         perfc_incr(trap_cp15_64);
         do_cp15_64(regs, hsr);
         break;
     case HSR_EC_CP14_32:
-        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs));
         perfc_incr(trap_cp14_32);
         do_cp14_32(regs, hsr);
         break;
     case HSR_EC_CP14_64:
-        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs));
         perfc_incr(trap_cp14_64);
         do_cp14_64(regs, hsr);
         break;
     case HSR_EC_CP14_DBG:
-        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs));
         perfc_incr(trap_cp14_dbg);
         do_cp14_dbg(regs, hsr);
         break;
     case HSR_EC_CP:
-        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs));
         perfc_incr(trap_cp);
         do_cp(regs, hsr);
         break;
@@ -2117,7 +2109,7 @@ void do_trap_guest_sync(struct cpu_user_regs *regs)
          * ARMv7 (DDI 0406C.b): B1.14.8
          * ARMv8 (DDI 0487A.d): D1-1501 Table D1-44
          */
-        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs));
         perfc_incr(trap_smc32);
         do_trap_smc(regs, hsr);
         break;
@@ -2125,7 +2117,7 @@ void do_trap_guest_sync(struct cpu_user_regs *regs)
     {
         register_t nr;
 
-        GUEST_BUG_ON(!psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(!psr_mode_is_32bit(regs));
         perfc_incr(trap_hvc32);
 #ifndef NDEBUG
         if ( (hsr.iss & 0xff00) == 0xff00 )
@@ -2140,7 +2132,7 @@ void do_trap_guest_sync(struct cpu_user_regs *regs)
     }
 #ifdef CONFIG_ARM_64
     case HSR_EC_HVC64:
-        GUEST_BUG_ON(psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(psr_mode_is_32bit(regs));
         perfc_incr(trap_hvc64);
 #ifndef NDEBUG
         if ( (hsr.iss & 0xff00) == 0xff00 )
@@ -2156,12 +2148,12 @@ void do_trap_guest_sync(struct cpu_user_regs *regs)
          *
          * ARMv8 (DDI 0487A.d): D1-1501 Table D1-44
          */
-        GUEST_BUG_ON(psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(psr_mode_is_32bit(regs));
         perfc_incr(trap_smc64);
         do_trap_smc(regs, hsr);
         break;
     case HSR_EC_SYSREG:
-        GUEST_BUG_ON(psr_mode_is_32bit(regs->cpsr));
+        GUEST_BUG_ON(psr_mode_is_32bit(regs));
         perfc_incr(trap_sysreg);
         do_sysreg(regs, hsr);
         break;

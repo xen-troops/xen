@@ -44,12 +44,20 @@ config COVERAGE
 
 	  If unsure, say N here.
 
-config LOCK_PROFILE
+config DEBUG_LOCK_PROFILE
 	bool "Lock Profiling"
+	select DEBUG_LOCKS
 	---help---
 	  Lock profiling allows you to see how often locks are taken and blocked.
 	  You can use serial console to print (and reset) using 'l' and 'L'
 	  respectively, or the 'xenlockprof' tool.
+
+config DEBUG_LOCKS
+	bool "Lock debugging"
+	default DEBUG
+	---help---
+	  Enable debugging features of lock handling.  Some additional
+	  checks will be performed when acquiring and releasing locks.
 
 config PERF_COUNTERS
 	bool "Performance Counters"
@@ -104,6 +112,13 @@ config DEBUG_TRACE
 	  Debug trace enables to record debug trace messages which are printed
 	  either directly to the console or are printed to console in case of
 	  a system crash.
+
+config XMEM_POOL_POISON
+	bool "Poison free xenpool blocks"
+	default DEBUG
+	---help---
+	  Poison free blocks with 0xAA bytes and verify them when a block is
+	  allocated in order to spot use-after-free issues.
 
 endif # DEBUG || EXPERT
 

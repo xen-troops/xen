@@ -144,10 +144,6 @@ this detection and the sysv runlevel scripts have to be used.
   --with-systemd=DIR
   --with-systemd-modules-load=DIR
 
-The old backend drivers are disabled because qdisk is now the default.
-This option can be used to build them anyway.
-  --enable-blktap2
-
 Build various stubom components, some are only example code. Its usually
 enough to specify just --enable-stubdom and leave these options alone.
   --enable-ioemu-stubdom
@@ -225,7 +221,6 @@ XEN_BUILD_TIME=hh:mm:ss
 SMBIOS_REL_DATE=mm/dd/yyyy
 VGABIOS_REL_DATE="dd Mon yyyy"
 
-During tools build external repos will be cloned into the source tree.
 This variable can be used to point to a different git binary to be used.
 GIT=
 

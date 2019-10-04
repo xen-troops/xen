@@ -624,6 +624,7 @@ ac_includes_default="\
 
 ac_subst_vars='LTLIBOBJS
 LIBOBJS
+pvshim
 ninepfs
 SYSTEMD_LIBS
 SYSTEMD_CFLAGS
@@ -644,6 +645,7 @@ system_aio
 zlib
 FETCHER
 FTP
+FALSE
 WGET
 pixman_LIBS
 pixman_CFLAGS
@@ -702,7 +704,6 @@ BCC
 LD86
 AS86
 qemu_traditional
-blktap2
 LINUX_BACKEND_MODULES
 seabios
 ovmf
@@ -807,7 +808,6 @@ enable_xsmpolicy
 enable_ovmf
 enable_seabios
 with_linux_backend_modules
-enable_blktap2
 enable_qemu_traditional
 enable_rombios
 with_system_qemu
@@ -821,6 +821,7 @@ enable_systemd
 with_systemd
 with_systemd_modules_load
 enable_9pfs
+enable_pvshim
 '
       ac_precious_vars='build_alias
 host_alias
@@ -1492,7 +1493,6 @@ Optional Features:
   --disable-xsmpolicy     Disable XSM policy compilation (default is ENABLED)
   --enable-ovmf           Enable OVMF (default is DISABLED)
   --disable-seabios       Disable SeaBIOS (default is ENABLED)
-  --enable-blktap2        Enable blktap2, (DEFAULT is off)
   --enable-qemu-traditional
                           Enable qemu traditional device model, (DEFAULT is on
                           for Linux or NetBSD x86, otherwise off)
@@ -1503,6 +1503,8 @@ Optional Features:
   --enable-systemd        Enable systemd support (default is DISABLED)
   --enable-9pfs           Explicitly enable 9pfs support in QEMU build
                           (default is to defer to QEMU configure default)
+  --disable-pvshim        Disable pvshim build (enabled by default on 64bit
+                          x86)
 
 Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
@@ -4220,7 +4222,6 @@ xen-scsibk
 usbbk
 pciback
 xen-acpi-processor
-blktap2
 "
 ;;
 *)
@@ -4230,29 +4231,6 @@ esac
 fi
 
 LINUX_BACKEND_MODULES="`eval echo $LINUX_BACKEND_MODULES`"
-
-
-# Check whether --enable-blktap2 was given.
-if test "${enable_blktap2+set}" = set; then :
-  enableval=$enable_blktap2;
-else
-
-        enable_blktap2="no"
-
-fi
-
-if test "x$enable_blktap2" = "xyes"; then :
-
-
-$as_echo "#define HAVE_BLKTAP2 1" >>confdefs.h
-
-    blktap2=y
-else
-
-    blktap2=n
-
-fi
-
 
 
 # Check whether --enable-qemu-traditional was given.
@@ -6947,16 +6925,17 @@ then
     as_fn_error $? "Unable to find bash, please install bash" "$LINENO" 5
 fi;;
 esac
+if test -z "$PYTHON"; then :
+  PYTHON="python"
+fi
 if echo "$PYTHON" | grep -q "^/"; then :
 
-    PYTHONPATH=$PYTHON
-    PYTHON=`basename $PYTHONPATH`
-
-elif test -z "$PYTHON"; then :
-  PYTHON="python"
 else
-  as_fn_error $? "PYTHON specified, but is not an absolute path" "$LINENO" 5
+  PYTHON=`type -p "$PYTHON"`
 fi
+PYTHONPATH=$PYTHON
+PYTHON=`basename $PYTHONPATH`
+
 # Extract the first word of "$PYTHON", so it can be a program name with args.
 set dummy $PYTHON; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
@@ -7463,7 +7442,7 @@ fi
 if test x"$pyconfig" = x"no"; then :
 
         CPPFLAGS="$CFLAGS `$PYTHON -c 'import distutils.sysconfig; \
-        print "-I" + distutils.sysconfig.get_config_var("INCLUDEPY")'`"
+        print("-I" + distutils.sysconfig.get_config_var("INCLUDEPY"))'`"
     CPPFLAGS="$CPPFLAGS `$PYTHON -c 'import distutils.sysconfig; \
         print(distutils.sysconfig.get_config_var("CFLAGS"))'`"
     LDFLAGS="$LDFLAGS `$PYTHON -c 'import distutils.sysconfig; \
@@ -8219,6 +8198,47 @@ $as_echo "no" >&6; }
 fi
 
 
+# Extract the first word of "false", so it can be a program name with args.
+set dummy false; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_FALSE+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $FALSE in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_FALSE="$FALSE" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_FALSE="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  test -z "$ac_cv_path_FALSE" && ac_cv_path_FALSE="/bin/false"
+  ;;
+esac
+fi
+FALSE=$ac_cv_path_FALSE
+if test -n "$FALSE"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $FALSE" >&5
+$as_echo "$FALSE" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
 if test x"$WGET" != x"no"; then :
 
     FETCHER="$WGET -c -O"
@@ -8272,7 +8292,9 @@ fi
 
 else
 
-        as_fn_error $? "cannot find wget or ftp" "$LINENO" 5
+        FETCHER="$FALSE"
+        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: cannot find wget or ftp" >&5
+$as_echo "$as_me: WARNING: cannot find wget or ftp" >&2;}
 
 fi
 
@@ -8423,57 +8445,6 @@ fi
 
 
 
-if test "x$enable_blktap2" = "xyes"; then :
-
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for io_setup in -laio" >&5
-$as_echo_n "checking for io_setup in -laio... " >&6; }
-if ${ac_cv_lib_aio_io_setup+:} false; then :
-  $as_echo_n "(cached) " >&6
-else
-  ac_check_lib_save_LIBS=$LIBS
-LIBS="-laio  $LIBS"
-cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-/* Override any GCC internal prototype to avoid an error.
-   Use char because int might match the return type of a GCC
-   builtin and then its argument prototype would still apply.  */
-#ifdef __cplusplus
-extern "C"
-#endif
-char io_setup ();
-int
-main ()
-{
-return io_setup ();
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
-  ac_cv_lib_aio_io_setup=yes
-else
-  ac_cv_lib_aio_io_setup=no
-fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-LIBS=$ac_check_lib_save_LIBS
-fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_aio_io_setup" >&5
-$as_echo "$ac_cv_lib_aio_io_setup" >&6; }
-if test "x$ac_cv_lib_aio_io_setup" = xyes; then :
-  cat >>confdefs.h <<_ACEOF
-#define HAVE_LIBAIO 1
-_ACEOF
-
-  LIBS="-laio $LIBS"
-
-else
-  as_fn_error $? "Could not find libaio" "$LINENO" 5
-fi
-
-
-fi
 
 
 ac_fn_c_check_header_mongrel "$LINENO" "ext2fs/ext2fs.h" "ac_cv_header_ext2fs_ext2fs_h" "$ac_includes_default"
@@ -9727,6 +9698,26 @@ else
 fi
 fi
 
+
+
+
+# Check whether --enable-pvshim was given.
+if test "${enable_pvshim+set}" = set; then :
+  enableval=$enable_pvshim; if test "x$enable_pvshim" = "xno"; then :
+  pvshim=n
+else
+  pvshim=y
+fi
+else
+
+    cpu=`test -z "$target_cpu" && echo "$host_cpu" || echo "$target_cpu"`
+    case "$cpu" in
+        x86_64)
+           pvshim="y";;
+        *) pvshim="n";;
+    esac
+
+fi
 
 
 

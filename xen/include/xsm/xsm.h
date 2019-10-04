@@ -127,7 +127,6 @@ struct xsm_operations {
     int (*resource_setup_misc) (void);
 
     int (*page_offline)(uint32_t cmd);
-    int (*tmem_op)(void);
 
     long (*do_xsm_op) (XEN_GUEST_HANDLE_PARAM(xsm_op_t) op);
 #ifdef CONFIG_COMPAT
@@ -151,7 +150,7 @@ struct xsm_operations {
     int (*mem_paging) (struct domain *d);
 #endif
 
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
     int (*mem_sharing) (struct domain *d);
 #endif
 
@@ -537,11 +536,6 @@ static inline int xsm_page_offline(xsm_default_t def, uint32_t cmd)
     return xsm_ops->page_offline(cmd);
 }
 
-static inline int xsm_tmem_op(xsm_default_t def)
-{
-    return xsm_ops->tmem_op();
-}
-
 static inline long xsm_do_xsm_op (XEN_GUEST_HANDLE_PARAM(xsm_op_t) op)
 {
     return xsm_ops->do_xsm_op(op);
@@ -603,7 +597,7 @@ static inline int xsm_mem_paging (xsm_default_t def, struct domain *d)
 }
 #endif
 
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
 static inline int xsm_mem_sharing (xsm_default_t def, struct domain *d)
 {
     return xsm_ops->mem_sharing(d);
@@ -741,6 +735,11 @@ extern int xsm_multiboot_policy_init(unsigned long *module_map,
 #endif
 
 #ifdef CONFIG_HAS_DEVICE_TREE
+/*
+ * Initialize XSM
+ *
+ * On success, return 1 if using SILO mode else 0.
+ */
 extern int xsm_dt_init(void);
 extern int xsm_dt_policy_init(void **policy_buffer, size_t *policy_size);
 extern bool has_xsm_magic(paddr_t);

@@ -18,9 +18,9 @@ static int vgacon_keep;
 static unsigned int xpos, ypos;
 static unsigned char *video;
 
-static void vga_text_puts(const char *s);
-static void vga_noop_puts(const char *s) {}
-void (*video_puts)(const char *) = vga_noop_puts;
+static void vga_text_puts(const char *s, size_t nr);
+static void vga_noop_puts(const char *s, size_t nr) {}
+void (*video_puts)(const char *, size_t nr) = vga_noop_puts;
 
 /*
  * 'vga=<mode-specifier>[,keep]' where <mode-specifier> is one of:
@@ -121,10 +121,9 @@ void __init video_endboot(void)
                 pcidevs_unlock();
 
                 if ( !pdev ||
-                     pci_conf_read16(0, bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
+                     pci_conf_read16(PCI_SBDF3(0, bus, devfn),
                                      PCI_CLASS_DEVICE) != 0x0300 ||
-                     !(pci_conf_read16(0, bus, PCI_SLOT(devfn),
-                                       PCI_FUNC(devfn), PCI_COMMAND) &
+                     !(pci_conf_read16(PCI_SBDF3(0, bus, devfn), PCI_COMMAND) &
                        (PCI_COMMAND_IO | PCI_COMMAND_MEMORY)) )
                     continue;
 
@@ -136,14 +135,12 @@ void __init video_endboot(void)
                         b = 0;
                         break;
                     case 1:
-                        switch ( pci_conf_read8(0, b, PCI_SLOT(df),
-                                                PCI_FUNC(df),
+                        switch ( pci_conf_read8(PCI_SBDF3(0, b, df),
                                                 PCI_HEADER_TYPE) )
                         {
                         case PCI_HEADER_TYPE_BRIDGE:
                         case PCI_HEADER_TYPE_CARDBUS:
-                            if ( pci_conf_read16(0, b, PCI_SLOT(df),
-                                                 PCI_FUNC(df),
+                            if ( pci_conf_read16(PCI_SBDF3(0, b, df),
                                                  PCI_BRIDGE_CONTROL) &
                                  PCI_BRIDGE_CTL_VGA )
                                 continue;
@@ -177,12 +174,12 @@ void __init video_endboot(void)
     }
 }
 
-static void vga_text_puts(const char *s)
+static void vga_text_puts(const char *s, size_t nr)
 {
-    char c;
-
-    while ( (c = *s++) != '\0' )
+    for ( ; nr > 0; nr--, s++ )
     {
+        char c = *s;
+
         if ( (c == '\n') || (xpos >= columns) )
         {
             if ( ++ypos >= lines )

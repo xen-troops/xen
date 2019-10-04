@@ -58,13 +58,12 @@ void __init copy_from_paddr(void *dst, paddr_t paddr, unsigned long len)
         set_fixmap(FIXMAP_MISC, maddr_to_mfn(paddr), PAGE_HYPERVISOR_WC);
         memcpy(dst, src + s, l);
         clean_dcache_va_range(dst, l);
+        clear_fixmap(FIXMAP_MISC);
 
         paddr += l;
         dst += l;
         len -= l;
     }
-
-    clear_fixmap(FIXMAP_MISC);
 }
 
 static void __init place_modules(struct kernel_info *info,
@@ -484,7 +483,7 @@ int __init kernel_probe(struct kernel_info *info,
         return -ENOENT;
     }
 
-    printk("Loading Dom%pd kernel from boot module @ %"PRIpaddr"\n",
+    printk("Loading %pd kernel from boot module @ %"PRIpaddr"\n",
            info->d, info->kernel_bootmodule->start);
     if ( info->initrd_bootmodule )
         printk("Loading ramdisk from boot module @ %"PRIpaddr"\n",

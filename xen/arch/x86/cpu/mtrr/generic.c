@@ -217,8 +217,9 @@ static void __init print_mtrr_state(const char *level)
 			printk("%s  %u disabled\n", level, i);
 	}
 
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD
-	    && boot_cpu_data.x86 >= 0xf) {
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+	     boot_cpu_data.x86 >= 0xf) ||
+	     boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
 		uint64_t syscfg, tom2;
 
 		rdmsrl(MSR_K8_SYSCFG, syscfg);
@@ -449,7 +450,14 @@ static bool prepare_set(void)
 
 	/*  Enter the no-fill (CD=1, NW=0) cache mode and flush caches. */
 	write_cr0(read_cr0() | X86_CR0_CD);
-	wbinvd();
+
+	/*
+	 * Cache flushing is the most time-consuming step when programming
+	 * the MTRRs. Fortunately, as per the Intel Software Development
+	 * Manual, we can skip it if the processor supports cache self-
+	 * snooping.
+	 */
+	alternative("wbinvd", "", X86_FEATURE_XEN_SELFSNOOP);
 
 	cr4 = read_cr4();
 	if (cr4 & X86_CR4_PGE)
@@ -464,6 +472,9 @@ static bool prepare_set(void)
 
 	/*  Disable MTRRs, and set the default type to uncached  */
 	mtrr_wrmsr(MSR_MTRRdefType, deftype & ~0xcff);
+
+	/* Again, only flush caches if we have to. */
+	alternative("wbinvd", "", X86_FEATURE_XEN_SELFSNOOP);
 
 	return cr4 & X86_CR4_PGE;
 }

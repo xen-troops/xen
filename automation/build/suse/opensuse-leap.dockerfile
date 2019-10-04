@@ -7,8 +7,8 @@ ENV USER root
 RUN mkdir /build
 WORKDIR /build
 
-RUN zypper ref && zypper up -y
-RUN zypper install -y \
+RUN zypper ref && zypper up -y --no-recommends
+RUN zypper install -y --no-recommends \
         acpica \
         bc \
         bin86 \
@@ -21,6 +21,7 @@ RUN zypper install -y \
         discount \
         flex \
         gcc \
+        gcc-c++ \
         gettext-tools \
         git \
         glib2-devel \
@@ -64,4 +65,4 @@ RUN zypper install -y \
         xz-devel \
         zlib-devel \
         && \
-        zypper clean
+        zypper clean -a

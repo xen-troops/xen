@@ -79,7 +79,7 @@ static always_inline int xsm_default_action(
         {
             return 0;
     case XSM_XS_PRIV:
-            if ( src->is_xenstore )
+            if ( is_xenstore_domain(src) )
                 return 0;
         }
         /* fall through */
@@ -433,12 +433,6 @@ static XSM_INLINE int xsm_page_offline(XSM_DEFAULT_ARG uint32_t cmd)
     return xsm_default_action(action, current->domain, NULL);
 }
 
-static XSM_INLINE int xsm_tmem_op(XSM_DEFAULT_VOID)
-{
-    XSM_ASSERT_ACTION(XSM_HOOK);
-    return xsm_default_action(action, current->domain, NULL);
-}
-
 static XSM_INLINE long xsm_do_xsm_op(XEN_GUEST_HANDLE_PARAM(xsm_op_t) op)
 {
     return -ENOSYS;
@@ -603,7 +597,7 @@ static XSM_INLINE int xsm_mem_paging(XSM_DEFAULT_ARG struct domain *d)
 }
 #endif
 
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
 static XSM_INLINE int xsm_mem_sharing(XSM_DEFAULT_ARG struct domain *d)
 {
     XSM_ASSERT_ACTION(XSM_DM_PRIV);

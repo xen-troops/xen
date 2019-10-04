@@ -483,7 +483,7 @@ accounting for hardware capabilities as enumerated via CPUID.
 
 Currently accepted:
 
-The Speculation Control hardware features `ibrsb`, `stibp`, `ibpb`,
+The Speculation Control hardware features `md-clear`, `ibrsb`, `stibp`, `ibpb`,
 `l1d-flush` and `ssbd` are used by default if available and applicable.  They can
 be ignored, e.g. `no-ibrsb`, at which point Xen won't use them itself, and
 won't offer them to guests.
@@ -644,12 +644,13 @@ over the PCI busses sequentially) or by PCI device (must be on segment 0).
 Limits the number lines printed in Xen stack traces.
 
 ### debugtrace
-> `= <integer>`
+> `= [cpu:]<size>`
 
 > Default: `128`
 
-Specify the size of the console debug trace buffer in KiB. The debug
-trace feature is only enabled in debugging builds of Xen.
+Specify the size of the console debug trace buffer. By specifying `cpu:`
+additionally a trace buffer of the specified size is allocated per cpu.
+The debug trace feature is only enabled in debugging builds of Xen.
 
 ### dma_bits
 > `= <integer>`
@@ -675,15 +676,20 @@ Controls for how dom0 is constructed on x86 systems.
         selected mode.
     *   For a PVH dom0, the hardware must have VT-x/SVM extensions available.
 
-*   The `shadow` boolean is only applicable when dom0 is constructed as a PVH
-    guest, and controls whether dom0 uses hardware assisted paging, or shadow
-    paging.  The default is HAP when available, and shadow otherwise.
+*   The `shadow` boolean allows dom0 to be explicitly constructed using shadow
+    paging.  This option is unavailable when `CONFIG_SHADOW_PAGING` is
+    disabled.
 
-    This option is unavailable when `CONFIG_SHADOW_PAGING` is disabled.  Such
-    builds of Xen require HAP-capable hardware to use a PVH dom0.
+    For PVH, dom0 defaults to using HAP on capable hardware, and falls back to
+    shadow paging otherwise.  A PVH dom0 cannot be used if Xen is compiled
+    without shadow paging support, and the hardware lacks HAP support.
+
+    For PV, the use of dom0 shadow mode is only for development purposes.  PV
+    guests do no require any paging support by default.
 
 *   The `verbose` boolean is intended for diagnostics, and prints out extra
-    information during the dom0 build.  It defaults to false.
+    information during the dom0 build.  It defaults to the compile time choice
+    of `CONFIG_VERBOSE_DEBUG`.
 
 ### dom0-iommu
     = List of [ passthrough=<bool>, strict=<bool>, map-inclusive=<bool>,
@@ -1173,8 +1179,7 @@ detection of systems known to misbehave upon accesses to that port.
 ### iommu
     = List of [ <bool>, verbose, debug, force, required,
                 sharept, intremap, intpost, crash-disable,
-                snoop, qinval, igfx, workaround_bios_bug,
-                amd-iommu-perdev-intremap,
+                snoop, qinval, igfx, amd-iommu-perdev-intremap,
                 dom0-{passthrough,strict} ]
 
     All sub-options are boolean in nature.
@@ -1264,10 +1269,6 @@ The following options are specific to Intel VT-d hardware:
     It is intended as a debugging mechanism for graphics issues, and to be
     similar to Linux's `intel_iommu=igfx_off` option.  If specifying `no-igfx`
     fixes anything, please report the problem.
-
-*   The `workaround_bios_bug` boolean is disabled by default.  It can be used
-    to ignore errors when parsing the ACPI tables, and finding a listed PCI
-    device which doesn't appear to exist in the system.
 
 The following options are specific to AMD-Vi hardware:
 
@@ -1374,7 +1375,11 @@ Specify the maximum number of CPUs that should be brought up.
 This option is ignored in **pv-shim** mode.
 
 ### max_cstate (x86)
-> `= <integer>`
+> `= <integer>[,<integer>]`
+
+Specify the deepest C-state CPUs are permitted to be placed in, and
+optionally the maximum sub C-state to be used used.  The latter only applies
+to the highest permitted C-state.
 
 ### max_gsi_irqs (x86)
 > `= <integer>`
@@ -1784,6 +1789,14 @@ sockets, &c.  This will reduce performance somewhat, particularly on
 systems with hyperthreading enabled, but should reduce power by
 enabling more sockets and cores to go into deeper sleep states.
 
+### scrub-domheap
+> `= <boolean>`
+
+> Default: `false`
+
+Scrub domains' freed pages. This is a safety net against a (buggy) domain
+accidentally leaking secrets by releasing pages without proper sanitization.
+
 ### serial_tx_buffer
 > `= <size>`
 
@@ -1900,9 +1913,9 @@ not be able to control the state of the mitigation.
 By default SSBD will be mitigated at runtime (i.e `ssbd=runtime`).
 
 ### spec-ctrl (x86)
-> `= List of [ <bool>, xen=<bool>, {pv,hvm,msr-sc,rsb}=<bool>,
+> `= List of [ <bool>, xen=<bool>, {pv,hvm,msr-sc,rsb,md-clear}=<bool>,
 >              bti-thunk=retpoline|lfence|jmp, {ibrs,ibpb,ssbd,eager-fpu,
->              l1d-flush}=<bool> ]`
+>              l1d-flush,l1tf-barrier}=<bool> ]`
 
 Controls for speculative execution sidechannel mitigations.  By default, Xen
 will pick the most appropriate mitigations based on compiled in support,
@@ -1924,9 +1937,10 @@ in place for guests to use.
 
 Use of a positive boolean value for either of these options is invalid.
 
-The booleans `pv=`, `hvm=`, `msr-sc=` and `rsb=` offer fine grained control
-over the alternative blocks used by Xen.  These impact Xen's ability to
-protect itself, and Xen's ability to virtualise support for guests to use.
+The booleans `pv=`, `hvm=`, `msr-sc=`, `rsb=` and `md-clear=` offer fine
+grained control over the alternative blocks used by Xen.  These impact Xen's
+ability to protect itself, and Xen's ability to virtualise support for guests
+to use.
 
 * `pv=` and `hvm=` offer control over all suboptions for PV and HVM guests
   respectively.
@@ -1935,6 +1949,11 @@ protect itself, and Xen's ability to virtualise support for guests to use.
   guests and if disabled, guests will be unable to use IBRS/STIBP/SSBD/etc.
 * `rsb=` offers control over whether to overwrite the Return Stack Buffer /
   Return Address Stack on entry to Xen.
+* `md-clear=` offers control over whether to use VERW to flush
+  microarchitectural buffers on idle and exit from Xen.  *Note: For
+  compatibility with development versions of this fix, `mds=` is also accepted
+  on Xen 4.12 and earlier as an alias.  Consult vendor documentation in
+  preference to here.*
 
 If Xen was compiled with INDIRECT_THUNK support, `bti-thunk=` can be used to
 select which of the thunks gets patched into the `__x86_indirect_thunk_%reg`
@@ -1967,6 +1986,12 @@ or prevent Xen from issuing an L1 data cache flush on each VMEntry.
 Irrespective of Xen's setting, the feature is virtualised for HVM guests to
 use.  By default, Xen will enable this mitigation on hardware believed to be
 vulnerable to L1TF.
+
+On hardware vulnerable to L1TF, the `l1tf-barrier=` option can be used to force
+or prevent Xen from protecting evaluations inside the hypervisor with a barrier
+instruction to not load potentially secret information into L1 cache.  By
+default, Xen will enable this mitigation on hardware believed to be vulnerable
+to L1TF.
 
 ### sync_console
 > `= <boolean>`
@@ -2006,18 +2031,6 @@ pages) must also be specified via the tbuf_size parameter.
 
 ### timer_slop
 > `= <integer>`
-
-### tmem
-> `= <boolean>`
-
-This option (and its underlying code) is going to go away in a future
-Xen version.
-
-### tmem_compress
-> `= <boolean>`
-
-This option (and its underlying code) is going to go away in a future
-Xen version.
 
 ### tsc (x86)
 > `= unstable | skewed | stable:socket`

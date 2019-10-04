@@ -175,6 +175,8 @@ struct csched_vcpu {
     atomic_t credit;
     unsigned int residual;
 
+    s_time_t last_sched_time;
+
 #ifdef CSCHED_STATS
     struct {
         int credit_last;
@@ -615,15 +617,6 @@ csched_init_pdata(const struct scheduler *ops, void *pdata, int cpu)
 {
     unsigned long flags;
     struct csched_private *prv = CSCHED_PRIV(ops);
-    struct schedule_data *sd = &per_cpu(schedule_data, cpu);
-
-    /*
-     * This is called either during during boot, resume or hotplug, in
-     * case Credit1 is the scheduler chosen at boot. In such cases, the
-     * scheduler lock for cpu is already pointing to the default per-cpu
-     * spinlock, as Credit1 needs it, so there is no remapping to be done.
-     */
-    ASSERT(sd->schedule_lock == &sd->_lock && !spin_is_locked(&sd->_lock));
 
     spin_lock_irqsave(&prv->lock, flags);
     init_pdata(prv, pdata, cpu);
@@ -631,7 +624,7 @@ csched_init_pdata(const struct scheduler *ops, void *pdata, int cpu)
 }
 
 /* Change the scheduler of cpu to us (Credit). */
-static void
+static spinlock_t *
 csched_switch_sched(struct scheduler *new_ops, unsigned int cpu,
                     void *pdata, void *vdata)
 {
@@ -653,16 +646,7 @@ csched_switch_sched(struct scheduler *new_ops, unsigned int cpu,
     init_pdata(prv, pdata, cpu);
     spin_unlock(&prv->lock);
 
-    per_cpu(scheduler, cpu) = new_ops;
-    per_cpu(schedule_data, cpu).sched_priv = pdata;
-
-    /*
-     * (Re?)route the lock to the per pCPU lock as /last/ thing. In fact,
-     * if it is free (and it can be) we want that anyone that manages
-     * taking it, finds all the initializations we've done above in place.
-     */
-    smp_mb();
-    sd->schedule_lock = &sd->_lock;
+    return &sd->_lock;
 }
 
 #ifndef NDEBUG
@@ -701,10 +685,11 @@ static unsigned int vcpu_migration_delay_us;
 integer_param("vcpu_migration_delay", vcpu_migration_delay_us);
 
 static inline bool
-__csched_vcpu_is_cache_hot(const struct csched_private *prv, struct vcpu *v)
+__csched_vcpu_is_cache_hot(const struct csched_private *prv,
+                           const struct csched_vcpu *svc)
 {
     bool hot = prv->vcpu_migr_delay &&
-               (NOW() - v->last_run_time) < prv->vcpu_migr_delay;
+               (NOW() - svc->last_sched_time) < prv->vcpu_migr_delay;
 
     if ( hot )
         SCHED_STAT_CRANK(vcpu_hot);
@@ -716,6 +701,7 @@ static inline int
 __csched_vcpu_is_migrateable(const struct csched_private *prv, struct vcpu *vc,
                              int dest_cpu, cpumask_t *mask)
 {
+    const struct csched_vcpu *svc = CSCHED_VCPU(vc);
     /*
      * Don't pick up work that's hot on peer PCPU, or that can't (or
      * would prefer not to) run on cpu.
@@ -725,7 +711,7 @@ __csched_vcpu_is_migrateable(const struct csched_private *prv, struct vcpu *vc,
      */
     ASSERT(!vc->is_running);
 
-    return !__csched_vcpu_is_cache_hot(prv, vc) &&
+    return !__csched_vcpu_is_cache_hot(prv, svc) &&
            cpumask_test_cpu(dest_cpu, mask);
 }
 
@@ -1538,7 +1524,7 @@ csched_acct(void* dummy)
                 svc->pri = CSCHED_PRI_TS_UNDER;
 
                 /* Unpark any capped domains whose credits go positive */
-                if ( test_and_clear_bit(CSCHED_FLAG_VCPU_PARKED, &svc->flags) )
+                if ( test_bit(CSCHED_FLAG_VCPU_PARKED, &svc->flags) )
                 {
                     /*
                      * It's important to unset the flag AFTER the unpause()
@@ -1547,6 +1533,7 @@ csched_acct(void* dummy)
                      */
                     SCHED_STAT_CRANK(vcpu_unpark);
                     vcpu_unpause(svc->vcpu);
+                    clear_bit(CSCHED_FLAG_VCPU_PARKED, &svc->flags);
                 }
 
                 /* Upper bound on credits means VCPU stops earning */
@@ -1869,6 +1856,7 @@ csched_schedule(
         /* Update credits of a non-idle VCPU. */
         burn_credits(scurr, now);
         scurr->start_time -= now;
+        scurr->last_sched_time = now;
     }
     else
     {
@@ -2060,8 +2048,8 @@ csched_dump_pcpu(const struct scheduler *ops, int cpu)
 
     printk("CPU[%02d] nr_run=%d, sort=%d, sibling=%*pb, core=%*pb\n",
            cpu, spc->nr_runnable, spc->runq_sort_last,
-           nr_cpu_ids, cpumask_bits(per_cpu(cpu_sibling_mask, cpu)),
-           nr_cpu_ids, cpumask_bits(per_cpu(cpu_core_mask, cpu)));
+           CPUMASK_PR(per_cpu(cpu_sibling_mask, cpu)),
+           CPUMASK_PR(per_cpu(cpu_core_mask, cpu)));
 
     /* current VCPU (nothing to say if that's the idle vcpu). */
     svc = CSCHED_VCPU(curr_on_cpu(cpu));
@@ -2122,7 +2110,7 @@ csched_dump(const struct scheduler *ops)
            prv->ticks_per_tslice,
            prv->vcpu_migr_delay/ MICROSECS(1));
 
-    printk("idlers: %*pb\n", nr_cpu_ids, cpumask_bits(prv->idlers));
+    printk("idlers: %*pb\n", CPUMASK_PR(prv->idlers));
 
     printk("active vcpus:\n");
     loop = 0;

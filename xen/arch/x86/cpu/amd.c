@@ -417,15 +417,16 @@ static void disable_c1_ramping(void)
 	int node, nr_nodes;
 
 	/* Read the number of nodes from the first Northbridge. */
-	nr_nodes = ((pci_conf_read32(0, 0, 0x18, 0x0, 0x60)>>4)&0x07)+1;
+	nr_nodes = ((pci_conf_read32(PCI_SBDF(0, 0, 0x18, 0), 0x60) >> 4) &
+		    0x07) + 1;
 	for (node = 0; node < nr_nodes; node++) {
 		/* PMM7: bus=0, dev=0x18+node, function=0x3, register=0x87. */
-		pmm7 = pci_conf_read8(0, 0, 0x18+node, 0x3, 0x87);
+		pmm7 = pci_conf_read8(PCI_SBDF(0, 0, 0x18 + node, 3), 0x87);
 		/* Invalid read means we've updated every Northbridge. */
 		if (pmm7 == 0xFF)
 			break;
 		pmm7 &= 0xFC; /* clear pmm7[1:0] */
-		pci_conf_write8(0, 0, 0x18+node, 0x3, 0x87, pmm7);
+		pci_conf_write8(PCI_SBDF(0, 0, 0x18 + node, 3), 0x87, pmm7);
 		printk ("AMD: Disabling C1 Clock Ramping Node #%x\n", node);
 	}
 }
@@ -507,7 +508,7 @@ static void amd_get_topology(struct cpuinfo_x86 *c)
                 u32 eax, ebx, ecx, edx;
 
                 cpuid(0x8000001e, &eax, &ebx, &ecx, &edx);
-                c->x86_num_siblings = ((ebx >> 8) & 0x3) + 1;
+                c->x86_num_siblings = ((ebx >> 8) & 0xff) + 1;
 
                 if (c->x86 < 0x17)
                         c->compute_unit_id = ebx & 0xFF;
@@ -515,6 +516,13 @@ static void amd_get_topology(struct cpuinfo_x86 *c)
                         c->cpu_core_id = ebx & 0xFF;
                         c->x86_max_cores /= c->x86_num_siblings;
                 }
+
+                /*
+                 * In case leaf B is available, use it to derive
+                 * topology information.
+                 */
+                if (detect_extended_topology(c))
+                        return;
         }
         
         if (opt_cpu_info)
@@ -526,7 +534,7 @@ static void amd_get_topology(struct cpuinfo_x86 *c)
                                                           : c->cpu_core_id);
 }
 
-static void early_init_amd(struct cpuinfo_x86 *c)
+void early_init_amd(struct cpuinfo_x86 *c)
 {
 	if (c == &boot_cpu_data)
 		amd_init_levelling();
@@ -570,6 +578,13 @@ static void init_amd(struct cpuinfo_x86 *c)
 		if (!rdmsr_amd_safe(0xc001100d, &l, &h))
 			wrmsr_amd_safe(0xc001100d, l, h & ~1);
 	}
+
+	/*
+	 * Older AMD CPUs don't save/load FOP/FIP/FDP unless an FPU exception
+	 * is pending.  Xen works around this at (F)XRSTOR time.
+	 */
+	if (!cpu_has(c, X86_FEATURE_RSTR_FP_ERR_PTRS))
+		setup_force_cpu_cap(X86_BUG_FPU_PTRS);
 
 	/*
 	 * Attempt to set lfence to be Dispatch Serialising.  This MSR almost
@@ -628,7 +643,7 @@ static void init_amd(struct cpuinfo_x86 *c)
 
 	switch(c->x86)
 	{
-	case 0xf ... 0x17:
+	case 0xf ... 0x11:
 		disable_c1e(NULL);
 		if (acpi_smi_cmd && (acpi_enable_value | acpi_disable_value))
 			amd_acpi_c1e_quirk = true;
@@ -696,8 +711,8 @@ static void init_amd(struct cpuinfo_x86 *c)
 
 	if (c->x86 == 0x16 && c->x86_model <= 0xf) {
 		if (c == &boot_cpu_data) {
-			l = pci_conf_read32(0, 0, 0x18, 0x3, 0x58);
-			h = pci_conf_read32(0, 0, 0x18, 0x3, 0x5c);
+			l = pci_conf_read32(PCI_SBDF(0, 0, 0x18, 3), 0x58);
+			h = pci_conf_read32(PCI_SBDF(0, 0, 0x18, 3), 0x5c);
 			if ((l & 0x1f) | (h & 0x1))
 				printk(KERN_WARNING
 				       "Applying workaround for erratum 792: %s%s%s\n",
@@ -706,11 +721,11 @@ static void init_amd(struct cpuinfo_x86 *c)
 				       (h & 0x1) ? "clearing D18F3x5C[0]" : "");
 
 			if (l & 0x1f)
-				pci_conf_write32(0, 0, 0x18, 0x3, 0x58,
+				pci_conf_write32(PCI_SBDF(0, 0, 0x18, 3), 0x58,
 						 l & ~0x1f);
 
 			if (h & 0x1)
-				pci_conf_write32(0, 0, 0x18, 0x3, 0x5c,
+				pci_conf_write32(PCI_SBDF(0, 0, 0x18, 3), 0x5c,
 						 h & ~0x1);
 		}
 
@@ -792,15 +807,7 @@ static void init_amd(struct cpuinfo_x86 *c)
 	check_syscfg_dram_mod_en();
 }
 
-static const struct cpu_dev amd_cpu_dev = {
-	.c_vendor	= "AMD",
-	.c_ident 	= { "AuthenticAMD" },
+const struct cpu_dev amd_cpu_dev = {
 	.c_early_init	= early_init_amd,
 	.c_init		= init_amd,
 };
-
-int __init amd_init_cpu(void)
-{
-	cpu_devs[X86_VENDOR_AMD] = &amd_cpu_dev;
-	return 0;
-}

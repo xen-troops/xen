@@ -46,51 +46,19 @@ static inline void invalidate_icache(void)
 }
 
 /*
- * Flush all hypervisor mappings from the TLB and branch predictor of
- * the local processor.
- *
- * This is needed after changing Xen code mappings.
- *
- * The caller needs to issue the necessary DSB and D-cache flushes
- * before calling flush_xen_text_tlb.
+ * Invalidate all instruction caches on the local processor to PoU.
+ * We also need to flush the branch predictor for ARMv7 as it may be
+ * architecturally visible to the software (see B2.2.4 in ARM DDI 0406C.b).
  */
-static inline void flush_xen_text_tlb_local(void)
+static inline void invalidate_icache_local(void)
 {
     asm volatile (
-        "isb;"                        /* Ensure synchronization with previous changes to text */
-        CMD_CP32(TLBIALLH)            /* Flush hypervisor TLB */
-        CMD_CP32(ICIALLU)             /* Flush I-cache */
-        CMD_CP32(BPIALL)              /* Flush branch predictor */
-        "dsb;"                        /* Ensure completion of TLB+BP flush */
-        "isb;"
+        CMD_CP32(ICIALLU)       /* Flush I-cache. */
+        CMD_CP32(BPIALL)        /* Flush branch predictor. */
         : : : "memory");
-}
 
-/*
- * Flush all hypervisor mappings from the data TLB of the local
- * processor. This is not sufficient when changing code mappings or
- * for self modifying code.
- */
-static inline void flush_xen_data_tlb_local(void)
-{
-    asm volatile("dsb;" /* Ensure preceding are visible */
-                 CMD_CP32(TLBIALLH)
-                 "dsb;" /* Ensure completion of the TLB flush */
-                 "isb;"
-                 : : : "memory");
-}
-
-/* Flush TLB of local processor for address va. */
-static inline void __flush_xen_data_tlb_one_local(vaddr_t va)
-{
-    asm volatile(STORE_CP32(0, TLBIMVAH) : : "r" (va) : "memory");
-}
-
-/* Flush TLB of all processors in the inner-shareable domain for
- * address va. */
-static inline void __flush_xen_data_tlb_one(vaddr_t va)
-{
-    asm volatile(STORE_CP32(0, TLBIMVAHIS) : : "r" (va) : "memory");
+    dsb(nsh);                   /* Ensure completion of the flush I-cache */
+    isb();                      /* Synchronize fetched instruction stream. */
 }
 
 /* Ask the MMU to translate a VA for us */

@@ -466,6 +466,7 @@ struct csched2_runqueue_data {
     spinlock_t lock;           /* Lock for this runqueue                     */
 
     struct list_head runq;     /* Ordered list of runnable vms               */
+    unsigned int nr_cpus;      /* How many CPUs are sharing this runqueue    */
     int id;                    /* ID of this runqueue (-1 if invalid)        */
 
     int load;                  /* Instantaneous load (num of non-idle vcpus) */
@@ -504,6 +505,7 @@ struct csched2_private {
  * Physical CPU
  */
 struct csched2_pcpu {
+    cpumask_t sibling_mask;            /* Siblings in the same runqueue      */
     int runq_id;
 };
 
@@ -656,7 +658,7 @@ static inline
 void smt_idle_mask_set(unsigned int cpu, const cpumask_t *idlers,
                        cpumask_t *mask)
 {
-    const cpumask_t *cpu_siblings = per_cpu(cpu_sibling_mask, cpu);
+    const cpumask_t *cpu_siblings = &csched2_pcpu(cpu)->sibling_mask;
 
     if ( cpumask_subset(cpu_siblings, idlers) )
         cpumask_or(mask, mask, cpu_siblings);
@@ -668,10 +670,10 @@ void smt_idle_mask_set(unsigned int cpu, const cpumask_t *idlers,
 static inline
 void smt_idle_mask_clear(unsigned int cpu, cpumask_t *mask)
 {
-    const cpumask_t *cpu_siblings = per_cpu(cpu_sibling_mask, cpu);
+    const cpumask_t *cpu_siblings = &csched2_pcpu(cpu)->sibling_mask;
 
     if ( cpumask_subset(cpu_siblings, mask) )
-        cpumask_andnot(mask, mask, per_cpu(cpu_sibling_mask, cpu));
+        cpumask_andnot(mask, mask, cpu_siblings);
 }
 
 /*
@@ -2612,8 +2614,8 @@ retry:
         if ( st.orqd->b_avgload > load_max )
             load_max = st.orqd->b_avgload;
 
-        cpus_max = cpumask_weight(&st.lrqd->active);
-        i = cpumask_weight(&st.orqd->active);
+        cpus_max = st.lrqd->nr_cpus;
+        i = st.orqd->nr_cpus;
         if ( i > cpus_max )
             cpus_max = i;
 
@@ -3652,8 +3654,8 @@ dump_pcpu(const struct scheduler *ops, int cpu)
 
     printk("CPU[%02d] runq=%d, sibling=%*pb, core=%*pb\n",
            cpu, c2r(cpu),
-           nr_cpu_ids, cpumask_bits(per_cpu(cpu_sibling_mask, cpu)),
-           nr_cpu_ids, cpumask_bits(per_cpu(cpu_core_mask, cpu)));
+           CPUMASK_PR(per_cpu(cpu_sibling_mask, cpu)),
+           CPUMASK_PR(per_cpu(cpu_core_mask, cpu)));
 
     /* current VCPU (nothing to say if that's the idle vcpu) */
     svc = csched2_vcpu(curr_on_cpu(cpu));
@@ -3696,8 +3698,8 @@ csched2_dump(const struct scheduler *ops)
                "\tinstload           = %d\n"
                "\taveload            = %"PRI_stime" (~%"PRI_stime"%%)\n",
                i,
-               cpumask_weight(&prv->rqd[i].active),
-               nr_cpu_ids, cpumask_bits(&prv->rqd[i].active),
+               prv->rqd[i].nr_cpus,
+               CPUMASK_PR(&prv->rqd[i].active),
                prv->rqd[i].max_weight,
                prv->rqd[i].pick_bias,
                prv->rqd[i].load,
@@ -3707,9 +3709,9 @@ csched2_dump(const struct scheduler *ops)
         printk("\tidlers: %*pb\n"
                "\ttickled: %*pb\n"
                "\tfully idle cores: %*pb\n",
-               nr_cpu_ids, cpumask_bits(&prv->rqd[i].idle),
-               nr_cpu_ids, cpumask_bits(&prv->rqd[i].tickled),
-               nr_cpu_ids, cpumask_bits(&prv->rqd[i].smt_idle));
+               CPUMASK_PR(&prv->rqd[i].idle),
+               CPUMASK_PR(&prv->rqd[i].tickled),
+               CPUMASK_PR(&prv->rqd[i].smt_idle));
     }
 
     printk("Domain info:\n");
@@ -3793,6 +3795,7 @@ init_pdata(struct csched2_private *prv, struct csched2_pcpu *spc,
            unsigned int cpu)
 {
     struct csched2_runqueue_data *rqd;
+    unsigned int rcpu;
 
     ASSERT(rw_is_write_locked(&prv->lock));
     ASSERT(!cpumask_test_cpu(cpu, &prv->initialized));
@@ -3810,13 +3813,26 @@ init_pdata(struct csched2_private *prv, struct csched2_pcpu *spc,
         printk(XENLOG_INFO " First cpu on runqueue, activating\n");
         activate_runqueue(prv, spc->runq_id);
     }
-    
+
+    __cpumask_set_cpu(cpu, &spc->sibling_mask);
+
+    if ( rqd->nr_cpus > 0 )
+        for_each_cpu ( rcpu, per_cpu(cpu_sibling_mask, cpu) )
+            if ( cpumask_test_cpu(rcpu, &rqd->active) )
+            {
+                __cpumask_set_cpu(cpu, &csched2_pcpu(rcpu)->sibling_mask);
+                __cpumask_set_cpu(rcpu, &spc->sibling_mask);
+            }
+
     __cpumask_set_cpu(cpu, &rqd->idle);
     __cpumask_set_cpu(cpu, &rqd->active);
     __cpumask_set_cpu(cpu, &prv->initialized);
     __cpumask_set_cpu(cpu, &rqd->smt_idle);
 
-    if ( cpumask_weight(&rqd->active) == 1 )
+    rqd->nr_cpus++;
+    ASSERT(cpumask_weight(&rqd->active) == rqd->nr_cpus);
+
+    if ( rqd->nr_cpus == 1 )
         rqd->pick_bias = cpu;
 
     return spc->runq_id;
@@ -3843,7 +3859,7 @@ csched2_init_pdata(const struct scheduler *ops, void *pdata, int cpu)
 }
 
 /* Change the scheduler of cpu to us (Credit2). */
-static void
+static spinlock_t *
 csched2_switch_sched(struct scheduler *new_ops, unsigned int cpu,
                      void *pdata, void *vdata)
 {
@@ -3876,18 +3892,9 @@ csched2_switch_sched(struct scheduler *new_ops, unsigned int cpu,
      */
     ASSERT(per_cpu(schedule_data, cpu).schedule_lock != &prv->rqd[rqi].lock);
 
-    per_cpu(scheduler, cpu) = new_ops;
-    per_cpu(schedule_data, cpu).sched_priv = pdata;
-
-    /*
-     * (Re?)route the lock to the per pCPU lock as /last/ thing. In fact,
-     * if it is free (and it can be) we want that anyone that manages
-     * taking it, find all the initializations we've done above in place.
-     */
-    smp_mb();
-    per_cpu(schedule_data, cpu).schedule_lock = &prv->rqd[rqi].lock;
-
     write_unlock(&prv->lock);
+
+    return &prv->rqd[rqi].lock;
 }
 
 static void
@@ -3897,6 +3904,7 @@ csched2_deinit_pdata(const struct scheduler *ops, void *pcpu, int cpu)
     struct csched2_private *prv = csched2_priv(ops);
     struct csched2_runqueue_data *rqd;
     struct csched2_pcpu *spc = pcpu;
+    unsigned int rcpu;
 
     write_lock_irqsave(&prv->lock, flags);
 
@@ -3927,7 +3935,13 @@ csched2_deinit_pdata(const struct scheduler *ops, void *pcpu, int cpu)
     __cpumask_clear_cpu(cpu, &rqd->smt_idle);
     __cpumask_clear_cpu(cpu, &rqd->active);
 
-    if ( cpumask_empty(&rqd->active) )
+    for_each_cpu ( rcpu, &rqd->active )
+        __cpumask_clear_cpu(cpu, &csched2_pcpu(rcpu)->sibling_mask);
+
+    rqd->nr_cpus--;
+    ASSERT(cpumask_weight(&rqd->active) == rqd->nr_cpus);
+
+    if ( rqd->nr_cpus == 0 )
     {
         printk(XENLOG_INFO " No cpus left on runqueue, disabling\n");
         deactivate_runqueue(prv, spc->runq_id);
@@ -4056,6 +4070,8 @@ csched2_deinit(struct scheduler *ops)
 
     prv = csched2_priv(ops);
     ops->sched_data = NULL;
+    if ( prv )
+        xfree(prv->rqd);
     xfree(prv);
 }
 

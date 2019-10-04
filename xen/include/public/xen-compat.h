@@ -27,7 +27,7 @@
 #ifndef __XEN_PUBLIC_XEN_COMPAT_H__
 #define __XEN_PUBLIC_XEN_COMPAT_H__
 
-#define __XEN_LATEST_INTERFACE_VERSION__ 0x00040a00
+#define __XEN_LATEST_INTERFACE_VERSION__ 0x00040d00
 
 #if defined(__XEN__) || defined(__XEN_TOOLS__)
 /* Xen is built with matching headers and implements the latest interface. */
@@ -40,5 +40,7 @@
 #if __XEN_INTERFACE_VERSION__ > __XEN_LATEST_INTERFACE_VERSION__
 #error "These header files do not support the requested interface version."
 #endif
+
+#define COMPAT_FLEX_ARRAY_DIM XEN_FLEX_ARRAY_DIM
 
 #endif /* __XEN_PUBLIC_XEN_COMPAT_H__ */

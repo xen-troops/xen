@@ -38,7 +38,21 @@ int libxl__domain_create_info_setdefault(libxl__gc *gc,
     libxl__arch_domain_create_info_setdefault(gc, c_info);
 
     if (c_info->type != LIBXL_DOMAIN_TYPE_PV) {
-        libxl_defbool_setdefault(&c_info->hap, true);
+        libxl_physinfo info;
+        int rc = libxl_get_physinfo(CTX, &info);
+
+        if (rc)
+            return rc;
+
+        if (info.cap_hap)
+            libxl_defbool_setdefault(&c_info->hap, true);
+        else if (info.cap_shadow)
+            libxl_defbool_setdefault(&c_info->hap, false);
+        else {
+            LOG(ERROR, "neither hap nor shadow paging available");
+            return ERROR_INVAL;
+        }
+
         libxl_defbool_setdefault(&c_info->oos, true);
     }
 
@@ -310,6 +324,7 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         libxl_defbool_setdefault(&b_info->u.hvm.vpt_align,          true);
         libxl_defbool_setdefault(&b_info->u.hvm.altp2m,             false);
         libxl_defbool_setdefault(&b_info->u.hvm.usb,                false);
+        libxl_defbool_setdefault(&b_info->u.hvm.vkb_device,         true);
         libxl_defbool_setdefault(&b_info->u.hvm.xen_platform_pci,   true);
 
         libxl_defbool_setdefault(&b_info->u.hvm.spice.enable, false);
@@ -556,7 +571,7 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
         };
 
         if (info->type != LIBXL_DOMAIN_TYPE_PV) {
-            create.flags |= XEN_DOMCTL_CDF_hvm_guest;
+            create.flags |= XEN_DOMCTL_CDF_hvm;
             create.flags |=
                 libxl_defbool_val(info->hap) ? XEN_DOMCTL_CDF_hap : 0;
             create.flags |=
@@ -1416,9 +1431,11 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         libxl__device_console_add(gc, domid, &console, state, &device);
         libxl__device_console_dispose(&console);
 
-        libxl_device_vkb_init(&vkb);
-        libxl__device_add(gc, domid, &libxl__vkb_devtype, &vkb);
-        libxl_device_vkb_dispose(&vkb);
+        if (libxl_defbool_val(d_config->b_info.u.hvm.vkb_device)) {
+            libxl_device_vkb_init(&vkb);
+            libxl__device_add(gc, domid, &libxl__vkb_devtype, &vkb);
+            libxl_device_vkb_dispose(&vkb);
+        }
 
         dcs->sdss.dm.guest_domid = domid;
         if (libxl_defbool_val(d_config->b_info.device_model_stubdomain))
@@ -1519,7 +1536,7 @@ out:
 #define libxl__device_dtdev_update_devid NULL
 static DEFINE_DEVICE_TYPE_STRUCT(dtdev, NONE);
 
-const struct libxl_device_type *device_type_tbl[] = {
+const libxl__device_type *device_type_tbl[] = {
     &libxl__disk_devtype,
     &libxl__nic_devtype,
     &libxl__vtpm_devtype,
@@ -1540,19 +1557,9 @@ static void domcreate_devmodel_started(libxl__egc *egc,
     STATE_AO_GC(dmss->spawn.ao);
     int domid = dcs->guest_domid;
 
-    /* convenience aliases */
-    libxl_domain_config *const d_config = dcs->guest_config;
-
     if (ret) {
         LOGD(ERROR, domid, "device model did not start: %d", ret);
         goto error_out;
-    }
-
-    if (dcs->sdss.dm.guest_domid) {
-        if (d_config->b_info.device_model_version
-            == LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN) {
-            libxl__qmp_initializations(gc, domid, d_config);
-        }
     }
 
     dcs->device_type_idx = -1;
@@ -1572,7 +1579,7 @@ static void domcreate_attach_devices(libxl__egc *egc,
     STATE_AO_GC(dcs->ao);
     int domid = dcs->guest_domid;
     libxl_domain_config *const d_config = dcs->guest_config;
-    const struct libxl_device_type *dt;
+    const libxl__device_type *dt;
 
     if (ret) {
         LOGD(ERROR, domid, "unable to add %s devices",

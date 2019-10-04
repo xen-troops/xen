@@ -2,7 +2,45 @@
 
 ENTRY(simd_test);
 
-#if VEC_SIZE == 8 && defined(__SSE__)
+#if defined(__AVX512F__)
+# define ALL_TRUE (~0ULL >> (64 - ELEM_COUNT))
+# if VEC_SIZE == 4
+#  define eq(x, y) ({ \
+    float x_ = (x)[0]; \
+    float __attribute__((vector_size(16))) y_ = { (y)[0] }; \
+    unsigned short r_; \
+    asm ( "vcmpss $0, %1, %2, %0"  : "=k" (r_) : "m" (x_), "v" (y_) ); \
+    r_ == 1; \
+})
+# elif VEC_SIZE == 8
+#  define eq(x, y) ({ \
+    double x_ = (x)[0]; \
+    double __attribute__((vector_size(16))) y_ = { (y)[0] }; \
+    unsigned short r_; \
+    asm ( "vcmpsd $0, %1, %2, %0"  : "=k" (r_) : "m" (x_), "v" (y_) ); \
+    r_ == 1; \
+})
+# elif FLOAT_SIZE == 4
+/*
+ * gcc's (up to at least 8.2) __builtin_ia32_cmpps256_mask() has an anomaly in
+ * that its return type is QI rather than UQI, and hence the value would get
+ * sign-extended before comapring to ALL_TRUE. The same oddity does not matter
+ * for __builtin_ia32_cmppd256_mask(), as there only 4 bits are significant.
+ * Hence the extra " & ALL_TRUE".
+ */
+#  define eq(x, y) ((BR(cmpps, _mask, x, y, 0, -1) & ALL_TRUE) == ALL_TRUE)
+# elif FLOAT_SIZE == 8
+#  define eq(x, y) (BR(cmppd, _mask, x, y, 0, -1) == ALL_TRUE)
+# elif (INT_SIZE == 1 || UINT_SIZE == 1) && defined(__AVX512BW__)
+#  define eq(x, y) (B(pcmpeqb, _mask, (vqi_t)(x), (vqi_t)(y), -1) == ALL_TRUE)
+# elif (INT_SIZE == 2 || UINT_SIZE == 2) && defined(__AVX512BW__)
+#  define eq(x, y) (B(pcmpeqw, _mask, (vhi_t)(x), (vhi_t)(y), -1) == ALL_TRUE)
+# elif INT_SIZE == 4 || UINT_SIZE == 4
+#  define eq(x, y) (B(pcmpeqd, _mask, (vsi_t)(x), (vsi_t)(y), -1) == ALL_TRUE)
+# elif INT_SIZE == 8 || UINT_SIZE == 8
+#  define eq(x, y) (B(pcmpeqq, _mask, (vdi_t)(x), (vdi_t)(y), -1) == ALL_TRUE)
+# endif
+#elif VEC_SIZE == 8 && defined(__SSE__)
 # define to_bool(cmp) (__builtin_ia32_pmovmskb(cmp) == 0xff)
 #elif VEC_SIZE == 16
 # if defined(__AVX__) && defined(FLOAT_SIZE)
@@ -51,9 +89,71 @@ static inline bool _to_bool(byte_vec_t bv)
 #endif
 
 #if VEC_SIZE == FLOAT_SIZE
-# define to_int(x) ((vec_t){ (int)(x)[0] })
+# define to_int(x) ({ int i_ = (x)[0]; touch(i_); ((vec_t){ i_ }); })
+# ifdef __x86_64__
+#  define to_wint(x) ({ long l_ = (x)[0]; touch(l_); ((vec_t){ l_ }); })
+# endif
+# ifdef __AVX512F__
+/*
+ * Sadly even gcc 9.x, at the time of writing, does not carry out at least
+ * uint -> FP conversions using VCVTUSI2S{S,D}, so we need to use builtins
+ * or inline assembly here. The full-vector parameter types of the builtins
+ * aren't very helpful for our purposes, so use inline assembly.
+ */
+#  if FLOAT_SIZE == 4
+#   define to_u_int(type, x) ({ \
+    unsigned type u_; \
+    float __attribute__((vector_size(16))) t_; \
+    asm ( "vcvtss2usi %1, %0" : "=r" (u_) : "m" ((x)[0]) ); \
+    asm ( "vcvtusi2ss%z1 %1, %0, %0" : "=v" (t_) : "m" (u_) ); \
+    (vec_t){ t_[0] }; \
+})
+#  elif FLOAT_SIZE == 8
+#   define to_u_int(type, x) ({ \
+    unsigned type u_; \
+    double __attribute__((vector_size(16))) t_; \
+    asm ( "vcvtsd2usi %1, %0" : "=r" (u_) : "m" ((x)[0]) ); \
+    asm ( "vcvtusi2sd%z1 %1, %0, %0" : "=v" (t_) : "m" (u_) ); \
+    (vec_t){ t_[0] }; \
+})
+#  endif
+#  define to_uint(x) to_u_int(int, x)
+#  ifdef __x86_64__
+#   define to_uwint(x) to_u_int(long, x)
+#  endif
+# endif
 #elif VEC_SIZE == 8 && FLOAT_SIZE == 4 && defined(__3dNOW__)
 # define to_int(x) __builtin_ia32_pi2fd(__builtin_ia32_pf2id(x))
+#elif defined(FLOAT_SIZE) && VEC_SIZE > FLOAT_SIZE && defined(__AVX512F__) && \
+      (VEC_SIZE == 64 || defined(__AVX512VL__))
+# if FLOAT_SIZE == 4
+#  define to_int(x) BR(cvtdq2ps, _mask, BR(cvtps2dq, _mask, x, (vsi_t)undef(), ~0), undef(), ~0)
+#  define to_uint(x) BR(cvtudq2ps, _mask, BR(cvtps2udq, _mask, x, (vsi_t)undef(), ~0), undef(), ~0)
+#  ifdef __AVX512DQ__
+#   define to_w_int(x, s) ({ \
+    vsf_half_t t_ = low_half(x); \
+    vdi_t lo_, hi_; \
+    touch(t_); \
+    lo_ = BR(cvtps2 ## s ## qq, _mask, t_, (vdi_t)undef(), ~0); \
+    t_ = high_half(x); \
+    touch(t_); \
+    hi_ = BR(cvtps2 ## s ## qq, _mask, t_, (vdi_t)undef(), ~0); \
+    touch(lo_); touch(hi_); \
+    insert_half(insert_half(undef(), \
+                            BR(cvt ## s ## qq2ps, _mask, lo_, (vsf_half_t){}, ~0), 0), \
+                BR(cvt ## s ## qq2ps, _mask, hi_, (vsf_half_t){}, ~0), 1); \
+})
+#   define to_wint(x) to_w_int(x, )
+#   define to_uwint(x) to_w_int(x, u)
+#  endif
+# elif FLOAT_SIZE == 8
+#  define to_int(x) B(cvtdq2pd, _mask, BR(cvtpd2dq, _mask, x, (vsi_half_t){}, ~0), undef(), ~0)
+#  define to_uint(x) B(cvtudq2pd, _mask, BR(cvtpd2udq, _mask, x, (vsi_half_t){}, ~0), undef(), ~0)
+#  ifdef __AVX512DQ__
+#   define to_wint(x) BR(cvtqq2pd, _mask, BR(cvtpd2qq, _mask, x, (vdi_t)undef(), ~0), undef(), ~0)
+#   define to_uwint(x) BR(cvtuqq2pd, _mask, BR(cvtpd2uqq, _mask, x, (vdi_t)undef(), ~0), undef(), ~0)
+#  endif
+# endif
 #elif VEC_SIZE == 16 && defined(__SSE2__)
 # if FLOAT_SIZE == 4
 #  define to_int(x) __builtin_ia32_cvtdq2ps(__builtin_ia32_cvtps2dq(x))
@@ -74,6 +174,26 @@ static inline bool _to_bool(byte_vec_t bv)
     asm ( op : [out] "=&x" (r_) : [in] "m" (x) ); \
     (vec_t){ r_[0] }; \
 })
+# define scalar_2op(x, y, op) ({ \
+    typeof((x)[0]) __attribute__((vector_size(16))) r_ = { x[0] }; \
+    asm ( op : [out] "=&x" (r_) : [in1] "[out]" (r_), [in2] "m" (y) ); \
+    (vec_t){ r_[0] }; \
+})
+#endif
+
+#if VEC_SIZE == 16 && FLOAT_SIZE == 4 && defined(__SSE__)
+# define low_half(x) (x)
+# define high_half(x) B_(movhlps, , undef(), x)
+/*
+ * GCC 7 (and perhaps earlier) report a bogus type mismatch for the conditional
+ * expression below. All works well with this no-op wrapper.
+ */
+static inline vec_t movlhps(vec_t x, vec_t y) {
+    return __builtin_ia32_movlhps(x, y);
+}
+# define insert_pair(x, y, p) \
+    ((p) ? movlhps(x, y) \
+         : ({ vec_t t_ = (x); t_[0] = (y)[0]; t_[1] = (y)[1]; t_; }))
 #endif
 
 #if VEC_SIZE == 8 && FLOAT_SIZE == 4 && defined(__3dNOW_A__)
@@ -93,6 +213,192 @@ static inline bool _to_bool(byte_vec_t bv)
     touch(x); \
     __builtin_ia32_pfrcpit2(__builtin_ia32_pfrsqit1(__builtin_ia32_pfmul(t_, t_), x), t_); \
 })
+#elif defined(FLOAT_SIZE) && VEC_SIZE == FLOAT_SIZE && defined(__AVX512F__)
+# if FLOAT_SIZE == 4
+#  define getexp(x) scalar_1op(x, "vgetexpss %[in], %[out], %[out]")
+#  define getmant(x) scalar_1op(x, "vgetmantss $0, %[in], %[out], %[out]")
+#  ifdef __AVX512ER__
+#   define recip(x) scalar_1op(x, "vrcp28ss %[in], %[out], %[out]")
+#   define rsqrt(x) scalar_1op(x, "vrsqrt28ss %[in], %[out], %[out]")
+#  else
+#   define recip(x) scalar_1op(x, "vrcp14ss %[in], %[out], %[out]")
+#   define rsqrt(x) scalar_1op(x, "vrsqrt14ss %[in], %[out], %[out]")
+#  endif
+#  define scale(x, y) scalar_2op(x, y, "vscalefss %[in2], %[in1], %[out]")
+#  define sqrt(x) scalar_1op(x, "vsqrtss %[in], %[out], %[out]")
+#  define trunc(x) scalar_1op(x, "vrndscaless $0b1011, %[in], %[out], %[out]")
+# elif FLOAT_SIZE == 8
+#  define getexp(x) scalar_1op(x, "vgetexpsd %[in], %[out], %[out]")
+#  define getmant(x) scalar_1op(x, "vgetmantsd $0, %[in], %[out], %[out]")
+#  ifdef __AVX512ER__
+#   define recip(x) scalar_1op(x, "vrcp28sd %[in], %[out], %[out]")
+#   define rsqrt(x) scalar_1op(x, "vrsqrt28sd %[in], %[out], %[out]")
+#  else
+#   define recip(x) scalar_1op(x, "vrcp14sd %[in], %[out], %[out]")
+#   define rsqrt(x) scalar_1op(x, "vrsqrt14sd %[in], %[out], %[out]")
+#  endif
+#  define scale(x, y) scalar_2op(x, y, "vscalefsd %[in2], %[in1], %[out]")
+#  define sqrt(x) scalar_1op(x, "vsqrtsd %[in], %[out], %[out]")
+#  define trunc(x) scalar_1op(x, "vrndscalesd $0b1011, %[in], %[out], %[out]")
+# endif
+#elif defined(FLOAT_SIZE) && defined(__AVX512F__) && \
+      (VEC_SIZE == 64 || defined(__AVX512VL__))
+# if ELEM_COUNT == 8 /* vextractf{32,64}x4 */ || \
+     (ELEM_COUNT == 16 && ELEM_SIZE == 4 && defined(__AVX512DQ__)) /* vextractf32x8 */ || \
+     (ELEM_COUNT == 4 && ELEM_SIZE == 8 && defined(__AVX512DQ__)) /* vextractf64x2 */
+#  define _half(x, lh) ({ \
+    half_t t_; \
+    asm ( "vextractf%c[w]x%c[n] %[sel], %[s], %[d]" \
+          : [d] "=m" (t_) \
+          : [s] "v" (x), [sel] "i" (lh), \
+            [w] "i" (ELEM_SIZE * 8), [n] "i" (ELEM_COUNT / 2) ); \
+    t_; \
+})
+#  define low_half(x)  _half(x, 0)
+#  define high_half(x) _half(x, 1)
+# endif
+# if (ELEM_COUNT == 16 && ELEM_SIZE == 4) /* vextractf32x4 */ || \
+     (ELEM_COUNT == 8 && ELEM_SIZE == 8 && defined(__AVX512DQ__)) /* vextractf64x2 */
+#  define low_quarter(x) ({ \
+    quarter_t t_; \
+    asm ( "vextractf%c[w]x%c[n] $0, %[s], %[d]" \
+          : [d] "=m" (t_) \
+          : [s] "v" (x), [w] "i" (ELEM_SIZE * 8), [n] "i" (ELEM_COUNT / 4) ); \
+    t_; \
+})
+# endif
+# if FLOAT_SIZE == 4
+#  define broadcast(x) ({ \
+    vec_t t_; \
+    asm ( "%{evex%} vbroadcastss %1, %0" \
+          : "=v" (t_) : "m" (*(float[1]){ x }) ); \
+    t_; \
+})
+#  if VEC_SIZE >= 32 && defined(__AVX512DQ__)
+#   define broadcast_pair(x) ({ \
+    vec_t t_; \
+    asm ( "vbroadcastf32x2 %1, %0" : "=v" (t_) : "m" (x) ); \
+    t_; \
+})
+#  endif
+#  if VEC_SIZE == 64 && defined(__AVX512DQ__)
+#   define broadcast_octet(x) B(broadcastf32x8_, _mask, x, undef(), ~0)
+#   define insert_octet(x, y, p) B(insertf32x8_, _mask, x, y, p, undef(), ~0)
+#  endif
+#  ifdef __AVX512DQ__
+#   define frac(x) B(reduceps, _mask, x, 0b00001011, undef(), ~0)
+#  endif
+#  define getexp(x) BR(getexpps, _mask, x, undef(), ~0)
+#  define getmant(x) BR(getmantps, _mask, x, 0, undef(), ~0)
+#  ifdef __AVX512DQ__
+#   define max(x, y) BR(rangeps, _mask, x, y, 0b0101, undef(), ~0)
+#   define min(x, y) BR(rangeps, _mask, x, y, 0b0100, undef(), ~0)
+#  else
+#   define max(x, y) BR_(maxps, _mask, x, y, undef(), ~0)
+#   define min(x, y) BR_(minps, _mask, x, y, undef(), ~0)
+#  endif
+#  define mix(x, y) B(blendmps_, _mask, x, y, (0b1010101010101010 & ALL_TRUE))
+#  define scale(x, y) BR(scalefps, _mask, x, y, undef(), ~0)
+#  if VEC_SIZE == 64 && defined(__AVX512ER__)
+#   define recip(x) BR(rcp28ps, _mask, x, undef(), ~0)
+#   define rsqrt(x) BR(rsqrt28ps, _mask, x, undef(), ~0)
+#  else
+#   define recip(x) B(rcp14ps, _mask, x, undef(), ~0)
+#   define rsqrt(x) B(rsqrt14ps, _mask, x, undef(), ~0)
+#  endif
+#  define shrink1(x) BR_(cvtpd2ps, _mask, (vdf_t)(x), (vsf_half_t){}, ~0)
+#  define sqrt(x) BR(sqrtps, _mask, x, undef(), ~0)
+#  define trunc(x) BR(rndscaleps_, _mask, x, 0b1011, undef(), ~0)
+#  define widen1(x) ((vec_t)BR(cvtps2pd, _mask, x, (vdf_t)undef(), ~0))
+#  if VEC_SIZE == 16
+#   define interleave_hi(x, y) B(unpckhps, _mask, x, y, undef(), ~0)
+#   define interleave_lo(x, y) B(unpcklps, _mask, x, y, undef(), ~0)
+#   define swap(x) B(shufps, _mask, x, x, 0b00011011, undef(), ~0)
+#   define swap2(x) B_(vpermilps, _mask, x, 0b00011011, undef(), ~0)
+#  else
+#   define broadcast_quartet(x) B(broadcastf32x4_, _mask, x, undef(), ~0)
+#   define insert_pair(x, y, p) \
+    B(insertf32x4_, _mask, x, \
+      /* Cast needed below to work around gcc 7.x quirk. */ \
+      (p) & 1 ? (typeof(y))__builtin_ia32_shufps(y, y, 0b01000100) : (y), \
+      (p) >> 1, x, 3 << ((p) * 2))
+#   define insert_quartet(x, y, p) B(insertf32x4_, _mask, x, y, p, undef(), ~0)
+#   define interleave_hi(x, y) B(vpermi2varps, _mask, x, interleave_hi, y, ~0)
+#   define interleave_lo(x, y) B(vpermt2varps, _mask, interleave_lo, x, y, ~0)
+#   define swap(x) ({ \
+    vec_t t_ = B(shuf_f32x4_, _mask, x, x, VEC_SIZE == 32 ? 0b01 : 0b00011011, undef(), ~0); \
+    B(shufps, _mask, t_, t_, 0b00011011, undef(), ~0); \
+})
+#   define swap2(x) B(vpermilps, _mask, \
+                       B(shuf_f32x4_, _mask, x, x, \
+                         VEC_SIZE == 32 ? 0b01 : 0b00011011, undef(), ~0), \
+                       0b00011011, undef(), ~0)
+#  endif
+# elif FLOAT_SIZE == 8
+#  if VEC_SIZE >= 32
+#   define broadcast(x) ({ \
+    vec_t t_; \
+    asm ( "%{evex%} vbroadcastsd %1, %0" : "=v" (t_) \
+          : "m" (*(double[1]){ x }) ); \
+    t_; \
+})
+#  else
+#   define broadcast(x) ({ \
+    vec_t t_; \
+    asm ( "%{evex%} vpbroadcastq %1, %0" \
+          : "=v" (t_) : "m" (*(double[1]){ x }) ); \
+    t_; \
+})
+#  endif
+#  if VEC_SIZE >= 32 && defined(__AVX512DQ__)
+#   define broadcast_pair(x) B(broadcastf64x2_, _mask, x, undef(), ~0)
+#   define insert_pair(x, y, p) B(insertf64x2_, _mask, x, y, p, undef(), ~0)
+#  endif
+#  if VEC_SIZE == 64
+#   define broadcast_quartet(x) B(broadcastf64x4_, , x, undef(), ~0)
+#   define insert_quartet(x, y, p) B(insertf64x4_, _mask, x, y, p, undef(), ~0)
+#  endif
+#  ifdef __AVX512DQ__
+#   define frac(x) B(reducepd, _mask, x, 0b00001011, undef(), ~0)
+#  endif
+#  define getexp(x) BR(getexppd, _mask, x, undef(), ~0)
+#  define getmant(x) BR(getmantpd, _mask, x, 0, undef(), ~0)
+#  ifdef __AVX512DQ__
+#   define max(x, y) BR(rangepd, _mask, x, y, 0b0101, undef(), ~0)
+#   define min(x, y) BR(rangepd, _mask, x, y, 0b0100, undef(), ~0)
+#  else
+#   define max(x, y) BR_(maxpd, _mask, x, y, undef(), ~0)
+#   define min(x, y) BR_(minpd, _mask, x, y, undef(), ~0)
+#  endif
+#  define mix(x, y) B(blendmpd_, _mask, x, y, 0b10101010)
+#  define scale(x, y) BR(scalefpd, _mask, x, y, undef(), ~0)
+#  if VEC_SIZE == 64 && defined(__AVX512ER__)
+#   define recip(x) BR(rcp28pd, _mask, x, undef(), ~0)
+#   define rsqrt(x) BR(rsqrt28pd, _mask, x, undef(), ~0)
+#  else
+#   define recip(x) B(rcp14pd, _mask, x, undef(), ~0)
+#   define rsqrt(x) B(rsqrt14pd, _mask, x, undef(), ~0)
+#  endif
+#  define sqrt(x) BR(sqrtpd, _mask, x, undef(), ~0)
+#  define trunc(x) BR(rndscalepd_, _mask, x, 0b1011, undef(), ~0)
+#  if VEC_SIZE == 16
+#   define interleave_hi(x, y) B(unpckhpd, _mask, x, y, undef(), ~0)
+#   define interleave_lo(x, y) B(unpcklpd, _mask, x, y, undef(), ~0)
+#   define swap(x) B(shufpd, _mask, x, x, 0b01, undef(), ~0)
+#   define swap2(x) B_(vpermilpd, _mask, x, 0b01, undef(), ~0)
+#  else
+#   define interleave_hi(x, y) B(vpermi2varpd, _mask, x, interleave_hi, y, ~0)
+#   define interleave_lo(x, y) B(vpermt2varpd, _mask, interleave_lo, x, y, ~0)
+#   define swap(x) ({ \
+    vec_t t_ = B(shuf_f64x2_, _mask, x, x, VEC_SIZE == 32 ? 0b01 : 0b00011011, undef(), ~0); \
+    B(shufpd, _mask, t_, t_, 0b01010101, undef(), ~0); \
+})
+#   define swap2(x) B(vpermilpd, _mask, \
+                       B(shuf_f64x2_, _mask, x, x, \
+                         VEC_SIZE == 32 ? 0b01 : 0b00011011, undef(), ~0), \
+                       0b01010101, undef(), ~0)
+#  endif
+# endif
 #elif FLOAT_SIZE == 4 && defined(__SSE__)
 # if VEC_SIZE == 32 && defined(__AVX__)
 #  if defined(__AVX2__)
@@ -191,7 +497,232 @@ static inline bool _to_bool(byte_vec_t bv)
 #  define sqrt(x) scalar_1op(x, "sqrtsd %[in], %[out]")
 # endif
 #endif
-#if VEC_SIZE == 16 && defined(__SSE2__)
+#if (INT_SIZE == 4 || UINT_SIZE == 4 || INT_SIZE == 8 || UINT_SIZE == 8) && \
+     defined(__AVX512F__) && (VEC_SIZE == 64 || defined(__AVX512VL__))
+# if ELEM_COUNT == 8 /* vextracti{32,64}x4 */ || \
+     (ELEM_COUNT == 16 && ELEM_SIZE == 4 && defined(__AVX512DQ__)) /* vextracti32x8 */ || \
+     (ELEM_COUNT == 4 && ELEM_SIZE == 8 && defined(__AVX512DQ__)) /* vextracti64x2 */
+#  define low_half(x) ({ \
+    half_t t_; \
+    asm ( "vextracti%c[w]x%c[n] $0, %[s], %[d]" \
+          : [d] "=m" (t_) \
+          : [s] "v" (x), [w] "i" (ELEM_SIZE * 8), [n] "i" (ELEM_COUNT / 2) ); \
+    t_; \
+})
+# endif
+# if (ELEM_COUNT == 16 && ELEM_SIZE == 4) /* vextracti32x4 */ || \
+       (ELEM_COUNT == 8 && ELEM_SIZE == 8 && defined(__AVX512DQ__)) /* vextracti64x2 */
+#  define low_quarter(x) ({ \
+    quarter_t t_; \
+    asm ( "vextracti%c[w]x%c[n] $0, %[s], %[d]" \
+          : [d] "=m" (t_) \
+          : [s] "v" (x), [w] "i" (ELEM_SIZE * 8), [n] "i" (ELEM_COUNT / 4) ); \
+    t_; \
+})
+# endif
+# if INT_SIZE == 4 || UINT_SIZE == 4
+#  define broadcast(x) ({ \
+    vec_t t_; \
+    asm ( "%{evex%} vpbroadcastd %1, %0" \
+          : "=v" (t_) : "m" (*(int[1]){ x }) ); \
+    t_; \
+})
+#  define broadcast2(x) ({ \
+    vec_t t_; \
+    asm ( "vpbroadcastd %k1, %0" : "=v" (t_) : "r" (x) ); \
+    t_; \
+})
+#  ifdef __AVX512DQ__
+#   define broadcast_pair(x) ({ \
+    vec_t t_; \
+    asm ( "vbroadcasti32x2 %1, %0" : "=v" (t_) : "m" (x) ); \
+    t_; \
+})
+#  endif
+#  if VEC_SIZE == 64 && defined(__AVX512DQ__)
+#   define broadcast_octet(x) ((vec_t)B(broadcasti32x8_, _mask, (vsi_octet_t)(x), (vsi_t)undef(), ~0))
+#   define insert_octet(x, y, p) ((vec_t)B(inserti32x8_, _mask, (vsi_t)(x), (vsi_octet_t)(y), p, (vsi_t)undef(), ~0))
+#  endif
+#  if VEC_SIZE == 16
+#   define interleave_hi(x, y) ((vec_t)B(punpckhdq, _mask, (vsi_t)(x), (vsi_t)(y), (vsi_t)undef(), ~0))
+#   define interleave_lo(x, y) ((vec_t)B(punpckldq, _mask, (vsi_t)(x), (vsi_t)(y), (vsi_t)undef(), ~0))
+#   define swap(x) ((vec_t)B(pshufd, _mask, (vsi_t)(x), 0b00011011, (vsi_t)undef(), ~0))
+#  else
+#   define broadcast_quartet(x) ((vec_t)B(broadcasti32x4_, _mask, (vsi_quartet_t)(x), (vsi_t)undef(), ~0))
+#   define insert_pair(x, y, p) \
+    (vec_t)(B(inserti32x4_, _mask, (vsi_t)(x), \
+              /* First cast needed below to work around gcc 7.x quirk. */ \
+              (p) & 1 ? (vsi_pair_t)__builtin_ia32_pshufd((vsi_pair_t)(y), 0b01000100) \
+                      : (vsi_pair_t)(y), \
+              (p) >> 1, (vsi_t)(x), 3 << ((p) * 2)))
+#   define insert_quartet(x, y, p) ((vec_t)B(inserti32x4_, _mask, (vsi_t)(x), (vsi_quartet_t)(y), p, (vsi_t)undef(), ~0))
+#   define interleave_hi(x, y) ((vec_t)B(vpermi2vard, _mask, (vsi_t)(x), interleave_hi, (vsi_t)(y), ~0))
+#   define interleave_lo(x, y) ((vec_t)B(vpermt2vard, _mask, interleave_lo, (vsi_t)(x), (vsi_t)(y), ~0))
+#   define swap(x) ((vec_t)B(pshufd, _mask, \
+                             B(shuf_i32x4_, _mask, (vsi_t)(x), (vsi_t)(x), \
+                               VEC_SIZE == 32 ? 0b01 : 0b00011011, (vsi_t)undef(), ~0), \
+                             0b00011011, (vsi_t)undef(), ~0))
+#   define swap2(x) ((vec_t)B_(permvarsi, _mask, (vsi_t)(x), (vsi_t)(inv - 1), (vsi_t)undef(), ~0))
+#  endif
+#  define mix(x, y) ((vec_t)B(blendmd_, _mask, (vsi_t)(x), (vsi_t)(y), \
+                              (0b1010101010101010 & ((1 << ELEM_COUNT) - 1))))
+#  define rotr(x, n) ((vec_t)B(alignd, _mask, (vsi_t)(x), (vsi_t)(x), n, (vsi_t)undef(), ~0))
+#  define shrink1(x) ((half_t)B(pmovqd, _mask, (vdi_t)(x), (vsi_half_t){}, ~0))
+# elif INT_SIZE == 8 || UINT_SIZE == 8
+#  define broadcast(x) ({ \
+    vec_t t_; \
+    asm ( "%{evex%} vpbroadcastq %1, %0" \
+          : "=v" (t_) : "m" (*(long long[1]){ x }) ); \
+    t_; \
+})
+#  ifdef __x86_64__
+#   define broadcast2(x) ({ \
+    vec_t t_; \
+    asm ( "vpbroadcastq %1, %0" : "=v" (t_) : "r" ((x) + 0ULL) ); \
+    t_; \
+})
+#  endif
+#  if VEC_SIZE >= 32 && defined(__AVX512DQ__)
+#   define broadcast_pair(x) ((vec_t)B(broadcasti64x2_, _mask, (vdi_pair_t)(x), (vdi_t)undef(), ~0))
+#   define insert_pair(x, y, p) ((vec_t)B(inserti64x2_, _mask, (vdi_t)(x), (vdi_pair_t)(y), p, (vdi_t)undef(), ~0))
+#  endif
+#  if VEC_SIZE == 64
+#   define broadcast_quartet(x) ((vec_t)B(broadcasti64x4_, , (vdi_quartet_t)(x), (vdi_t)undef(), ~0))
+#   define insert_quartet(x, y, p) ((vec_t)B(inserti64x4_, _mask, (vdi_t)(x), (vdi_quartet_t)(y), p, (vdi_t)undef(), ~0))
+#  endif
+#  if VEC_SIZE == 16
+#   define interleave_hi(x, y) ((vec_t)B(punpckhqdq, _mask, (vdi_t)(x), (vdi_t)(y), (vdi_t)undef(), ~0))
+#   define interleave_lo(x, y) ((vec_t)B(punpcklqdq, _mask, (vdi_t)(x), (vdi_t)(y), (vdi_t)undef(), ~0))
+#   define swap(x) ((vec_t)B(pshufd, _mask, (vsi_t)(x), 0b01001110, (vsi_t)undef(), ~0))
+#  else
+#   define interleave_hi(x, y) ((vec_t)B(vpermi2varq, _mask, (vdi_t)(x), interleave_hi, (vdi_t)(y), ~0))
+#   define interleave_lo(x, y) ((vec_t)B(vpermt2varq, _mask, interleave_lo, (vdi_t)(x), (vdi_t)(y), ~0))
+#   define swap(x) ((vec_t)B(pshufd, _mask, \
+                             (vsi_t)B(shuf_i64x2_, _mask, (vdi_t)(x), (vdi_t)(x), \
+                                      VEC_SIZE == 32 ? 0b01 : 0b00011011, (vdi_t)undef(), ~0), \
+                             0b01001110, (vsi_t)undef(), ~0))
+#   define swap2(x) ((vec_t)B(permvardi, _mask, (vdi_t)(x), (vdi_t)(inv - 1), (vdi_t)undef(), ~0))
+#  endif
+#  define mix(x, y) ((vec_t)B(blendmq_, _mask, (vdi_t)(x), (vdi_t)(y), 0b10101010))
+#  define rotr(x, n) ((vec_t)B(alignq, _mask, (vdi_t)(x), (vdi_t)(x), n, (vdi_t)undef(), ~0))
+#  if VEC_SIZE == 32
+#   define swap3(x) ((vec_t)B_(permdi, _mask, (vdi_t)(x), 0b00011011, (vdi_t)undef(), ~0))
+#  elif VEC_SIZE == 64
+#   define swap3(x) ({ \
+    vdi_t t_ = B_(permdi, _mask, (vdi_t)(x), 0b00011011, (vdi_t)undef(), ~0); \
+    B(shuf_i64x2_, _mask, t_, t_, 0b01001110, (vdi_t)undef(), ~0); \
+})
+#  endif
+# endif
+# if INT_SIZE == 4
+#  define abs(x) B(pabsd, _mask, x, undef(), ~0)
+#  define max(x, y) B(pmaxsd, _mask, x, y, undef(), ~0)
+#  define min(x, y) B(pminsd, _mask, x, y, undef(), ~0)
+#  define mul_full(x, y) ((vec_t)B(pmuldq, _mask, x, y, (vdi_t)undef(), ~0))
+#  define widen1(x) ((vec_t)B(pmovsxdq, _mask, x, (vdi_t)undef(), ~0))
+# elif UINT_SIZE == 4
+#  define max(x, y) ((vec_t)B(pmaxud, _mask, (vsi_t)(x), (vsi_t)(y), (vsi_t)undef(), ~0))
+#  define min(x, y) ((vec_t)B(pminud, _mask, (vsi_t)(x), (vsi_t)(y), (vsi_t)undef(), ~0))
+#  define mul_full(x, y) ((vec_t)B(pmuludq, _mask, (vsi_t)(x), (vsi_t)(y), (vdi_t)undef(), ~0))
+#  define widen1(x) ((vec_t)B(pmovzxdq, _mask, (vsi_half_t)(x), (vdi_t)undef(), ~0))
+# elif INT_SIZE == 8
+#  define abs(x) ((vec_t)B(pabsq, _mask, (vdi_t)(x), (vdi_t)undef(), ~0))
+#  define max(x, y) ((vec_t)B(pmaxsq, _mask, (vdi_t)(x), (vdi_t)(y), (vdi_t)undef(), ~0))
+#  define min(x, y) ((vec_t)B(pminsq, _mask, (vdi_t)(x), (vdi_t)(y), (vdi_t)undef(), ~0))
+# elif UINT_SIZE == 8
+#  define max(x, y) ((vec_t)B(pmaxuq, _mask, (vdi_t)(x), (vdi_t)(y), (vdi_t)undef(), ~0))
+#  define min(x, y) ((vec_t)B(pminuq, _mask, (vdi_t)(x), (vdi_t)(y), (vdi_t)undef(), ~0))
+# endif
+#elif (INT_SIZE == 1 || UINT_SIZE == 1 || INT_SIZE == 2 || UINT_SIZE == 2) && \
+      defined(__AVX512BW__) && (VEC_SIZE == 64 || defined(__AVX512VL__))
+# if INT_SIZE == 1 || UINT_SIZE == 1
+#  define broadcast(x) ({ \
+    vec_t t_; \
+    asm ( "%{evex%} vpbroadcastb %1, %0" \
+          : "=v" (t_) : "m" (*(char[1]){ x }) ); \
+    t_; \
+})
+#  define broadcast2(x) ({ \
+    vec_t t_; \
+    asm ( "vpbroadcastb %k1, %0" : "=v" (t_) : "r" (x) ); \
+    t_; \
+})
+#  if VEC_SIZE == 16
+#   define interleave_hi(x, y) ((vec_t)B(punpckhbw, _mask, (vqi_t)(x), (vqi_t)(y), (vqi_t)undef(), ~0))
+#   define interleave_lo(x, y) ((vec_t)B(punpcklbw, _mask, (vqi_t)(x), (vqi_t)(y), (vqi_t)undef(), ~0))
+#   define rotr(x, n) ((vec_t)B(palignr, _mask, (vdi_t)(x), (vdi_t)(x), (n) * 8, (vdi_t)undef(), ~0))
+#   define swap(x) ((vec_t)B(pshufb, _mask, (vqi_t)(x), (vqi_t)(inv - 1), (vqi_t)undef(), ~0))
+#  elif defined(__AVX512VBMI__)
+#   define interleave_hi(x, y) ((vec_t)B(vpermi2varqi, _mask, (vqi_t)(x), interleave_hi, (vqi_t)(y), ~0))
+#   define interleave_lo(x, y) ((vec_t)B(vpermt2varqi, _mask, interleave_lo, (vqi_t)(x), (vqi_t)(y), ~0))
+#  endif
+#  define mix(x, y) ((vec_t)B(blendmb_, _mask, (vqi_t)(x), (vqi_t)(y), \
+                              (0b1010101010101010101010101010101010101010101010101010101010101010LL & ALL_TRUE)))
+#  define shrink1(x) ((half_t)B(pmovwb, _mask, (vhi_t)(x), (vqi_half_t){}, ~0))
+#  define shrink2(x) ((quarter_t)B(pmovdb, _mask, (vsi_t)(x), (vqi_quarter_t){}, ~0))
+#  define shrink3(x) ((eighth_t)B(pmovqb, _mask, (vdi_t)(x), (vqi_eighth_t){}, ~0))
+#  ifdef __AVX512VBMI__
+#   define swap2(x) ((vec_t)B(permvarqi, _mask, (vqi_t)(x), (vqi_t)(inv - 1), (vqi_t)undef(), ~0))
+#  endif
+# elif INT_SIZE == 2 || UINT_SIZE == 2
+#  define broadcast(x) ({ \
+    vec_t t_; \
+    asm ( "%{evex%} vpbroadcastw %1, %0" \
+          : "=v" (t_) : "m" (*(short[1]){ x }) ); \
+    t_; \
+})
+#  define broadcast2(x) ({ \
+    vec_t t_; \
+    asm ( "vpbroadcastw %k1, %0" : "=v" (t_) : "r" (x) ); \
+    t_; \
+})
+#  if VEC_SIZE == 16
+#   define interleave_hi(x, y) ((vec_t)B(punpckhwd, _mask, (vhi_t)(x), (vhi_t)(y), (vhi_t)undef(), ~0))
+#   define interleave_lo(x, y) ((vec_t)B(punpcklwd, _mask, (vhi_t)(x), (vhi_t)(y), (vhi_t)undef(), ~0))
+#   define rotr(x, n) ((vec_t)B(palignr, _mask, (vdi_t)(x), (vdi_t)(x), (n) * 16, (vdi_t)undef(), ~0))
+#   define swap(x) ((vec_t)B(pshufd, _mask, \
+                             (vsi_t)B(pshufhw, _mask, \
+                                      B(pshuflw, _mask, (vhi_t)(x), 0b00011011, (vhi_t)undef(), ~0), \
+                                      0b00011011, (vhi_t)undef(), ~0), \
+                             0b01001110, (vsi_t)undef(), ~0))
+#  else
+#   define interleave_hi(x, y) ((vec_t)B(vpermi2varhi, _mask, (vhi_t)(x), interleave_hi, (vhi_t)(y), ~0))
+#   define interleave_lo(x, y) ((vec_t)B(vpermt2varhi, _mask, interleave_lo, (vhi_t)(x), (vhi_t)(y), ~0))
+#  endif
+#  define mix(x, y) ((vec_t)B(blendmw_, _mask, (vhi_t)(x), (vhi_t)(y), \
+                              (0b10101010101010101010101010101010 & ALL_TRUE)))
+#  define shrink1(x) ((half_t)B(pmovdw, _mask, (vsi_t)(x), (vhi_half_t){}, ~0))
+#  define shrink2(x) ((quarter_t)B(pmovqw, _mask, (vdi_t)(x), (vhi_quarter_t){}, ~0))
+#  define swap2(x) ((vec_t)B(permvarhi, _mask, (vhi_t)(x), (vhi_t)(inv - 1), (vhi_t)undef(), ~0))
+# endif
+# if INT_SIZE == 1
+#  define abs(x) ((vec_t)B(pabsb, _mask, (vqi_t)(x), (vqi_t)undef(), ~0))
+#  define max(x, y) ((vec_t)B(pmaxsb, _mask, (vqi_t)(x), (vqi_t)(y), (vqi_t)undef(), ~0))
+#  define min(x, y) ((vec_t)B(pminsb, _mask, (vqi_t)(x), (vqi_t)(y), (vqi_t)undef(), ~0))
+#  define widen1(x) ((vec_t)B(pmovsxbw, _mask, (vqi_half_t)(x), (vhi_t)undef(), ~0))
+#  define widen2(x) ((vec_t)B(pmovsxbd, _mask, (vqi_quarter_t)(x), (vsi_t)undef(), ~0))
+#  define widen3(x) ((vec_t)B(pmovsxbq, _mask, (vqi_eighth_t)(x), (vdi_t)undef(), ~0))
+# elif UINT_SIZE == 1
+#  define max(x, y) ((vec_t)B(pmaxub, _mask, (vqi_t)(x), (vqi_t)(y), (vqi_t)undef(), ~0))
+#  define min(x, y) ((vec_t)B(pminub, _mask, (vqi_t)(x), (vqi_t)(y), (vqi_t)undef(), ~0))
+#  define widen1(x) ((vec_t)B(pmovzxbw, _mask, (vqi_half_t)(x), (vhi_t)undef(), ~0))
+#  define widen2(x) ((vec_t)B(pmovzxbd, _mask, (vqi_quarter_t)(x), (vsi_t)undef(), ~0))
+#  define widen3(x) ((vec_t)B(pmovzxbq, _mask, (vqi_eighth_t)(x), (vdi_t)undef(), ~0))
+# elif INT_SIZE == 2
+#  define abs(x) B(pabsw, _mask, x, undef(), ~0)
+#  define max(x, y) B(pmaxsw, _mask, x, y, undef(), ~0)
+#  define min(x, y) B(pminsw, _mask, x, y, undef(), ~0)
+#  define mul_hi(x, y) B(pmulhw, _mask, x, y, undef(), ~0)
+#  define widen1(x) ((vec_t)B(pmovsxwd, _mask, x, (vsi_t)undef(), ~0))
+#  define widen2(x) ((vec_t)B(pmovsxwq, _mask, x, (vdi_t)undef(), ~0))
+# elif UINT_SIZE == 2
+#  define max(x, y) ((vec_t)B(pmaxuw, _mask, (vhi_t)(x), (vhi_t)(y), (vhi_t)undef(), ~0))
+#  define min(x, y) ((vec_t)B(pminuw, _mask, (vhi_t)(x), (vhi_t)(y), (vhi_t)undef(), ~0))
+#  define mul_hi(x, y) ((vec_t)B(pmulhuw, _mask, (vhi_t)(x), (vhi_t)(y), (vhi_t)undef(), ~0))
+#  define widen1(x) ((vec_t)B(pmovzxwd, _mask, (vhi_half_t)(x), (vsi_t)undef(), ~0))
+#  define widen2(x) ((vec_t)B(pmovzxwq, _mask, (vhi_quarter_t)(x), (vdi_t)undef(), ~0))
+# endif
+#elif VEC_SIZE == 16 && defined(__SSE2__)
 # if INT_SIZE == 1 || UINT_SIZE == 1
 #  define interleave_hi(x, y) ((vec_t)__builtin_ia32_punpckhbw128((vqi_t)(x), (vqi_t)(y)))
 #  define interleave_lo(x, y) ((vec_t)__builtin_ia32_punpcklbw128((vqi_t)(x), (vqi_t)(y)))
@@ -382,7 +913,7 @@ static inline bool _to_bool(byte_vec_t bv)
 #  endif
 # endif
 #endif
-#if VEC_SIZE == 16 && defined(__SSSE3__)
+#if VEC_SIZE == 16 && defined(__SSSE3__) && !defined(__AVX512VL__)
 # if INT_SIZE == 1
 #  define abs(x) ((vec_t)__builtin_ia32_pabsb128((vqi_t)(x)))
 # elif INT_SIZE == 2
@@ -408,7 +939,7 @@ static inline bool _to_bool(byte_vec_t bv)
 #  define rotr(x, n) ((vec_t)__builtin_ia32_palignr128((vdi_t)(x), (vdi_t)(x), (n) * 64))
 # endif
 #endif
-#if VEC_SIZE == 16 && defined(__SSE4_1__)
+#if VEC_SIZE == 16 && defined(__SSE4_1__) && !defined(__AVX512VL__)
 # if INT_SIZE == 1
 #  define max(x, y) ((vec_t)__builtin_ia32_pmaxsb128((vqi_t)(x), (vqi_t)(y)))
 #  define min(x, y) ((vec_t)__builtin_ia32_pminsb128((vqi_t)(x), (vqi_t)(y)))
@@ -462,7 +993,7 @@ static inline bool _to_bool(byte_vec_t bv)
 #  define mix(x, y) __builtin_ia32_blendpd(x, y, 0b10)
 # endif
 #endif
-#if VEC_SIZE == 32 && defined(__AVX__)
+#if VEC_SIZE == 32 && defined(__AVX__) && !defined(__AVX512VL__)
 # if FLOAT_SIZE == 4
 #  define dot_product(x, y) ({ \
     vec_t t_ = __builtin_ia32_dpps256(x, y, 0b11110001); \
@@ -490,19 +1021,11 @@ static inline bool _to_bool(byte_vec_t bv)
 #if VEC_SIZE == FLOAT_SIZE
 # define max(x, y) ((vec_t){({ typeof(x[0]) x_ = (x)[0], y_ = (y)[0]; x_ > y_ ? x_ : y_; })})
 # define min(x, y) ((vec_t){({ typeof(x[0]) x_ = (x)[0], y_ = (y)[0]; x_ < y_ ? x_ : y_; })})
-# ifdef __SSE4_1__
+# if defined(__SSE4_1__) && !defined(__AVX512F__)
 #  if FLOAT_SIZE == 4
-#   define trunc(x) ({ \
-    float __attribute__((vector_size(16))) r_; \
-    asm ( "roundss $0b1011,%1,%0" : "=x" (r_) : "m" (x) ); \
-    (vec_t){ r_[0] }; \
-})
+#   define trunc(x) scalar_1op(x, "roundss $0b1011, %[in], %[out]")
 #  elif FLOAT_SIZE == 8
-#   define trunc(x) ({ \
-    double __attribute__((vector_size(16))) r_; \
-    asm ( "roundsd $0b1011,%1,%0" : "=x" (r_) : "m" (x) ); \
-    (vec_t){ r_[0] }; \
-})
+#   define trunc(x) scalar_1op(x, "roundsd $0b1011, %[in], %[out]")
 #  endif
 # endif
 #endif
@@ -587,10 +1110,114 @@ static inline bool _to_bool(byte_vec_t bv)
 # endif
 #endif
 
+#if VEC_SIZE >= 16
+
+# if !defined(low_half) && defined(HALF_SIZE)
+static inline half_t low_half(vec_t x)
+{
+#  if HALF_SIZE < VEC_SIZE
+    half_t y;
+    unsigned int i;
+
+    for ( i = 0; i < ELEM_COUNT / 2; ++i )
+        y[i] = x[i];
+
+    return y;
+#  else
+    return x;
+#  endif
+}
+# endif
+
+# if !defined(low_quarter) && defined(QUARTER_SIZE)
+static inline quarter_t low_quarter(vec_t x)
+{
+#  if QUARTER_SIZE < VEC_SIZE
+    quarter_t y;
+    unsigned int i;
+
+    for ( i = 0; i < ELEM_COUNT / 4; ++i )
+        y[i] = x[i];
+
+    return y;
+#  else
+    return x;
+#  endif
+}
+# endif
+
+# if !defined(low_eighth) && defined(EIGHTH_SIZE)
+static inline eighth_t low_eighth(vec_t x)
+{
+#  if EIGHTH_SIZE < VEC_SIZE
+    eighth_t y;
+    unsigned int i;
+
+    for ( i = 0; i < ELEM_COUNT / 8; ++i )
+        y[i] = x[i];
+
+    return y;
+#  else
+    return x;
+#  endif
+}
+# endif
+
+#endif
+
+#ifdef broadcast_pair
+# if ELEM_COUNT == 4
+#  define broadcast_half broadcast_pair
+# elif ELEM_COUNT == 8
+#  define broadcast_quarter broadcast_pair
+# elif ELEM_COUNT == 16
+#  define broadcast_eighth broadcast_pair
+# endif
+#endif
+
+#ifdef insert_pair
+# if ELEM_COUNT == 4
+#  define insert_half insert_pair
+# elif ELEM_COUNT == 8
+#  define insert_quarter insert_pair
+# elif ELEM_COUNT == 16
+#  define insert_eighth insert_pair
+# endif
+#endif
+
+#ifdef broadcast_quartet
+# if ELEM_COUNT == 8
+#  define broadcast_half broadcast_quartet
+# elif ELEM_COUNT == 16
+#  define broadcast_quarter broadcast_quartet
+# endif
+#endif
+
+#ifdef insert_quartet
+# if ELEM_COUNT == 8
+#  define insert_half insert_quartet
+# elif ELEM_COUNT == 16
+#  define insert_quarter insert_quartet
+# endif
+#endif
+
+#if defined(broadcast_octet) && ELEM_COUNT == 16
+# define broadcast_half broadcast_octet
+#endif
+
+#if defined(insert_octet) && ELEM_COUNT == 16
+# define insert_half insert_octet
+#endif
+
+#if defined(__AVX512F__) && defined(FLOAT_SIZE)
+# include "simd-fma.c"
+#endif
+
 int simd_test(void)
 {
     unsigned int i, j;
     vec_t x, y, z, src, inv, alt, sh;
+    vint_t interleave_lo, interleave_hi;
 
     for ( i = 0, j = ELEM_SIZE << 3; i < ELEM_COUNT; ++i )
     {
@@ -604,6 +1231,9 @@ int simd_test(void)
         if ( !(i & (i + 1)) )
             --j;
         sh[i] = j;
+
+        interleave_lo[i] = ((i & 1) * ELEM_COUNT) | (i >> 1);
+        interleave_hi[i] = interleave_lo[i] + (ELEM_COUNT / 2);
     }
 
     touch(src);
@@ -657,15 +1287,21 @@ int simd_test(void)
     touch(src);
     if ( !eq(x * -alt, -src) ) return __LINE__;
 
-# if defined(recip) && defined(to_int)
+# ifdef to_int
 
+    touch(src);
+    x = to_int(src);
+    touch(src);
+    if ( !eq(x, src) ) return __LINE__;
+
+#  ifdef recip
     touch(src);
     x = recip(src);
     touch(src);
     touch(x);
     if ( !eq(to_int(recip(x)), src) ) return __LINE__;
 
-#  ifdef rsqrt
+#   ifdef rsqrt
     x = src * src;
     touch(x);
     y = rsqrt(x);
@@ -673,8 +1309,30 @@ int simd_test(void)
     if ( !eq(to_int(recip(y)), src) ) return __LINE__;
     touch(src);
     if ( !eq(to_int(y), to_int(recip(src))) ) return __LINE__;
+#   endif
 #  endif
 
+# endif
+
+# ifdef to_wint
+    touch(src);
+    x = to_wint(src);
+    touch(src);
+    if ( !eq(x, src) ) return __LINE__;
+# endif
+
+# ifdef to_uint
+    touch(src);
+    x = to_uint(src);
+    touch(src);
+    if ( !eq(x, src) ) return __LINE__;
+# endif
+
+# ifdef to_uwint
+    touch(src);
+    x = to_uwint(src);
+    touch(src);
+    if ( !eq(x, src) ) return __LINE__;
 # endif
 
 # ifdef sqrt
@@ -866,8 +1524,72 @@ int simd_test(void)
     if ( !eq(swap2(src), inv) ) return __LINE__;
 #endif
 
-#if defined(broadcast)
+#ifdef swap3
+    touch(src);
+    if ( !eq(swap3(src), inv) ) return __LINE__;
+    touch(src);
+#endif
+
+#ifdef broadcast
     if ( !eq(broadcast(ELEM_COUNT + 1), src + inv) ) return __LINE__;
+#endif
+
+#ifdef broadcast2
+    if ( !eq(broadcast2(ELEM_COUNT + 1), src + inv) ) return __LINE__;
+#endif
+
+#if defined(broadcast_half) && defined(insert_half)
+    {
+        half_t aux = low_half(src);
+
+        touch(aux);
+        x = broadcast_half(aux);
+        touch(aux);
+        y = insert_half(src, aux, 1);
+        if ( !eq(x, y) ) return __LINE__;
+    }
+#endif
+
+#if defined(broadcast_quarter) && defined(insert_quarter)
+    {
+        quarter_t aux = low_quarter(src);
+
+        touch(aux);
+        x = broadcast_quarter(aux);
+        touch(aux);
+        y = insert_quarter(src, aux, 1);
+        touch(aux);
+        y = insert_quarter(y, aux, 2);
+        touch(aux);
+        y = insert_quarter(y, aux, 3);
+        if ( !eq(x, y) ) return __LINE__;
+    }
+#endif
+
+#if defined(broadcast_eighth) && defined(insert_eighth) && \
+    /* At least gcc 7.3 "optimizes" away all insert_eighth() calls below. */ \
+    __GNUC__ >= 8
+    {
+        eighth_t aux = low_eighth(src);
+
+        touch(aux);
+        x = broadcast_eighth(aux);
+        touch(aux);
+        y = insert_eighth(src, aux, 1);
+        touch(aux);
+        y = insert_eighth(y, aux, 2);
+        touch(aux);
+        y = insert_eighth(y, aux, 3);
+        touch(aux);
+        y = insert_eighth(y, aux, 4);
+        touch(aux);
+        y = insert_eighth(y, aux, 5);
+        touch(aux);
+        y = insert_eighth(y, aux, 6);
+        touch(aux);
+        y = insert_eighth(y, aux, 7);
+        if ( !eq(x, y) ) return __LINE__;
+    }
 #endif
 
 #if defined(interleave_lo) && defined(interleave_hi)
@@ -893,7 +1615,7 @@ int simd_test(void)
     x = src * alt;
     y = interleave_lo(x, alt < 0);
     touch(x);
-    z = widen1(x);
+    z = widen1(low_half(x));
     touch(x);
     if ( !eq(z, y) ) return __LINE__;
 
@@ -901,7 +1623,7 @@ int simd_test(void)
     y = interleave_lo(alt < 0, alt < 0);
     y = interleave_lo(z, y);
     touch(x);
-    z = widen2(x);
+    z = widen2(low_quarter(x));
     touch(x);
     if ( !eq(z, y) ) return __LINE__;
 
@@ -910,7 +1632,7 @@ int simd_test(void)
     y = interleave_lo(y, y);
     y = interleave_lo(z, y);
     touch(x);
-    z = widen3(x);
+    z = widen3(low_eighth(x));
     touch(x);
     if ( !eq(z, y) ) return __LINE__;
 #  endif
@@ -925,25 +1647,70 @@ int simd_test(void)
 
 # ifdef widen1
     touch(src);
-    x = widen1(src);
+    x = widen1(low_half(src));
     touch(src);
     if ( !eq(x, y) ) return __LINE__;
 # endif
 
 # ifdef widen2
     touch(src);
-    x = widen2(src);
+    x = widen2(low_quarter(src));
     touch(src);
     if ( !eq(x, z) ) return __LINE__;
 # endif
 
 # ifdef widen3
     touch(src);
-    x = widen3(src);
+    x = widen3(low_eighth(src));
     touch(src);
     if ( !eq(x, interleave_lo(z, (vec_t){})) ) return __LINE__;
 # endif
 
+#endif
+
+#if defined(widen1) && defined(shrink1)
+    {
+        half_t aux1 = low_half(src), aux2;
+
+        touch(aux1);
+        x = widen1(aux1);
+        touch(x);
+        aux2 = shrink1(x);
+        touch(aux2);
+        for ( i = 0; i < ELEM_COUNT / 2; ++i )
+            if ( aux2[i] != src[i] )
+                return __LINE__;
+    }
+#endif
+
+#if defined(widen2) && defined(shrink2)
+    {
+        quarter_t aux1 = low_quarter(src), aux2;
+
+        touch(aux1);
+        x = widen2(aux1);
+        touch(x);
+        aux2 = shrink2(x);
+        touch(aux2);
+        for ( i = 0; i < ELEM_COUNT / 4; ++i )
+            if ( aux2[i] != src[i] )
+                return __LINE__;
+    }
+#endif
+
+#if defined(widen3) && defined(shrink3)
+    {
+        eighth_t aux1 = low_eighth(src), aux2;
+
+        touch(aux1);
+        x = widen3(aux1);
+        touch(x);
+        aux2 = shrink3(x);
+        touch(aux2);
+        for ( i = 0; i < ELEM_COUNT / 8; ++i )
+            if ( aux2[i] != src[i] )
+                return __LINE__;
+    }
 #endif
 
 #ifdef dup_lo
@@ -1034,7 +1801,30 @@ int simd_test(void)
 # endif
 #endif
 
-#if defined(__XOP__) && VEC_SIZE == 16 && (INT_SIZE == 2 || INT_SIZE == 4)
+#if defined(getexp) && defined(getmant)
+    touch(src);
+    x = getmant(src);
+    touch(src);
+    y = getexp(src);
+    touch(src);
+    for ( j = i = 0; i < ELEM_COUNT; ++i )
+    {
+        if ( y[i] != j ) return __LINE__;
+
+        if ( !((i + 1) & (i + 2)) )
+            ++j;
+
+        if ( !(i & (i + 1)) && x[i] != 1 ) return __LINE__;
+    }
+# ifdef scale
+    touch(y);
+    z = scale(x, y);
+    if ( !eq(src, z) ) return __LINE__;
+# endif
+#endif
+
+#if (defined(__XOP__) && VEC_SIZE == 16 && (INT_SIZE == 2 || INT_SIZE == 4)) || \
+    (defined(__AVX512F__) && defined(FLOAT_SIZE))
     return -fma_test();
 #endif
 

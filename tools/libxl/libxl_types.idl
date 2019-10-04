@@ -235,6 +235,9 @@ libxl_viridian_enlightenment = Enumeration("viridian_enlightenment", [
     (4, "hcall_remote_tlb_flush"),
     (5, "apic_assist"),
     (6, "crash_ctl"),
+    (7, "synic"),
+    (8, "stimer"),
+    (9, "hcall_ipi"),
     ])
 
 libxl_hdtype = Enumeration("hdtype", [
@@ -457,6 +460,11 @@ libxl_gic_version = Enumeration("gic_version", [
     (0x30, "v3")
     ], init_val = "LIBXL_GIC_VERSION_DEFAULT")
 
+libxl_tee_type = Enumeration("tee_type", [
+    (0, "none"),
+    (1, "optee")
+    ], init_val = "LIBXL_TEE_TYPE_NONE")
+
 libxl_rdm_reserve = Struct("rdm_reserve", [
     ("strategy",    libxl_rdm_reserve_strategy),
     ("policy",      libxl_rdm_reserve_policy),
@@ -534,6 +542,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
     ("nested_hvm",       libxl_defbool),
     ("apic",             libxl_defbool),
     ("dm_restrict",      libxl_defbool),
+    ("tee",              libxl_tee_type),
     ("u", KeyedUnion(None, libxl_domain_type, "type",
                 [("hvm", Struct(None, [("firmware",         string),
                                        ("bios",             libxl_bios_type),
@@ -583,6 +592,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
                                        # - "tablet" for absolute mouse,
                                        # - "mouse" for PS/2 protocol relative mouse
                                        ("usbdevice",        string),
+                                       ("vkb_device",       libxl_defbool),
                                        ("soundhw",          string),
                                        ("xen_platform_pci", libxl_defbool),
                                        ("usbdevice_list",   libxl_string_list),
@@ -1021,6 +1031,9 @@ libxl_physinfo = Struct("physinfo", [
     ("cap_hvm", bool),
     ("cap_pv", bool),
     ("cap_hvm_directio", bool), # No longer HVM specific
+    ("cap_hap", bool),
+    ("cap_shadow", bool),
+    ("cap_iommu_hap_pt_share", bool),
     ], dir=DIR_OUT)
 
 libxl_connectorinfo = Struct("connectorinfo", [

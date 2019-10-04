@@ -38,7 +38,6 @@
 #include <asm/msr.h>
 #include <asm/io.h>
 #include <asm/processor.h>
-#include <asm/percpu.h>
 #include <asm/cpufeature.h>
 #include <acpi/acpi.h>
 #include <acpi/cpufreq/cpufreq.h>
@@ -649,7 +648,8 @@ static int __init cpufreq_driver_init(void)
         (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL))
         ret = cpufreq_register_driver(&acpi_cpufreq_driver);
     else if ((cpufreq_controller == FREQCTL_xen) &&
-        (boot_cpu_data.x86_vendor == X86_VENDOR_AMD))
+        (boot_cpu_data.x86_vendor &
+         (X86_VENDOR_AMD | X86_VENDOR_HYGON)))
         ret = powernow_register_driver();
 
     return ret;
@@ -660,9 +660,9 @@ int cpufreq_cpu_init(unsigned int cpuid)
 {
     int ret;
 
-    /* Currently we only handle Intel and AMD processor */
-    if ( (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL ) ||
-         (boot_cpu_data.x86_vendor == X86_VENDOR_AMD ) )
+    /* Currently we only handle Intel, AMD and Hygon processor */
+    if ( boot_cpu_data.x86_vendor &
+         (X86_VENDOR_INTEL | X86_VENDOR_AMD | X86_VENDOR_HYGON) )
         ret = cpufreq_add_cpu(cpuid);
     else
         ret = -EFAULT;

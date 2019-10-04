@@ -25,36 +25,59 @@ static int __init parse_xen_cpuid(const char *s)
     int val, rc = 0;
 
     do {
+        static const struct feature {
+            const char *name;
+            unsigned int bit;
+        } features[] __initconstrel = INIT_FEATURE_NAMES;
+        const struct feature *lhs, *rhs, *mid = NULL /* GCC... */;
+        const char *feat;
+
         ss = strchr(s, ',');
         if ( !ss )
             ss = strchr(s, '\0');
 
-        if ( (val = parse_boolean("ibpb", s, ss)) >= 0 )
+        /* Skip the 'no-' prefix for name comparisons. */
+        feat = s;
+        if ( strncmp(s, "no-", 3) == 0 )
+            feat += 3;
+
+        /* (Re)initalise lhs and rhs for binary search. */
+        lhs = features;
+        rhs = features + ARRAY_SIZE(features);
+
+        while ( lhs < rhs )
         {
-            if ( !val )
-                setup_clear_cpu_cap(X86_FEATURE_IBPB);
+            int res;
+
+            mid = lhs + (rhs - lhs) / 2;
+            res = cmdline_strcmp(feat, mid->name);
+
+            if ( res < 0 )
+            {
+                rhs = mid;
+                continue;
+            }
+            if ( res > 0 )
+            {
+                lhs = mid + 1;
+                continue;
+            }
+
+            if ( (val = parse_boolean(mid->name, s, ss)) >= 0 )
+            {
+                if ( !val )
+                    setup_clear_cpu_cap(mid->bit);
+                mid = NULL;
+            }
+
+            break;
         }
-        else if ( (val = parse_boolean("ibrsb", s, ss)) >= 0 )
-        {
-            if ( !val )
-                setup_clear_cpu_cap(X86_FEATURE_IBRSB);
-        }
-        else if ( (val = parse_boolean("stibp", s, ss)) >= 0 )
-        {
-            if ( !val )
-                setup_clear_cpu_cap(X86_FEATURE_STIBP);
-        }
-        else if ( (val = parse_boolean("l1d-flush", s, ss)) >= 0 )
-        {
-            if ( !val )
-                setup_clear_cpu_cap(X86_FEATURE_L1D_FLUSH);
-        }
-        else if ( (val = parse_boolean("ssbd", s, ss)) >= 0 )
-        {
-            if ( !val )
-                setup_clear_cpu_cap(X86_FEATURE_SSBD);
-        }
-        else
+
+        /*
+         * Mid being NULL means that the name and boolean were successfully
+         * identified.  Everything else is an error.
+         */
+        if ( mid )
             rc = -EINVAL;
 
         s = ss + 1;
@@ -158,14 +181,6 @@ static void recalculate_xstate(struct cpuid_policy *p)
                           xstate_sizes[X86_XCR0_PKRU_POS]);
     }
 
-    if ( p->extd.lwp )
-    {
-        xstates |= X86_XCR0_LWP;
-        xstate_size = max(xstate_size,
-                          xstate_offsets[X86_XCR0_LWP_POS] +
-                          xstate_sizes[X86_XCR0_LWP_POS]);
-    }
-
     p->xstate.max_size  =  xstate_size;
     p->xstate.xcr0_low  =  xstates & ~XSTATE_XSAVES_ONLY;
     p->xstate.xcr0_high = (xstates & ~XSTATE_XSAVES_ONLY) >> 32;
@@ -240,6 +255,7 @@ static void recalculate_misc(struct cpuid_policy *p)
         break;
 
     case X86_VENDOR_AMD:
+    case X86_VENDOR_HYGON:
         zero_leaves(p->basic.raw, 0x2, 0x3);
         memset(p->cache.raw, 0, sizeof(p->cache.raw));
         zero_leaves(p->basic.raw, 0x9, 0xa);
@@ -260,8 +276,7 @@ static void recalculate_misc(struct cpuid_policy *p)
         zero_leaves(p->extd.raw, 0xb, 0x18);
 
         p->extd.raw[0x1b] = EMPTY_LEAF; /* IBS - not supported. */
-
-        p->extd.raw[0x1c].a = 0; /* LWP.a entirely dynamic. */
+        p->extd.raw[0x1c] = EMPTY_LEAF; /* LWP - not supported. */
         break;
     }
 }
@@ -272,7 +287,8 @@ static void __init calculate_raw_policy(void)
 
     x86_cpuid_policy_fill_native(p);
 
-    p->x86_vendor = boot_cpu_data.x86_vendor;
+    /* Nothing good will come from Xen and libx86 disagreeing on vendor. */
+    ASSERT(p->x86_vendor == boot_cpu_data.x86_vendor);
 }
 
 static void __init calculate_host_policy(void)
@@ -390,7 +406,7 @@ static void __init calculate_hvm_max_policy(void)
      * long mode (and init_amd() has cleared it out of host capabilities), but
      * HVM guests are able if running in protected mode.
      */
-    if ( (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) &&
+    if ( (boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) &&
          raw_cpuid_policy.basic.sep )
         __set_bit(X86_FEATURE_SEP, hvm_featureset);
 
@@ -459,13 +475,14 @@ void recalculate_cpuid_policy(struct domain *d)
     uint32_t fs[FSCAPINTS], max_fs[FSCAPINTS];
     unsigned int i;
 
-    p->x86_vendor = get_cpu_vendor(p->basic.vendor_ebx, p->basic.vendor_ecx,
-                                   p->basic.vendor_edx, gcv_guest);
+    p->x86_vendor = x86_cpuid_lookup_vendor(
+        p->basic.vendor_ebx, p->basic.vendor_ecx, p->basic.vendor_edx);
 
     p->basic.max_leaf   = min(p->basic.max_leaf,   max->basic.max_leaf);
     p->feat.max_subleaf = min(p->feat.max_subleaf, max->feat.max_subleaf);
     p->extd.max_leaf    = 0x80000000 | min(p->extd.max_leaf & 0xffff,
-                                           (p->x86_vendor == X86_VENDOR_AMD
+                                           ((p->x86_vendor & (X86_VENDOR_AMD |
+                                                              X86_VENDOR_HYGON))
                                             ? CPUID_GUEST_NR_EXTD_AMD
                                             : CPUID_GUEST_NR_EXTD_INTEL) - 1);
 
@@ -507,7 +524,7 @@ void recalculate_cpuid_policy(struct domain *d)
     if ( is_pv_32bit_domain(d) )
     {
         __clear_bit(X86_FEATURE_LM, max_fs);
-        if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD )
+        if ( !(boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
             __clear_bit(X86_FEATURE_SYSCALL, max_fs);
     }
 
@@ -575,11 +592,6 @@ void recalculate_cpuid_policy(struct domain *d)
 
     if ( !p->extd.page1gb )
         p->extd.raw[0x19] = EMPTY_LEAF;
-
-    if ( p->extd.lwp )
-        p->extd.raw[0x1c].d &= max->extd.raw[0x1c].d;
-    else
-        p->extd.raw[0x1c] = EMPTY_LEAF;
 }
 
 int init_domain_cpuid_policy(struct domain *d)
@@ -776,7 +788,8 @@ void guest_cpuid(const struct vcpu *v, uint32_t leaf,
              *    damage itself.
              *
              * - Enlightened CPUID or CPUID faulting available:
-             *    Xen can fully control what is seen here.  Guest kernels need
+             *    Xen can fully control what is seen here.  When the guest has
+             *    been configured to have XSAVE available, guest kernels need
              *    to see the leaked OSXSAVE via the enlightened path, but
              *    guest userspace and the native is given architectural
              *    behaviour.
@@ -786,7 +799,8 @@ void guest_cpuid(const struct vcpu *v, uint32_t leaf,
              */
             /* OSXSAVE clear in policy.  Fast-forward CR4 back in. */
             if ( (v->arch.pv.ctrlreg[4] & X86_CR4_OSXSAVE) ||
-                 (regs->entry_vector == TRAP_invalid_op &&
+                 (p->basic.xsave &&
+                  regs->entry_vector == TRAP_invalid_op &&
                   guest_kernel_mode(v, regs) &&
                   (read_cr4() & X86_CR4_OSXSAVE)) )
                 res->c |= cpufeat_mask(X86_FEATURE_OSXSAVE);
@@ -965,12 +979,6 @@ void guest_cpuid(const struct vcpu *v, uint32_t leaf,
                  guest_kernel_mode(v, guest_cpu_user_regs()) )
                 res->d |= cpufeat_mask(X86_FEATURE_MTRR);
         }
-        break;
-
-    case 0x8000001c:
-        if ( (v->arch.xcr0 & X86_XCR0_LWP) && cpu_has_svm )
-            /* Turn on available bit and other features specified in lwp_cfg. */
-            res->a = (res->d & v->arch.hvm.svm.guest_lwp_cfg) | 1;
         break;
     }
 }

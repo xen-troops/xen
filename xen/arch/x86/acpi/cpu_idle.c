@@ -38,7 +38,6 @@
 #include <xen/guest_access.h>
 #include <xen/keyhandler.h>
 #include <xen/trace.h>
-#include <xen/sched-if.h>
 #include <xen/irq.h>
 #include <asm/cache.h>
 #include <asm/io.h>
@@ -102,15 +101,30 @@ bool lapic_timer_init(void)
     return true;
 }
 
-static uint64_t (*__read_mostly tick_to_ns)(uint64_t) = acpi_pm_tick_to_ns;
-
 void (*__read_mostly pm_idle_save)(void);
-unsigned int max_cstate __read_mostly = ACPI_PROCESSOR_MAX_POWER - 1;
-integer_param("max_cstate", max_cstate);
+unsigned int max_cstate __read_mostly = UINT_MAX;
+unsigned int max_csubstate __read_mostly = UINT_MAX;
+
+static int __init parse_cstate(const char *s)
+{
+    max_cstate = simple_strtoul(s, &s, 0);
+    if ( *s == ',' )
+        max_csubstate = simple_strtoul(s + 1, NULL, 0);
+    return 0;
+}
+custom_param("max_cstate", parse_cstate);
+
 static bool __read_mostly local_apic_timer_c2_ok;
 boolean_param("lapic_timer_c2_ok", local_apic_timer_c2_ok);
 
 struct acpi_processor_power *__read_mostly processor_powers[NR_CPUS];
+
+/*
+ * This field starts out as zero, and can be set to -1 just to signal it has
+ * been set (and that vendor specific logic has failed, and shouldn't be
+ * tried again), or to +1 to ignore Dom0 side uploads of C-state ACPI data.
+ */
+static int8_t __read_mostly vendor_override;
 
 struct hw_residencies
 {
@@ -289,9 +303,9 @@ static uint64_t acpi_pm_ticks_elapsed(uint64_t t1, uint64_t t2)
         return ((0xFFFFFFFF - t1) + t2 +1);
 }
 
-uint64_t (*__read_mostly cpuidle_get_tick)(void) = get_acpi_pm_tick;
-static uint64_t (*__read_mostly ticks_elapsed)(uint64_t, uint64_t)
-    = acpi_pm_ticks_elapsed;
+uint64_t (*__read_mostly cpuidle_get_tick)(void);
+static uint64_t (*__read_mostly tick_to_ns)(uint64_t);
+static uint64_t (*__read_mostly ticks_elapsed)(uint64_t, uint64_t);
 
 static void print_acpi_power(uint32_t cpu, struct acpi_processor_power *power)
 {
@@ -304,9 +318,6 @@ static void print_acpi_power(uint32_t cpu, struct acpi_processor_power *power)
 
     printk("==cpu%d==\n", cpu);
     last_state_idx = power->last_state ? power->last_state->idx : -1;
-    printk("active state:\t\tC%d\n", last_state_idx);
-    printk("max_cstate:\t\tC%d\n", max_cstate);
-    printk("states:\n");
 
     spin_lock_irq(&power->stat_lock);
     current_tick = cpuidle_get_tick();
@@ -331,16 +342,14 @@ static void print_acpi_power(uint32_t cpu, struct acpi_processor_power *power)
         idle_usage += usage[i];
         idle_res += tick_to_ns(res_tick[i]);
 
-        printk((last_state_idx == i) ? "   *" : "    ");
-        printk("C%d:\t", i);
-        printk("type[C%d] ", power->states[i].type);
-        printk("latency[%03d] ", power->states[i].latency);
-        printk("usage[%08"PRIu64"] ", usage[i]);
-        printk("method[%5s] ", acpi_cstate_method_name[power->states[i].entry_method]);
-        printk("duration[%"PRIu64"]\n", tick_to_ns(res_tick[i]));
+        printk("   %cC%u:\ttype[C%d] latency[%3u] usage[%8"PRIu64"] method[%5s] duration[%"PRIu64"]\n",
+               (last_state_idx == i) ? '*' : ' ', i,
+               power->states[i].type, power->states[i].latency, usage[i],
+               acpi_cstate_method_name[power->states[i].entry_method],
+               tick_to_ns(res_tick[i]));
     }
-    printk((last_state_idx == 0) ? "   *" : "    ");
-    printk("C0:\tusage[%08"PRIu64"] duration[%"PRIu64"]\n",
+    printk("   %cC0:\tusage[%8"PRIu64"] duration[%"PRIu64"]\n",
+           (last_state_idx == 0) ? '*' : ' ',
            usage[0] + idle_usage, current_stime - idle_res);
 
     print_hw_residencies(cpu);
@@ -351,12 +360,32 @@ static void dump_cx(unsigned char key)
     unsigned int cpu;
 
     printk("'%c' pressed -> printing ACPI Cx structures\n", key);
-    for_each_online_cpu ( cpu )
-        if (processor_powers[cpu])
-        {
-            print_acpi_power(cpu, processor_powers[cpu]);
-            process_pending_softirqs();
-        }
+    if ( max_cstate < UINT_MAX )
+    {
+        printk("max state: C%u\n", max_cstate);
+        if ( max_csubstate < UINT_MAX )
+            printk("max sub-state: %u\n", max_csubstate);
+        else
+            printk("max sub-state: unlimited\n");
+    }
+    else
+        printk("max state: unlimited\n");
+    for_each_present_cpu ( cpu )
+    {
+        struct acpi_processor_power *power = processor_powers[cpu];
+
+        if ( !power )
+            continue;
+
+        if ( cpu_online(cpu) )
+            print_acpi_power(cpu, power);
+        else if ( park_offline_cpus )
+            printk("CPU%u parked in state %u (C%u)\n", cpu,
+                   power->last_state ? power->last_state->idx : 1,
+                   power->last_state ? power->last_state->type : 1);
+
+        process_pending_softirqs();
+    }
 }
 
 static int __init cpu_idle_key_init(void)
@@ -548,7 +577,7 @@ void update_idle_stats(struct acpi_processor_power *power,
                        struct acpi_processor_cx *cx,
                        uint64_t before, uint64_t after)
 {
-    int64_t sleep_ticks = ticks_elapsed(before, after);
+    int64_t sleep_ticks = alternative_call(ticks_elapsed, before, after);
     /* Interrupts are disabled */
 
     spin_lock(&power->stat_lock);
@@ -556,7 +585,8 @@ void update_idle_stats(struct acpi_processor_power *power,
     cx->usage++;
     if ( sleep_ticks > 0 )
     {
-        power->last_residency = tick_to_ns(sleep_ticks) / 1000UL;
+        power->last_residency = alternative_call(tick_to_ns, sleep_ticks) /
+                                1000UL;
         cx->time += sleep_ticks;
     }
     power->last_state = &power->states[0];
@@ -574,16 +604,30 @@ static void acpi_processor_idle(void)
     u32 exp = 0, pred = 0;
     u32 irq_traced[4] = { 0 };
 
-    if ( max_cstate > 0 && power && !sched_has_urgent_vcpu() &&
+    if ( max_cstate > 0 && power &&
          (next_state = cpuidle_current_governor->select(power)) > 0 )
     {
-        cx = &power->states[next_state];
-        if ( cx->type == ACPI_STATE_C3 && power->flags.bm_check &&
-             acpi_idle_bm_check() )
-            cx = power->safe_state;
-        if ( cx->idx > max_cstate )
-            cx = &power->states[max_cstate];
-        menu_get_trace_data(&exp, &pred);
+        unsigned int max_state = sched_has_urgent_vcpu() ? ACPI_STATE_C1
+                                                         : max_cstate;
+
+        do {
+            cx = &power->states[next_state];
+        } while ( (cx->type > max_state ||
+                   cx->entry_method == ACPI_CSTATE_EM_NONE ||
+                   (cx->entry_method == ACPI_CSTATE_EM_FFH &&
+                    cx->type == max_cstate &&
+                    (cx->address & MWAIT_SUBSTATE_MASK) > max_csubstate)) &&
+                  --next_state );
+        if ( next_state )
+        {
+            if ( cx->type == ACPI_STATE_C3 && power->flags.bm_check &&
+                 acpi_idle_bm_check() )
+                cx = power->safe_state;
+            if ( tb_init_done )
+                menu_get_trace_data(&exp, &pred);
+        }
+        else
+            cx = NULL;
     }
     if ( !cx )
     {
@@ -636,7 +680,7 @@ static void acpi_processor_idle(void)
         if ( cx->type == ACPI_STATE_C1 || local_apic_timer_c2_ok )
         {
             /* Get start time (ticks) */
-            t1 = cpuidle_get_tick();
+            t1 = alternative_call(cpuidle_get_tick);
             /* Trace cpu idle entry */
             TRACE_4D(TRC_PM_IDLE_ENTRY, cx->idx, t1, exp, pred);
 
@@ -645,7 +689,7 @@ static void acpi_processor_idle(void)
             /* Invoke C2 */
             acpi_idle_do_entry(cx);
             /* Get end time (ticks) */
-            t2 = cpuidle_get_tick();
+            t2 = alternative_call(cpuidle_get_tick);
             trace_exit_reason(irq_traced);
             /* Trace cpu idle exit */
             TRACE_6D(TRC_PM_IDLE_EXIT, cx->idx, t2,
@@ -667,7 +711,7 @@ static void acpi_processor_idle(void)
         lapic_timer_off();
 
         /* Get start time (ticks) */
-        t1 = cpuidle_get_tick();
+        t1 = alternative_call(cpuidle_get_tick);
         /* Trace cpu idle entry */
         TRACE_4D(TRC_PM_IDLE_ENTRY, cx->idx, t1, exp, pred);
 
@@ -718,7 +762,7 @@ static void acpi_processor_idle(void)
         }
 
         /* Get end time (ticks) */
-        t2 = cpuidle_get_tick();
+        t2 = alternative_call(cpuidle_get_tick);
 
         /* recovering TSC */
         cstate_restore_tsc();
@@ -765,6 +809,7 @@ void acpi_dead_idle(void)
         goto default_halt;
 
     cx = &power->states[power->count - 1];
+    power->last_state = cx;
 
     if ( cx->entry_method == ACPI_CSTATE_EM_FFH )
     {
@@ -796,7 +841,8 @@ void acpi_dead_idle(void)
             __mwait(cx->address, 0);
         }
     }
-    else if ( current_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+    else if ( (current_cpu_data.x86_vendor &
+               (X86_VENDOR_AMD | X86_VENDOR_HYGON)) &&
               cx->entry_method == ACPI_CSTATE_EM_SYSIO )
     {
         /* Intel prefers not to use SYSIO */
@@ -828,11 +874,20 @@ int cpuidle_init_cpu(unsigned int cpu)
     {
         unsigned int i;
 
-        if ( cpu == 0 && boot_cpu_has(X86_FEATURE_NONSTOP_TSC) )
+        if ( cpu == 0 && system_state < SYS_STATE_active )
         {
-            cpuidle_get_tick = get_stime_tick;
-            ticks_elapsed = stime_ticks_elapsed;
-            tick_to_ns = stime_tick_to_ns;
+            if ( boot_cpu_has(X86_FEATURE_NONSTOP_TSC) )
+            {
+                cpuidle_get_tick = get_stime_tick;
+                ticks_elapsed = stime_ticks_elapsed;
+                tick_to_ns = stime_tick_to_ns;
+            }
+            else
+            {
+                cpuidle_get_tick = get_acpi_pm_tick;
+                ticks_elapsed = acpi_pm_ticks_elapsed;
+                tick_to_ns = acpi_pm_tick_to_ns;
+            }
         }
 
         acpi_power = xzalloc(struct acpi_processor_power);
@@ -1186,6 +1241,9 @@ long set_cx_pminfo(uint32_t acpi_id, struct xen_processor_power *power)
     if ( pm_idle_save && pm_idle != acpi_processor_idle )
         return 0;
 
+    if ( vendor_override > 0 )
+        return 0;
+
     print_cx_pminfo(acpi_id, power);
 
     cpu_id = get_cpu_id(acpi_id);
@@ -1217,9 +1275,30 @@ long set_cx_pminfo(uint32_t acpi_id, struct xen_processor_power *power)
         set_cx(acpi_power, &xen_cx);
     }
 
-    if ( cpuidle_current_governor->enable &&
-         cpuidle_current_governor->enable(acpi_power) )
-        return -EFAULT;
+    if ( !cpu_online(cpu_id) )
+    {
+        uint32_t apic_id = x86_cpu_to_apicid[cpu_id];
+
+        /*
+         * If we've just learned of more available C states, wake the CPU if
+         * it's parked, so it can go back to sleep in perhaps a deeper state.
+         */
+        if ( park_offline_cpus && apic_id != BAD_APICID )
+        {
+            unsigned long flags;
+
+            local_irq_save(flags);
+            apic_wait_icr_idle();
+            apic_icr_write(APIC_DM_NMI | APIC_DEST_PHYSICAL, apic_id);
+            local_irq_restore(flags);
+        }
+    }
+    else if ( cpuidle_current_governor->enable )
+    {
+        ret = cpuidle_current_governor->enable(acpi_power);
+        if ( ret < 0 )
+            return ret;
+    }
 
     /* FIXME: C-state dependency is not supported by far */
 
@@ -1235,6 +1314,102 @@ long set_cx_pminfo(uint32_t acpi_id, struct xen_processor_power *power)
     }
  
     return 0;
+}
+
+static void amd_cpuidle_init(struct acpi_processor_power *power)
+{
+    unsigned int i, nr = 0;
+    const struct cpuinfo_x86 *c = &current_cpu_data;
+    const unsigned int ecx_req = CPUID5_ECX_EXTENSIONS_SUPPORTED |
+                                 CPUID5_ECX_INTERRUPT_BREAK;
+    const struct acpi_processor_cx *cx = NULL;
+    static const struct acpi_processor_cx fam17[] = {
+        {
+            .type = ACPI_STATE_C1,
+            .entry_method = ACPI_CSTATE_EM_FFH,
+            .latency = 1,
+        },
+        {
+            .type = ACPI_STATE_C2,
+            .entry_method = ACPI_CSTATE_EM_HALT,
+            .latency = 400,
+        },
+    };
+
+    if ( pm_idle_save && pm_idle != acpi_processor_idle )
+        return;
+
+    if ( vendor_override < 0 )
+        return;
+
+    switch ( c->x86 )
+    {
+    case 0x18:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_HYGON )
+        {
+    default:
+            vendor_override = -1;
+            return;
+        }
+        /* fall through */
+    case 0x17:
+        if ( cpu_has_monitor && c->cpuid_level >= CPUID_MWAIT_LEAF &&
+             (cpuid_ecx(CPUID_MWAIT_LEAF) & ecx_req) == ecx_req )
+        {
+            cx = fam17;
+            nr = ARRAY_SIZE(fam17);
+            local_apic_timer_c2_ok = true;
+            break;
+        }
+        /* fall through */
+    case 0x15:
+    case 0x16:
+        cx = &fam17[1];
+        nr = ARRAY_SIZE(fam17) - 1;
+        break;
+    }
+
+    power->flags.has_cst = true;
+
+    for ( i = 0; i < nr; ++i )
+    {
+        if ( cx[i].type > max_cstate )
+            break;
+        power->states[i + 1] = cx[i];
+        power->states[i + 1].idx = i + 1;
+        power->states[i + 1].target_residency = cx[i].latency * latency_factor;
+    }
+
+    if ( i )
+    {
+        power->count = i + 1;
+        power->safe_state = &power->states[i];
+
+        if ( !vendor_override )
+        {
+            if ( !boot_cpu_has(X86_FEATURE_ARAT) )
+                hpet_broadcast_init();
+
+            if ( !lapic_timer_init() )
+            {
+                vendor_override = -1;
+                cpuidle_init_cpu(power->cpu);
+                return;
+            }
+
+            if ( !pm_idle_save )
+            {
+                pm_idle_save = pm_idle;
+                pm_idle = acpi_processor_idle;
+            }
+
+            dead_idle = acpi_dead_idle;
+
+            vendor_override = 1;
+        }
+    }
+    else
+        vendor_override = -1;
 }
 
 uint32_t pmstat_get_cx_nr(uint32_t cpuid)
@@ -1359,12 +1534,12 @@ int pmstat_reset_cx_stat(uint32_t cpuid)
 
 void cpuidle_disable_deep_cstate(void)
 {
-    if ( max_cstate > 1 )
+    if ( max_cstate > ACPI_STATE_C1 )
     {
         if ( local_apic_timer_c2_ok )
-            max_cstate = 2;
+            max_cstate = ACPI_STATE_C2;
         else
-            max_cstate = 1;
+            max_cstate = ACPI_STATE_C1;
     }
 
     hpet_disable_legacy_broadcast();
@@ -1372,26 +1547,37 @@ void cpuidle_disable_deep_cstate(void)
 
 bool cpuidle_using_deep_cstate(void)
 {
-    return xen_cpuidle && max_cstate > (local_apic_timer_c2_ok ? 2 : 1);
+    return xen_cpuidle && max_cstate > (local_apic_timer_c2_ok ? ACPI_STATE_C2
+                                                               : ACPI_STATE_C1);
 }
 
 static int cpu_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
     unsigned int cpu = (unsigned long)hcpu;
+    int rc = 0;
 
-    /* Only hook on CPU_ONLINE because a dead cpu may utilize the info to
-     * to enter deep C-state */
+    /*
+     * Only hook on CPU_UP_PREPARE / CPU_ONLINE because a dead cpu may utilize
+     * the info to enter deep C-state.
+     */
     switch ( action )
     {
-    case CPU_ONLINE:
-        (void)cpuidle_init_cpu(cpu);
+    case CPU_UP_PREPARE:
+        rc = cpuidle_init_cpu(cpu);
+        if ( !rc && cpuidle_current_governor->enable )
+            rc = cpuidle_current_governor->enable(processor_powers[cpu]);
         break;
-    default:
+
+    case CPU_ONLINE:
+        if ( (boot_cpu_data.x86_vendor &
+              (X86_VENDOR_AMD | X86_VENDOR_HYGON)) &&
+             processor_powers[cpu] )
+            amd_cpuidle_init(processor_powers[cpu]);
         break;
     }
 
-    return NOTIFY_DONE;
+    return !rc ? NOTIFY_DONE : notifier_from_errno(rc);
 }
 
 static struct notifier_block cpu_nfb = {
@@ -1406,6 +1592,7 @@ static int __init cpuidle_presmp_init(void)
         return 0;
 
     mwait_idle_init(&cpu_nfb);
+    cpu_nfb.notifier_call(&cpu_nfb, CPU_UP_PREPARE, cpu);
     cpu_nfb.notifier_call(&cpu_nfb, CPU_ONLINE, cpu);
     register_cpu_notifier(&cpu_nfb);
     return 0;

@@ -42,14 +42,14 @@ unsigned int __read_mostly levelling_caps;
 DEFINE_PER_CPU(struct cpuidmasks, cpuidmasks);
 struct cpuidmasks __read_mostly cpuidmask_defaults;
 
-const struct cpu_dev *__read_mostly cpu_devs[X86_VENDOR_NUM] = {};
-
 unsigned int paddr_bits __read_mostly = 36;
 unsigned int hap_paddr_bits __read_mostly = 36;
 unsigned int vaddr_bits __read_mostly = VADDR_BITS;
 
 static unsigned int cleared_caps[NCAPINTS];
 static unsigned int forced_caps[NCAPINTS];
+
+DEFINE_PER_CPU(bool, full_gdt_loaded);
 
 void __init setup_clear_cpu_cap(unsigned int cap)
 {
@@ -104,7 +104,6 @@ static void default_init(struct cpuinfo_x86 * c)
 
 static const struct cpu_dev default_cpu = {
 	.c_init	= default_init,
-	.c_vendor = "Unknown",
 };
 static const struct cpu_dev *this_cpu = &default_cpu;
 
@@ -116,8 +115,16 @@ bool __init probe_cpuid_faulting(void)
 	uint64_t val;
 	int rc;
 
+	/*
+	 * Don't bother looking for CPUID faulting if we aren't virtualised on
+	 * AMD or Hygon hardware - it won't be present.
+	 */
+	if ((boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) &&
+	    !cpu_has_hypervisor)
+		return false;
+
 	if ((rc = rdmsr_safe(MSR_INTEL_PLATFORM_INFO, val)) == 0)
-		raw_msr_policy.plaform_info.cpuid_faulting =
+		raw_msr_policy.platform_info.cpuid_faulting =
 			val & MSR_PLATFORM_INFO_CPUID_FAULTING;
 
 	if (rc ||
@@ -185,7 +192,7 @@ void ctxt_switch_levelling(const struct vcpu *next)
 	}
 
 	if (ctxt_switch_masking)
-		ctxt_switch_masking(next);
+		alternative_vcall(ctxt_switch_masking, next);
 }
 
 bool_t opt_cpu_info;
@@ -247,36 +254,6 @@ void display_cacheinfo(struct cpuinfo_x86 *c)
 		       l2size, ecx & 0xFF);
 }
 
-int get_cpu_vendor(uint32_t b, uint32_t c, uint32_t d, enum get_cpu_vendor mode)
-{
-	int i;
-	static int printed;
-
-	for (i = 0; i < X86_VENDOR_NUM; i++) {
-		if (cpu_devs[i]) {
-			struct {
-				uint32_t b, d, c;
-			} *ptr = (void *)cpu_devs[i]->c_ident;
-
-			if (ptr->b == b && ptr->c == c && ptr->d == d) {
-				if (mode == gcv_host)
-					this_cpu = cpu_devs[i];
-				return i;
-			}
-		}
-	}
-	if (mode == gcv_guest)
-		return X86_VENDOR_UNKNOWN;
-	if (!printed) {
-		printed++;
-		printk(KERN_ERR "CPU: Vendor unknown, using generic init.\n");
-		printk(KERN_ERR "CPU: Your system may be unstable.\n");
-	}
-	this_cpu = &default_cpu;
-
-	return X86_VENDOR_UNKNOWN;
-}
-
 static inline u32 _phys_pkg_id(u32 cpuid_apic, int index_msb)
 {
 	return cpuid_apic >> index_msb;
@@ -300,7 +277,7 @@ static inline u32 phys_pkg_id(u32 cpuid_apic, int index_msb)
 
    WARNING: this function is only called on the BP.  Don't add code here
    that is supposed to run on all CPUs. */
-static void __init early_cpu_detect(void)
+void __init early_cpu_init(void)
 {
 	struct cpuinfo_x86 *c = &boot_cpu_data;
 	u32 eax, ebx, ecx, edx;
@@ -313,7 +290,18 @@ static void __init early_cpu_detect(void)
 	*(u32 *)&c->x86_vendor_id[8] = ecx;
 	*(u32 *)&c->x86_vendor_id[4] = edx;
 
-	c->x86_vendor = get_cpu_vendor(ebx, ecx, edx, gcv_host);
+	c->x86_vendor = x86_cpuid_lookup_vendor(ebx, ecx, edx);
+	switch (c->x86_vendor) {
+	case X86_VENDOR_INTEL:	  this_cpu = &intel_cpu_dev;    break;
+	case X86_VENDOR_AMD:	  this_cpu = &amd_cpu_dev;      break;
+	case X86_VENDOR_CENTAUR:  this_cpu = &centaur_cpu_dev;  break;
+	case X86_VENDOR_SHANGHAI: this_cpu = &shanghai_cpu_dev; break;
+	case X86_VENDOR_HYGON:    this_cpu = &hygon_cpu_dev;    break;
+	default:
+		printk(XENLOG_ERR
+		       "Unrecognised or unsupported CPU vendor '%.12s'\n",
+		       c->x86_vendor_id);
+	}
 
 	cpuid(0x00000001, &eax, &ebx, &ecx, &edx);
 	c->x86 = get_cpu_family(eax, &c->x86_model, &c->x86_mask);
@@ -328,7 +316,7 @@ static void __init early_cpu_detect(void)
 
 	printk(XENLOG_INFO
 	       "CPU Vendor: %s, Family %u (%#x), Model %u (%#x), Stepping %u (raw %08x)\n",
-	       this_cpu->c_vendor, c->x86, c->x86,
+	       x86_cpuid_vendor_to_str(c->x86_vendor), c->x86, c->x86,
 	       c->x86_model, c->x86_model, c->x86_mask, eax);
 
 	eax = cpuid_eax(0x80000000);
@@ -345,7 +333,7 @@ static void __init early_cpu_detect(void)
 			hap_paddr_bits = PADDR_BITS;
 	}
 
-	if (c->x86_vendor != X86_VENDOR_AMD)
+	if (!(c->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)))
 		park_offline_cpus = opt_mce;
 
 	initialize_cpu_data(0);
@@ -361,7 +349,12 @@ static void generic_identify(struct cpuinfo_x86 *c)
 	*(u32 *)&c->x86_vendor_id[8] = ecx;
 	*(u32 *)&c->x86_vendor_id[4] = edx;
 
-	c->x86_vendor = get_cpu_vendor(ebx, ecx, edx, gcv_host);
+	c->x86_vendor = x86_cpuid_lookup_vendor(ebx, ecx, edx);
+	if (boot_cpu_data.x86_vendor != c->x86_vendor)
+		printk(XENLOG_ERR "CPU%u vendor %u mismatch against BSP %u\n",
+		       smp_processor_id(), c->x86_vendor,
+		       boot_cpu_data.x86_vendor);
+
 	/* Initialize the standard set of capabilities */
 	/* Note that the vendor-specific code below might override */
 
@@ -409,11 +402,17 @@ static void generic_identify(struct cpuinfo_x86 *c)
 			= cpuid_ebx(0x80000008);
 
 	/* Intel-defined flags: level 0x00000007 */
-	if ( c->cpuid_level >= 0x00000007 )
-		cpuid_count(0x00000007, 0, &tmp,
+	if ( c->cpuid_level >= 0x00000007 ) {
+		cpuid_count(0x00000007, 0, &eax,
 			    &c->x86_capability[cpufeat_word(X86_FEATURE_FSGSBASE)],
 			    &c->x86_capability[cpufeat_word(X86_FEATURE_PKU)],
 			    &c->x86_capability[cpufeat_word(X86_FEATURE_AVX512_4VNNIW)]);
+		if (eax > 0)
+			cpuid_count(0x00000007, 1,
+				    &c->x86_capability[cpufeat_word(X86_FEATURE_AVX512_BF16)],
+				    &tmp, &tmp, &tmp);
+	}
+
 	if (c->cpuid_level >= 0xd)
 		cpuid_count(0xd, 1,
 			    &c->x86_capability[cpufeat_word(X86_FEATURE_XSAVEOPT)],
@@ -464,7 +463,7 @@ void identify_cpu(struct cpuinfo_x86 *c)
 		this_cpu->c_init(c);
 
 
-   	if ( !opt_pku )
+   	if (c == &boot_cpu_data && !opt_pku)
 		setup_clear_cpu_cap(X86_FEATURE_PKU);
 
 	/*
@@ -536,7 +535,7 @@ void identify_cpu(struct cpuinfo_x86 *c)
  * Check for extended topology enumeration cpuid leaf 0xb and if it
  * exists, use it for cpu topology detection.
  */
-void detect_extended_topology(struct cpuinfo_x86 *c)
+bool detect_extended_topology(struct cpuinfo_x86 *c)
 {
 	unsigned int eax, ebx, ecx, edx, sub_index;
 	unsigned int ht_mask_width, core_plus_mask_width;
@@ -544,13 +543,13 @@ void detect_extended_topology(struct cpuinfo_x86 *c)
 	unsigned int initial_apicid;
 
 	if ( c->cpuid_level < 0xb )
-		return;
+		return false;
 
 	cpuid_count(0xb, SMT_LEVEL, &eax, &ebx, &ecx, &edx);
 
 	/* Check if the cpuid leaf 0xb is actually implemented */
 	if ( ebx == 0 || (LEAFB_SUBTYPE(ecx) != SMT_TYPE) )
-		return;
+		return false;
 
 	__set_bit(X86_FEATURE_XTOPOLOGY, c->x86_capability);
 
@@ -591,6 +590,8 @@ void detect_extended_topology(struct cpuinfo_x86 *c)
 			printk("CPU: Processor Core ID: %d\n",
 			       c->cpu_core_id);
 	}
+
+	return true;
 }
 
 void detect_ht(struct cpuinfo_x86 *c)
@@ -678,12 +679,8 @@ void print_cpu_info(unsigned int cpu)
 
 	printk("CPU%u: ", cpu);
 
-	if (c->x86_vendor < X86_VENDOR_NUM)
-		vendor = this_cpu->c_vendor;
-	else
-		vendor = c->x86_vendor_id;
-
-	if (vendor && strncmp(c->x86_model_id, vendor, strlen(vendor)))
+	vendor = x86_cpuid_vendor_to_str(c->x86_vendor);
+	if (strncmp(c->x86_model_id, vendor, strlen(vendor)))
 		printk("%s ", vendor);
 
 	if (!c->x86_model_id[0])
@@ -695,23 +692,6 @@ void print_cpu_info(unsigned int cpu)
 }
 
 static cpumask_t cpu_initialized;
-
-/* This is hacky. :)
- * We're emulating future behavior.
- * In the future, the cpu-specific init functions will be called implicitly
- * via the magic of initcalls.
- * They will insert themselves into the cpu_devs structure.
- * Then, when cpu_init() is called, we can just iterate over that array.
- */
-
-void __init early_cpu_init(void)
-{
-	intel_cpu_init();
-	amd_init_cpu();
-	centaur_init_cpu();
-	shanghai_init_cpu();
-	early_cpu_detect();
-}
 
 /*
  * Sets up system tables and descriptors.
@@ -727,11 +707,11 @@ void load_system_tables(void)
 	unsigned long stack_bottom = get_stack_bottom(),
 		stack_top = stack_bottom & ~(STACK_SIZE - 1);
 
-	struct tss_struct *tss = &this_cpu(init_tss);
+	struct tss64 *tss = &this_cpu(tss_page).tss;
 	seg_desc_t *gdt =
-		this_cpu(gdt_table) - FIRST_RESERVED_GDT_ENTRY;
+		this_cpu(gdt) - FIRST_RESERVED_GDT_ENTRY;
 	seg_desc_t *compat_gdt =
-		this_cpu(compat_gdt_table) - FIRST_RESERVED_GDT_ENTRY;
+		this_cpu(compat_gdt) - FIRST_RESERVED_GDT_ENTRY;
 
 	const struct desc_ptr gdtr = {
 		.base = (unsigned long)gdt,
@@ -742,7 +722,7 @@ void load_system_tables(void)
 		.limit = (IDT_ENTRIES * sizeof(idt_entry_t)) - 1,
 	};
 
-	*tss = (struct tss_struct){
+	*tss = (struct tss64){
 		/* Main stack for interrupts/exceptions. */
 		.rsp0 = stack_bottom,
 
@@ -767,20 +747,17 @@ void load_system_tables(void)
 		.bitmap = IOBMP_INVALID_OFFSET,
 	};
 
-	_set_tssldt_desc(
-		gdt + TSS_ENTRY,
-		(unsigned long)tss,
-		offsetof(struct tss_struct, __cacheline_filler) - 1,
-		SYS_DESC_tss_avail);
-	_set_tssldt_desc(
-		compat_gdt + TSS_ENTRY,
-		(unsigned long)tss,
-		offsetof(struct tss_struct, __cacheline_filler) - 1,
-		SYS_DESC_tss_busy);
+	BUILD_BUG_ON(sizeof(*tss) <= 0x67); /* Mandated by the architecture. */
 
+	_set_tssldt_desc(gdt + TSS_ENTRY, (unsigned long)tss,
+			 sizeof(*tss) - 1, SYS_DESC_tss_avail);
+	_set_tssldt_desc(compat_gdt + TSS_ENTRY, (unsigned long)tss,
+			 sizeof(*tss) - 1, SYS_DESC_tss_busy);
+
+	per_cpu(full_gdt_loaded, cpu) = false;
 	lgdt(&gdtr);
 	lidt(&idtr);
-	ltr(TSS_ENTRY << 3);
+	ltr(TSS_SELECTOR);
 	lldt(0);
 
 	enable_each_ist(idt_tables[cpu]);

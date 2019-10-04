@@ -4,7 +4,6 @@
 
 #include <xen/cache.h>
 #include <asm/page.h>
-#include <asm/percpu.h>
 #undef ENTRY
 #undef ALIGN
 
@@ -55,12 +54,6 @@ SECTIONS
        *(.data.rel.ro)
        *(.data.rel.ro.*)
 
-#ifdef CONFIG_LOCK_PROFILE
-       . = ALIGN(POINTER_ALIGN);
-       __lock_profile_start = .;
-       *(.lockprofile.data)
-       __lock_profile_end = .;
-#endif
        . = ALIGN(POINTER_ALIGN);
        __param_start = .;
        *(.data.param)
@@ -137,6 +130,13 @@ SECTIONS
       _aedevice = .;
   } :text
 
+  . = ALIGN(8);
+  .teemediator.info : {
+      _steemediator = .;
+      *(.teemediator.info)
+      _eteemediator = .;
+  } :text
+
   . = ALIGN(PAGE_SIZE);             /* Init code and data */
   __init_begin = .;
   .init.text : {
@@ -147,8 +147,7 @@ SECTIONS
   . = ALIGN(PAGE_SIZE);
   .init.data : {
        *(.init.rodata)
-       *(.init.rodata.rel)
-       *(.init.rodata.str*)
+       *(.init.rodata.*)
 
        . = ALIGN(POINTER_ALIGN);
        __setup_start = .;
@@ -167,6 +166,13 @@ SECTIONS
        __alt_instructions_end = .;
        . = ALIGN(4);
        *(.altinstr_replacement)
+
+#ifdef CONFIG_DEBUG_LOCK_PROFILE
+       . = ALIGN(POINTER_ALIGN);
+       __lock_profile_start = .;
+       *(.lockprofile.data)
+       __lock_profile_end = .;
+#endif
 
        *(.init.data)
        *(.init.data.rel)
@@ -195,14 +201,16 @@ SECTIONS
        *(.bss.stack_aligned)
        . = ALIGN(PAGE_SIZE);
        *(.bss.page_aligned)
-       *(.bss)
-       . = ALIGN(SMP_CACHE_BYTES);
+       . = ALIGN(PAGE_SIZE);
        __per_cpu_start = .;
+       *(.bss.percpu.page_aligned)
        *(.bss.percpu)
        . = ALIGN(SMP_CACHE_BYTES);
        *(.bss.percpu.read_mostly)
        . = ALIGN(SMP_CACHE_BYTES);
        __per_cpu_data_end = .;
+       *(.bss)
+       . = ALIGN(POINTER_ALIGN);
        __bss_end = .;
   } :text
   _end = . ;

@@ -3,7 +3,6 @@
 
 #include <xen/cache.h>
 #include <asm/page.h>
-#include <asm/percpu.h>
 #undef ENTRY
 #undef ALIGN
 
@@ -12,7 +11,6 @@
 #define FORMAT "pei-x86-64"
 #undef __XEN_VIRT_START
 #define __XEN_VIRT_START __image_base__
-#define SECTION_ALIGN MB(2)
 #define DECL_SECTION(x) x :
 
 ENTRY(efi_start)
@@ -20,12 +18,17 @@ ENTRY(efi_start)
 #else /* !EFI */
 
 #define FORMAT "elf64-x86-64"
-#define SECTION_ALIGN PAGE_SIZE
 #define DECL_SECTION(x) x : AT(ADDR(x) - __XEN_VIRT_START)
 
 ENTRY(start_pa)
 
 #endif /* EFI */
+
+#if defined(CONFIG_XEN_ALIGN_2M) || defined(EFI)
+# define SECTION_ALIGN MB(2)
+#else
+# define SECTION_ALIGN PAGE_SIZE
+#endif
 
 OUTPUT_FORMAT(FORMAT, FORMAT, FORMAT)
 
@@ -125,12 +128,6 @@ SECTIONS
        *(.ex_table.pre)
        __stop___pre_ex_table = .;
 
-#ifdef CONFIG_LOCK_PROFILE
-       . = ALIGN(POINTER_ALIGN);
-       __lock_profile_start = .;
-       *(.lockprofile.data)
-       __lock_profile_end = .;
-#endif
        . = ALIGN(POINTER_ALIGN);
        __param_start = .;
        *(.data.param)
@@ -171,6 +168,19 @@ SECTIONS
   } :text
 #endif
 #endif
+
+/*
+ * ELF builds are linked to a fixed virtual address, and in principle
+ * shouldn't have a .reloc section.  However, due to the way EFI support is
+ * currently implemented, retaining the .reloc section is necessary.
+ */
+#if defined(XEN_BUILD_EFI) && !defined(EFI)
+  . = ALIGN(4);
+  DECL_SECTION(.reloc) {
+    *(.reloc)
+  } :text
+#endif
+
   _erodata = .;
 
   . = ALIGN(SECTION_ALIGN);
@@ -202,8 +212,7 @@ SECTIONS
 #endif
 
        *(.init.rodata)
-       *(.init.rodata.rel)
-       *(.init.rodata.str*)
+       *(.init.rodata.*)
 
        . = ALIGN(POINTER_ALIGN);
        __setup_start = .;
@@ -235,6 +244,13 @@ SECTIONS
         __alt_instructions = .;
         *(.altinstructions)
         __alt_instructions_end = .;
+
+#ifdef CONFIG_DEBUG_LOCK_PROFILE
+       . = ALIGN(POINTER_ALIGN);
+       __lock_profile_start = .;
+       *(.lockprofile.data)
+       __lock_profile_end = .;
+#endif
 
        . = ALIGN(8);
        __ctors_start = .;
@@ -277,14 +293,16 @@ SECTIONS
        __bss_start = .;
        *(.bss.stack_aligned)
        *(.bss.page_aligned*)
-       *(.bss)
-       . = ALIGN(SMP_CACHE_BYTES);
+       . = ALIGN(PAGE_SIZE);
        __per_cpu_start = .;
+       *(.bss.percpu.page_aligned)
        *(.bss.percpu)
        . = ALIGN(SMP_CACHE_BYTES);
        *(.bss.percpu.read_mostly)
        . = ALIGN(SMP_CACHE_BYTES);
        __per_cpu_data_end = .;
+       *(.bss)
+       . = ALIGN(POINTER_ALIGN);
        __bss_end = .;
   } :text
   _end = . ;
@@ -294,12 +312,12 @@ SECTIONS
 
 #ifdef EFI
   . = ALIGN(4);
-  .reloc : {
+  DECL_SECTION(.reloc) {
     *(.reloc)
   } :text
   /* Trick the linker into setting the image size to exactly 16Mb. */
   . = ALIGN(__section_alignment__);
-  .pad : {
+  DECL_SECTION(.pad) {
     . = ALIGN(MB(16));
   } :text
 #endif

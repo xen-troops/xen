@@ -30,6 +30,7 @@ cscope.out
 cscope.po.out
 .config
 .vimrc
+.vscode
 
 dist
 stubdom/*.tar.gz
@@ -114,20 +115,6 @@ tools/libs/foreignmemory/headers.chk
 tools/libs/foreignmemory/xenforeignmemory.pc
 tools/libs/devicemodel/headers.chk
 tools/libs/devicemodel/xendevicemodel.pc
-tools/blktap2/control/xenblktapctl.pc
-tools/blktap2/daemon/blktapctrl
-tools/blktap2/drivers/img2qcow
-tools/blktap2/drivers/lock-util
-tools/blktap2/drivers/qcow-create
-tools/blktap2/drivers/qcow2raw
-tools/blktap2/drivers/tapdisk
-tools/blktap2/drivers/tapdisk-client
-tools/blktap2/drivers/tapdisk-diff
-tools/blktap2/drivers/tapdisk-stream
-tools/blktap2/drivers/tapdisk2
-tools/blktap2/drivers/td-util
-tools/blktap2/vhd/vhd-update
-tools/blktap2/vhd/vhd-util
 tools/console/xenconsole
 tools/console/xenconsoled
 tools/console/client/_paths.h
@@ -246,7 +233,7 @@ tools/tests/x86_emulator/asm
 tools/tests/x86_emulator/avx*.[ch]
 tools/tests/x86_emulator/blowfish.h
 tools/tests/x86_emulator/fma*.[ch]
-tools/tests/x86_emulator/sse*.[ch]
+tools/tests/x86_emulator/*sse*.[ch]
 tools/tests/x86_emulator/test_x86_emulator
 tools/tests/x86_emulator/x86_emulate
 tools/tests/x86_emulator/xop*.[ch]
@@ -291,13 +278,10 @@ tools/xentrace/xentrace
 xen/.banner
 xen/.config
 xen/.config.old
+xen/.xen.elf32
 xen/System.map
-xen/arch/arm/asm-offsets.s
-xen/arch/arm/xen.lds
 xen/arch/x86/asm-macros.i
-xen/arch/x86/asm-offsets.s
 xen/arch/x86/boot/mkelf32
-xen/arch/x86/xen.lds
 xen/arch/x86/boot/cmdline.S
 xen/arch/x86/boot/reloc.S
 xen/arch/x86/boot/*.bin
@@ -305,6 +289,8 @@ xen/arch/x86/boot/*.lnk
 xen/arch/x86/efi.lds
 xen/arch/x86/efi/check.efi
 xen/arch/x86/efi/mkreloc
+xen/arch/*/xen.lds
+xen/arch/*/asm-offsets.s
 xen/arch/*/efi/boot.c
 xen/arch/*/efi/compat.c
 xen/arch/*/efi/efi.h
@@ -382,7 +368,6 @@ tools/libxl/*.pyc
 tools/libxl/libxl-save-helper
 tools/libxl/test_timedereg
 tools/libxl/test_fdderegrace
-tools/blktap2/control/tap-ctl
 tools/firmware/etherboot/eb-roms.h
 tools/firmware/etherboot/gpxe-git-snapshot.tar.gz
 tools/misc/xenwatchdogd
@@ -407,6 +392,7 @@ tools/ocaml/libs/xentoollog/_xtl_levels.*
 tools/ocaml/libs/xentoollog/xentoollog.ml
 tools/ocaml/libs/xentoollog/xentoollog.mli
 tools/ocaml/libs/xs/paths.ml
+tools/ocaml/libs/xc/xenctrl_abi_check.h
 tools/ocaml/xenstored/_paths.h
 tools/ocaml/xenstored/oxenstored
 tools/ocaml/xenstored/oxenstored.conf

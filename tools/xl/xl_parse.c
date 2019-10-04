@@ -2652,6 +2652,7 @@ skip_usbdev:
             fprintf(stderr,"xl: Unable to parse usbdevice.\n");
             exit(-ERROR_FAIL);
         }
+        xlu_cfg_get_defbool(config, "vkb_device", &b_info->u.hvm.vkb_device, 0);
         xlu_cfg_replace_string (config, "soundhw", &b_info->u.hvm.soundhw, 0);
         xlu_cfg_get_defbool(config, "xen_platform_pci",
                             &b_info->u.hvm.xen_platform_pci, 0);
@@ -2686,6 +2687,15 @@ skip_usbdev:
         if (e) {
             fprintf(stderr,
                     "Unknown gic_version \"%s\" specified\n", buf);
+            exit(-ERROR_FAIL);
+        }
+    }
+
+    if (!xlu_cfg_get_string (config, "tee", &buf, 1)) {
+        e = libxl_tee_type_from_string(buf, &b_info->tee);
+        if (e) {
+            fprintf(stderr,
+                    "Unknown tee \"%s\" specified\n", buf);
             exit(-ERROR_FAIL);
         }
     }

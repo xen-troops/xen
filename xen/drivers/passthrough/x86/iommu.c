@@ -23,19 +23,56 @@
 #include <asm/hvm/io.h>
 #include <asm/setup.h>
 
-struct iommu_ops iommu_ops;
+const struct iommu_init_ops *__initdata iommu_init_ops;
+struct iommu_ops __read_mostly iommu_ops;
+
+int __init iommu_hardware_setup(void)
+{
+    int rc;
+
+    if ( !iommu_init_ops )
+        return -ENODEV;
+
+    rc = scan_pci_devices();
+    if ( rc )
+        return rc;
+
+    if ( !iommu_ops.init )
+        iommu_ops = *iommu_init_ops->ops;
+    else
+        /* x2apic setup may have previously initialised the struct. */
+        ASSERT(iommu_ops.init == iommu_init_ops->ops->init);
+
+    return iommu_init_ops->setup();
+}
+
+int iommu_enable_x2apic(void)
+{
+    if ( system_state < SYS_STATE_active )
+    {
+        if ( !iommu_supports_x2apic() )
+            return -EOPNOTSUPP;
+
+        iommu_ops = *iommu_init_ops->ops;
+    }
+    else if ( !x2apic_enabled )
+        return -EOPNOTSUPP;
+
+    if ( !iommu_ops.enable_x2apic )
+        return -EOPNOTSUPP;
+
+    return iommu_ops.enable_x2apic();
+}
 
 void iommu_update_ire_from_apic(
     unsigned int apic, unsigned int reg, unsigned int value)
 {
-    const struct iommu_ops *ops = iommu_get_ops();
-    ops->update_ire_from_apic(apic, reg, value);
+    iommu_vcall(&iommu_ops, update_ire_from_apic, apic, reg, value);
 }
 
 unsigned int iommu_read_apic_from_ire(unsigned int apic, unsigned int reg)
 {
-    const struct iommu_ops *ops = iommu_get_ops();
-    return ops->read_apic_from_ire(apic, reg);
+    return iommu_call(&iommu_ops, read_apic_from_ire, apic, reg);
 }
 
 int __init iommu_setup_hpet_msi(struct msi_desc *msi)
@@ -59,15 +96,17 @@ int arch_iommu_populate_page_table(struct domain *d)
         if ( is_hvm_domain(d) ||
             (page->u.inuse.type_info & PGT_type_mask) == PGT_writable_page )
         {
-            unsigned long mfn = mfn_x(page_to_mfn(page));
-            unsigned long gfn = mfn_to_gmfn(d, mfn);
+            mfn_t mfn = page_to_mfn(page);
+            gfn_t gfn = mfn_to_gfn(d, mfn);
             unsigned int flush_flags = 0;
 
-            if ( gfn != gfn_x(INVALID_GFN) )
+            if ( !gfn_eq(gfn, INVALID_GFN) )
             {
-                ASSERT(!(gfn >> DEFAULT_DOMAIN_ADDRESS_WIDTH));
-                BUG_ON(SHARED_M2P(gfn));
-                rc = iommu_map(d, _dfn(gfn), _mfn(mfn), PAGE_ORDER_4K,
+                dfn_t dfn = _dfn(gfn_x(gfn));
+
+                ASSERT(!(gfn_x(gfn) >> DEFAULT_DOMAIN_ADDRESS_WIDTH));
+                BUG_ON(SHARED_M2P(gfn_x(gfn)));
+                rc = iommu_map(d, dfn, mfn, PAGE_ORDER_4K,
                                IOMMUF_readable | IOMMUF_writable,
                                &flush_flags);
 
@@ -85,7 +124,7 @@ int arch_iommu_populate_page_table(struct domain *d)
                      ((page->u.inuse.type_info & PGT_type_mask) !=
                       PGT_writable_page) )
                 {
-                    rc = iommu_unmap(d, _dfn(gfn), PAGE_ORDER_4K, &flush_flags);
+                    rc = iommu_unmap(d, dfn, PAGE_ORDER_4K, &flush_flags);
                     /* If the type changed yet again, simply force a retry. */
                     if ( !rc && ((page->u.inuse.type_info & PGT_type_mask) ==
                                  PGT_writable_page) )
@@ -141,7 +180,7 @@ int arch_iommu_populate_page_table(struct domain *d)
 
 void __hwdom_init arch_iommu_check_autotranslated_hwdom(struct domain *d)
 {
-    if ( !iommu_enabled )
+    if ( !is_iommu_enabled(d) )
         panic("Presently, iommu must be enabled for PVH hardware domain\n");
 }
 
@@ -195,19 +234,9 @@ static bool __hwdom_init hwdom_iommu_map(const struct domain *d,
             return false;
     }
 
-    /*
-     * Check that it doesn't overlap with the LAPIC
-     * TODO: if the guest relocates the MMIO area of the LAPIC Xen should make
-     * sure there's nothing in the new address that would prevent trapping.
-     */
-    if ( has_vlapic(d) )
-    {
-        const struct vcpu *v;
-
-        for_each_vcpu(d, v)
-            if ( pfn == PFN_DOWN(vlapic_base_address(vcpu_vlapic(v))) )
-                return false;
-    }
+    /* Check that it doesn't overlap with the Interrupt Address Range. */
+    if ( pfn >= 0xfee00 && pfn <= 0xfeeff )
+        return false;
     /* ... or the IO-APIC */
     for ( i = 0; has_vioapic(d) && i < d->arch.hvm.nr_vioapics; i++ )
         if ( pfn == PFN_DOWN(domain_vioapic(d, i)->base_address) )

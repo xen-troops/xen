@@ -15,9 +15,10 @@
  * GNU General Public License for more details.
  */
 
-#include <xen/lib.h>
-#include <xen/iommu.h>
 #include <xen/device_tree.h>
+#include <xen/iommu.h>
+#include <xen/lib.h>
+
 #include <asm/device.h>
 
 static const struct iommu_ops *iommu_ops;
@@ -32,7 +33,10 @@ void __init iommu_set_ops(const struct iommu_ops *ops)
     BUG_ON(ops == NULL);
 
     if ( iommu_ops && iommu_ops != ops )
+    {
         printk("WARNING: Cannot set IOMMU ops, already set to a different value\n");
+        return;
+    }
 
     iommu_ops = ops;
 }
@@ -48,6 +52,14 @@ int __init iommu_hardware_setup(void)
         rc = device_init(np, DEVICE_IOMMU, NULL);
         if ( !rc )
             num_iommus++;
+        /*
+         * Ignore the following error codes:
+         *   - EBADF: Indicate the current is not an IOMMU
+         *   - ENODEV: The IOMMU is not present or cannot be used by
+         *     Xen.
+         */
+        else if ( rc != -EBADF && rc != -ENODEV )
+            return rc;
     }
 
     return ( num_iommus > 0 ) ? 0 : -ENODEV;

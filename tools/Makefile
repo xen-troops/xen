@@ -20,7 +20,6 @@ SUBDIRS-y += console
 SUBDIRS-y += xenmon
 SUBDIRS-y += xenstat
 SUBDIRS-$(CONFIG_Linux) += memshr 
-SUBDIRS-$(CONFIG_BLKTAP2) += blktap2
 SUBDIRS-$(CONFIG_NetBSD) += xenbackendd
 SUBDIRS-y += libfsimage
 SUBDIRS-$(CONFIG_Linux) += libvchan
@@ -246,7 +245,6 @@ subdir-all-qemu-xen-dir: qemu-xen-dir-find
 		--prefix=$(LIBEXEC) \
 		--libdir=$(LIBEXEC_LIB) \
 		--includedir=$(LIBEXEC_INC) \
-		--source-path=$$source \
 		--extra-cflags="-DXC_WANT_COMPAT_EVTCHN_API=1 \
 		-DXC_WANT_COMPAT_GNTTAB_API=1 \
 		-DXC_WANT_COMPAT_MAP_FOREIGN_API=1 \

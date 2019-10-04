@@ -210,11 +210,18 @@ bool p2m_mem_access_check(paddr_t gpa, unsigned long gla,
             return true;
         }
     }
+
+    /*
+     * Try to avoid sending a mem event. Suppress events caused by page-walks
+     * by emulating but still checking mem_access violations.
+     */
     if ( vm_event_check_ring(d->vm_event_monitor) &&
          d->arch.monitor.inguest_pagefault_disabled &&
-         npfec.kind != npfec_kind_with_gla ) /* don't send a mem_event */
+         npfec.kind == npfec_kind_in_gpt )
     {
+        v->arch.vm_event->send_event = true;
         hvm_emulate_one_vm_event(EMUL_KIND_NORMAL, TRAP_invalid_op, X86_EVENT_NO_EC);
+        v->arch.vm_event->send_event = false;
 
         return true;
     }
@@ -262,35 +269,12 @@ int p2m_set_altp2m_mem_access(struct domain *d, struct p2m_domain *hp2m,
     mfn_t mfn;
     p2m_type_t t;
     p2m_access_t old_a;
-    unsigned int page_order;
-    unsigned long gfn_l = gfn_x(gfn);
     int rc;
 
-    mfn = ap2m->get_entry(ap2m, gfn, &t, &old_a, 0, NULL, NULL);
-
-    /* Check host p2m if no valid entry in alternate */
-    if ( !mfn_valid(mfn) )
-    {
-
-        mfn = __get_gfn_type_access(hp2m, gfn_l, &t, &old_a,
-                                    P2M_ALLOC | P2M_UNSHARE, &page_order, 0);
-
-        rc = -ESRCH;
-        if ( !mfn_valid(mfn) || t != p2m_ram_rw )
-            return rc;
-
-        /* If this is a superpage, copy that first */
-        if ( page_order != PAGE_ORDER_4K )
-        {
-            unsigned long mask = ~((1UL << page_order) - 1);
-            gfn_t gfn2 = _gfn(gfn_l & mask);
-            mfn_t mfn2 = _mfn(mfn_x(mfn) & mask);
-
-            rc = ap2m->set_entry(ap2m, gfn2, mfn2, page_order, t, old_a, 1);
-            if ( rc )
-                return rc;
-        }
-    }
+    rc = altp2m_get_effective_entry(ap2m, gfn, &mfn, &t, &old_a,
+                                    AP2MGET_prepopulate);
+    if ( rc )
+        return rc;
 
     /*
      * Inherit the old suppress #VE bit value if it is already set, or set it
@@ -505,7 +489,7 @@ int p2m_get_mem_access(struct domain *d, gfn_t gfn, xenmem_access_t *access,
         if ( altp2m_idx )
             return -EINVAL;
     }
-    else
+    else if ( altp2m_idx ) /* altp2m view 0 is treated as the hostp2m */
     {
         if ( altp2m_idx >= MAX_ALTP2M ||
              d->arch.altp2m_eptp[altp2m_idx] == mfn_x(INVALID_MFN) )

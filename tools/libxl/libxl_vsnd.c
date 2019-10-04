@@ -290,8 +290,8 @@ static void libxl__update_config_vsnd(libxl__gc *gc,
     dst->devid = src->devid;
 }
 
-static int libxl_device_vsnd_compare(libxl_device_vsnd *d1,
-                                     libxl_device_vsnd *d2)
+static int libxl_device_vsnd_compare(const libxl_device_vsnd *d1,
+                                     const libxl_device_vsnd *d2)
 {
     return COMPARE_DEVID(d1, d2);
 }
@@ -563,7 +563,7 @@ out:
 }
 
 static int libxl__device_pcm_getinfo(libxl__gc *gc, const char *path,
-                                     libxl_device_vsnd *vsnd,
+                                     const libxl_device_vsnd *vsnd,
                                      libxl_vsndinfo *info)
 {
     int i;
@@ -588,7 +588,7 @@ out:
 }
 
 int libxl_device_vsnd_getinfo(libxl_ctx *ctx, uint32_t domid,
-                              libxl_device_vsnd *vsnd,
+                              const libxl_device_vsnd *vsnd,
                               libxl_vsndinfo *info)
 {
     GC_INIT(ctx);

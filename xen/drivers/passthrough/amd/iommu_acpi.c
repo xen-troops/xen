@@ -65,23 +65,36 @@ static void __init add_ivrs_mapping_entry(
     /* override flags for range of devices */
     ivrs_mappings[bdf].device_flags = flags;
 
-    if (ivrs_mappings[alias_id].intremap_table == NULL )
+    /* Don't map an IOMMU by itself. */
+    if ( iommu->bdf == bdf )
+        return;
+
+    if ( !ivrs_mappings[alias_id].intremap_table )
     {
          /* allocate per-device interrupt remapping table */
          if ( amd_iommu_perdev_intremap )
              ivrs_mappings[alias_id].intremap_table =
-                amd_iommu_alloc_intremap_table(
-                    &ivrs_mappings[alias_id].intremap_inuse);
+                 amd_iommu_alloc_intremap_table(
+                     iommu,
+                     &ivrs_mappings[alias_id].intremap_inuse);
          else
          {
              if ( shared_intremap_table == NULL  )
                  shared_intremap_table = amd_iommu_alloc_intremap_table(
+                     iommu,
                      &shared_intremap_inuse);
              ivrs_mappings[alias_id].intremap_table = shared_intremap_table;
              ivrs_mappings[alias_id].intremap_inuse = shared_intremap_inuse;
          }
+
+         if ( !ivrs_mappings[alias_id].intremap_table )
+             panic("No memory for %04x:%02x:%02x.%u's IRT\n", iommu->seg,
+                   PCI_BUS(alias_id), PCI_SLOT(alias_id), PCI_FUNC(alias_id));
     }
-    /* assgin iommu hardware */
+
+    ivrs_mappings[alias_id].valid = true;
+
+    /* Assign IOMMU hardware. */
     ivrs_mappings[bdf].iommu = iommu;
 }
 

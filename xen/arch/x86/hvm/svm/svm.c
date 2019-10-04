@@ -627,21 +627,21 @@ static void svm_cpuid_policy_changed(struct vcpu *v)
                       cp->extd.ibpb ? MSR_INTERCEPT_NONE : MSR_INTERCEPT_RW);
 }
 
-static void svm_sync_vmcb(struct vcpu *v, enum vmcb_sync_state new_state)
+void svm_sync_vmcb(struct vcpu *v, enum vmcb_sync_state new_state)
 {
     struct svm_vcpu *svm = &v->arch.hvm.svm;
 
     if ( new_state == vmcb_needs_vmsave )
     {
         if ( svm->vmcb_sync_state == vmcb_needs_vmload )
-            svm_vmload(svm->vmcb);
+            svm_vmload_pa(svm->vmcb_pa);
 
         svm->vmcb_sync_state = new_state;
     }
     else
     {
         if ( svm->vmcb_sync_state == vmcb_needs_vmsave )
-            svm_vmsave(svm->vmcb);
+            svm_vmsave_pa(svm->vmcb_pa);
 
         if ( svm->vmcb_sync_state != vmcb_needs_vmload )
             svm->vmcb_sync_state = new_state;
@@ -916,17 +916,20 @@ static unsigned int svm_get_insn_bytes(struct vcpu *v, uint8_t *buf)
     return len;
 }
 
-static void svm_init_hypercall_page(struct domain *d, void *hypercall_page)
+static void svm_init_hypercall_page(void *p)
 {
-    char *p;
-    int i;
+    unsigned int i;
 
-    for ( i = 0; i < (PAGE_SIZE / 32); i++ )
+    for ( i = 0; i < (PAGE_SIZE / 32); i++, p += 32 )
     {
-        if ( i == __HYPERVISOR_iret )
-            continue;
+        if ( unlikely(i == __HYPERVISOR_iret) )
+        {
+            /* HYPERVISOR_iret isn't supported */
+            *(u16 *)p = 0x0b0f; /* ud2 */
 
-        p = (char *)(hypercall_page + (i * 32));
+            continue;
+        }
+
         *(u8  *)(p + 0) = 0xb8; /* mov imm32, %eax */
         *(u32 *)(p + 1) = i;
         *(u8  *)(p + 5) = 0x0f; /* vmmcall */
@@ -934,75 +937,6 @@ static void svm_init_hypercall_page(struct domain *d, void *hypercall_page)
         *(u8  *)(p + 7) = 0xd9;
         *(u8  *)(p + 8) = 0xc3; /* ret */
     }
-
-    /* Don't support HYPERVISOR_iret at the moment */
-    *(u16 *)(hypercall_page + (__HYPERVISOR_iret * 32)) = 0x0b0f; /* ud2 */
-}
-
-static void svm_lwp_interrupt(struct cpu_user_regs *regs)
-{
-    struct vcpu *curr = current;
-
-    ack_APIC_irq();
-    vlapic_set_irq(
-        vcpu_vlapic(curr),
-        (curr->arch.hvm.svm.guest_lwp_cfg >> 40) & 0xff,
-        0);
-}
-
-static inline void svm_lwp_save(struct vcpu *v)
-{
-    /* Don't mess up with other guests. Disable LWP for next VCPU. */
-    if ( v->arch.hvm.svm.guest_lwp_cfg )
-    {
-        wrmsrl(MSR_AMD64_LWP_CFG, 0x0);
-        wrmsrl(MSR_AMD64_LWP_CBADDR, 0x0);
-    }
-}
-
-static inline void svm_lwp_load(struct vcpu *v)
-{
-    /* Only LWP_CFG is reloaded. LWP_CBADDR will be reloaded via xrstor. */
-   if ( v->arch.hvm.svm.guest_lwp_cfg )
-       wrmsrl(MSR_AMD64_LWP_CFG, v->arch.hvm.svm.cpu_lwp_cfg);
-}
-
-/* Update LWP_CFG MSR (0xc0000105). Return -1 if error; otherwise returns 0. */
-static int svm_update_lwp_cfg(struct vcpu *v, uint64_t msr_content)
-{
-    uint32_t msr_low;
-    static uint8_t lwp_intr_vector;
-
-    if ( xsave_enabled(v) && cpu_has_lwp )
-    {
-        msr_low = (uint32_t)msr_content;
-        
-        /* generate #GP if guest tries to turn on unsupported features. */
-        if ( msr_low & ~v->domain->arch.cpuid->extd.raw[0x1c].d )
-            return -1;
-
-        v->arch.hvm.svm.guest_lwp_cfg = msr_content;
-
-        /* setup interrupt handler if needed */
-        if ( (msr_content & 0x80000000) && ((msr_content >> 40) & 0xff) )
-        {
-            alloc_direct_apic_vector(&lwp_intr_vector, svm_lwp_interrupt);
-            v->arch.hvm.svm.cpu_lwp_cfg = (msr_content & 0xffff00ffffffffffULL)
-                | ((uint64_t)lwp_intr_vector << 40);
-        }
-        else
-        {
-            /* otherwise disable it */
-            v->arch.hvm.svm.cpu_lwp_cfg = msr_content & 0xffff00ff7fffffffULL;
-        }
-        
-        wrmsrl(MSR_AMD64_LWP_CFG, v->arch.hvm.svm.cpu_lwp_cfg);
-
-        /* track nonalzy state if LWP_CFG is non-zero. */
-        v->arch.nonlazy_xstate_used = !!(msr_content);
-    }
-
-    return 0;
 }
 
 static inline void svm_tsc_ratio_save(struct vcpu *v)
@@ -1034,7 +968,6 @@ static void svm_ctxt_switch_from(struct vcpu *v)
         svm_fpu_leave(v);
 
     svm_save_dr(v);
-    svm_lwp_save(v);
     svm_tsc_ratio_save(v);
 
     svm_sync_vmcb(v, vmcb_needs_vmload);
@@ -1066,7 +999,6 @@ static void svm_ctxt_switch_to(struct vcpu *v)
 
     svm_vmsave_pa(per_cpu(host_vmcb, cpu));
     vmcb->cleanbits.bytes = 0;
-    svm_lwp_load(v);
     svm_tsc_ratio_load(v);
 
     if ( cpu_has_msr_tsc_aux )
@@ -1636,11 +1568,11 @@ bool svm_load_segs(unsigned int ldt_ents, unsigned long ldt_base,
     {
         /* Keep GDT in sync. */
         seg_desc_t *desc =
-            this_cpu(gdt_table) + LDT_ENTRY - FIRST_RESERVED_GDT_ENTRY;
+            this_cpu(gdt) + LDT_ENTRY - FIRST_RESERVED_GDT_ENTRY;
 
         _set_tssldt_desc(desc, ldt_base, ldt_ents * 8 - 1, SYS_DESC_ldt);
 
-        vmcb->ldtr.sel = LDT_ENTRY << 3;
+        vmcb->ldtr.sel = LDT_SELECTOR;
         vmcb->ldtr.attr = SYS_DESC_ldt | (_SEGMENT_P >> 8);
         vmcb->ldtr.limit = ldt_ents * 8 - 1;
         vmcb->ldtr.base = ldt_base;
@@ -2002,10 +1934,6 @@ static int svm_msr_read_intercept(unsigned int msr, uint64_t *msr_content)
         *msr_content = vmcb_get_lastinttoip(vmcb);
         break;
 
-    case MSR_AMD64_LWP_CFG:
-        *msr_content = v->arch.hvm.svm.guest_lwp_cfg;
-        break;
-
     case MSR_K7_PERFCTR0:
     case MSR_K7_PERFCTR1:
     case MSR_K7_PERFCTR2:
@@ -2175,11 +2103,6 @@ static int svm_msr_write_intercept(unsigned int msr, uint64_t msr_content)
 
     case MSR_IA32_LASTINTTOIP:
         vmcb_set_lastinttoip(vmcb, msr_content);
-        break;
-
-    case MSR_AMD64_LWP_CFG:
-        if ( svm_update_lwp_cfg(v, msr_content) < 0 )
-            goto gpf;
         break;
 
     case MSR_K7_PERFCTR0:
@@ -2451,7 +2374,7 @@ static int svm_is_erratum_383(struct cpu_user_regs *regs)
         return 0;
     
     /* Clear MCi_STATUS registers */
-    for (i = 0; i < nr_mce_banks; i++)
+    for (i = 0; i < this_cpu(nr_mce_banks); i++)
         wrmsrl(MSR_IA32_MCx_STATUS(i), 0ULL);
     
     rdmsrl(MSR_IA32_MCG_STATUS, msr_content);
@@ -2760,6 +2683,9 @@ void svm_vmexit_handler(struct cpu_user_regs *regs)
             {
                 trap_type = X86_EVENTTYPE_PRI_SW_EXCEPTION;
                 inst_len = svm_get_insn_len(v, INSTR_ICEBP);
+
+                if ( !inst_len )
+                    break;
             }
 
             rc = hvm_monitor_debug(regs->rip,

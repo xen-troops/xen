@@ -4,6 +4,7 @@ obj-y += bsearch.o
 obj-$(CONFIG_CORE_PARKING) += core_parking.o
 obj-y += cpu.o
 obj-y += cpupool.o
+obj-$(CONFIG_DEBUG_TRACE) += debugtrace.o
 obj-$(CONFIG_HAS_DEVICE_TREE) += device_tree.o
 obj-y += domctl.o
 obj-y += domain.o
@@ -22,7 +23,6 @@ obj-$(CONFIG_KEXEC) += kimage.o
 obj-y += lib.o
 obj-$(CONFIG_NEEDS_LIST_SORT) += list_sort.o
 obj-$(CONFIG_LIVEPATCH) += livepatch.o livepatch_elf.o
-obj-$(CONFIG_TMEM) += lzo.o
 obj-$(CONFIG_MEM_ACCESS) += mem_access.o
 obj-y += memory.o
 obj-y += monitor.o
@@ -56,7 +56,7 @@ obj-y += sysctl.o
 obj-y += tasklet.o
 obj-y += time.o
 obj-y += timer.o
-obj-y += trace.o
+obj-$(CONFIG_TRACEBUFFER) += trace.o
 obj-y += version.o
 obj-y += virtual_region.o
 obj-y += vm_event.o
@@ -67,15 +67,9 @@ obj-bin-y += warning.init.o
 obj-$(CONFIG_XENOPROF) += xenoprof.o
 obj-y += xmalloc_tlsf.o
 
-lzo-y := lzo
-lzo-$(CONFIG_TMEM) :=
-obj-bin-$(CONFIG_X86) += $(foreach n,decompress bunzip2 unxz unlzma $(lzo-y) unlzo unlz4 earlycpio,$(n).init.o)
+obj-bin-$(CONFIG_X86) += $(foreach n,decompress bunzip2 unxz unlzma lzo unlzo unlz4 earlycpio,$(n).init.o)
 
 obj-$(CONFIG_COMPAT) += $(addprefix compat/,domain.o kernel.o memory.o multicall.o xlat.o)
-
-tmem-y := tmem.o tmem_xen.o tmem_control.o
-tmem-$(CONFIG_COMPAT) += compat/tmem_xen.o
-obj-$(CONFIG_TMEM) += $(tmem-y)
 
 extra-y := symbols-dummy.o
 

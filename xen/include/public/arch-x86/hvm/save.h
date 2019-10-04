@@ -602,6 +602,10 @@ struct hvm_viridian_vcpu_context {
     uint64_t vp_assist_msr;
     uint8_t  apic_assist_pending;
     uint8_t  _pad[7];
+    uint64_t simp_msr;
+    uint64_t sint_msr[16];
+    uint64_t stimer_config_msr[4];
+    uint64_t stimer_count_msr[4];
 };
 
 DECLARE_HVM_SAVE_TYPE(VIRIDIAN_VCPU, 17, struct hvm_viridian_vcpu_context);
@@ -628,13 +632,7 @@ struct hvm_msr {
         uint32_t index;
         uint32_t _rsvd;
         uint64_t val;
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-    } msr[];
-#elif defined(__GNUC__)
-    } msr[0];
-#else
-    } msr[1 /* variable size */];
-#endif
+    } msr[XEN_FLEX_ARRAY_DIM];
 };
 
 #define CPU_MSR_CODE  20

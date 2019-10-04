@@ -115,10 +115,6 @@ struct hvm_function_table {
     void (*save_cpu_ctxt)(struct vcpu *v, struct hvm_hw_cpu *ctxt);
     int (*load_cpu_ctxt)(struct vcpu *v, struct hvm_hw_cpu *ctxt);
 
-    unsigned int (*init_msr)(void);
-    void (*save_msr)(struct vcpu *, struct hvm_msr *);
-    int (*load_msr)(struct vcpu *, struct hvm_msr *);
-
     /* Examine specifics of the guest state. */
     unsigned int (*get_interrupt_shadow)(struct vcpu *v);
     void (*set_interrupt_shadow)(struct vcpu *v, unsigned int intr_shadow);
@@ -156,7 +152,7 @@ struct hvm_function_table {
 
     void (*inject_event)(const struct x86_event *event);
 
-    void (*init_hypercall_page)(struct domain *d, void *hypercall_page);
+    void (*init_hypercall_page)(void *ptr);
 
     bool (*event_pending)(const struct vcpu *v);
     bool (*get_pending_event)(struct vcpu *v, struct x86_event *info);
@@ -244,7 +240,6 @@ extern const struct hvm_function_table *start_vmx(void);
 int hvm_domain_initialise(struct domain *d);
 void hvm_domain_relinquish_resources(struct domain *d);
 void hvm_domain_destroy(struct domain *d);
-void hvm_domain_soft_reset(struct domain *d);
 
 int hvm_vcpu_initialise(struct vcpu *v);
 void hvm_vcpu_destroy(struct vcpu *v);
@@ -276,7 +271,7 @@ int hvm_girq_dest_2_vcpu_id(struct domain *d, uint8_t dest, uint8_t dest_mode);
 enum hvm_intblk
 hvm_interrupt_blocked(struct vcpu *v, struct hvm_intack intack);
 
-void hvm_hypercall_page_initialise(struct domain *d, void *hypercall_page);
+void hvm_init_hypercall_page(struct domain *d, void *ptr);
 
 void hvm_get_segment_register(struct vcpu *v, enum x86_segment seg,
                               struct segment_register *reg);
@@ -388,42 +383,42 @@ static inline int
 hvm_guest_x86_mode(struct vcpu *v)
 {
     ASSERT(v == current);
-    return hvm_funcs.guest_x86_mode(v);
+    return alternative_call(hvm_funcs.guest_x86_mode, v);
 }
 
 static inline void
 hvm_update_host_cr3(struct vcpu *v)
 {
     if ( hvm_funcs.update_host_cr3 )
-        hvm_funcs.update_host_cr3(v);
+        alternative_vcall(hvm_funcs.update_host_cr3, v);
 }
 
 static inline void hvm_update_guest_cr(struct vcpu *v, unsigned int cr)
 {
-    hvm_funcs.update_guest_cr(v, cr, 0);
+    alternative_vcall(hvm_funcs.update_guest_cr, v, cr, 0);
 }
 
 static inline void hvm_update_guest_cr3(struct vcpu *v, bool noflush)
 {
     unsigned int flags = noflush ? HVM_UPDATE_GUEST_CR3_NOFLUSH : 0;
 
-    hvm_funcs.update_guest_cr(v, 3, flags);
+    alternative_vcall(hvm_funcs.update_guest_cr, v, 3, flags);
 }
 
 static inline void hvm_update_guest_efer(struct vcpu *v)
 {
-    hvm_funcs.update_guest_efer(v);
+    alternative_vcall(hvm_funcs.update_guest_efer, v);
 }
 
 static inline void hvm_cpuid_policy_changed(struct vcpu *v)
 {
-    hvm_funcs.cpuid_policy_changed(v);
+    alternative_vcall(hvm_funcs.cpuid_policy_changed, v);
 }
 
 static inline void hvm_set_tsc_offset(struct vcpu *v, uint64_t offset,
                                       uint64_t at_tsc)
 {
-    hvm_funcs.set_tsc_offset(v, offset, at_tsc);
+    alternative_vcall(hvm_funcs.set_tsc_offset, v, offset, at_tsc);
 }
 
 /*
@@ -440,18 +435,18 @@ static inline void hvm_flush_guest_tlbs(void)
 static inline unsigned int
 hvm_get_cpl(struct vcpu *v)
 {
-    return hvm_funcs.get_cpl(v);
+    return alternative_call(hvm_funcs.get_cpl, v);
 }
 
 static inline unsigned long hvm_get_shadow_gs_base(struct vcpu *v)
 {
-    return hvm_funcs.get_shadow_gs_base(v);
+    return alternative_call(hvm_funcs.get_shadow_gs_base, v);
 }
 
 static inline bool hvm_get_guest_bndcfgs(struct vcpu *v, u64 *val)
 {
     return hvm_funcs.get_guest_bndcfgs &&
-           hvm_funcs.get_guest_bndcfgs(v, val);
+           alternative_call(hvm_funcs.get_guest_bndcfgs, v, val);
 }
 
 #define has_hvm_params(d) \
@@ -463,11 +458,17 @@ static inline bool hvm_get_guest_bndcfgs(struct vcpu *v, u64 *val)
 #define is_viridian_domain(d) \
     (is_hvm_domain(d) && (viridian_feature_mask(d) & HVMPV_base_freq))
 
+#define is_viridian_vcpu(v) \
+    is_viridian_domain((v)->domain)
+
 #define has_viridian_time_ref_count(d) \
     (is_viridian_domain(d) && (viridian_feature_mask(d) & HVMPV_time_ref_count))
 
 #define has_viridian_apic_assist(d) \
     (is_viridian_domain(d) && (viridian_feature_mask(d) & HVMPV_apic_assist))
+
+#define has_viridian_synic(d) \
+    (is_viridian_domain(d) && (viridian_feature_mask(d) & HVMPV_synic))
 
 static inline void hvm_inject_exception(
     unsigned int vector, unsigned int type,
@@ -508,12 +509,12 @@ static inline void hvm_inject_page_fault(int errcode, unsigned long cr2)
 
 static inline bool hvm_event_pending(const struct vcpu *v)
 {
-    return hvm_funcs.event_pending(v);
+    return alternative_call(hvm_funcs.event_pending, v);
 }
 
 static inline void hvm_invlpg(struct vcpu *v, unsigned long linear)
 {
-    hvm_funcs.invlpg(v, linear);
+    alternative_vcall(hvm_funcs.invlpg, v, linear);
 }
 
 /* These bits in CR4 are owned by the host. */
@@ -538,13 +539,14 @@ static inline void hvm_cpu_down(void)
 
 static inline unsigned int hvm_get_insn_bytes(struct vcpu *v, uint8_t *buf)
 {
-    return (hvm_funcs.get_insn_bytes ? hvm_funcs.get_insn_bytes(v, buf) : 0);
+    return (hvm_funcs.get_insn_bytes
+            ? alternative_call(hvm_funcs.get_insn_bytes, v, buf) : 0);
 }
 
 static inline void hvm_set_info_guest(struct vcpu *v)
 {
     if ( hvm_funcs.set_info_guest )
-        return hvm_funcs.set_info_guest(v);
+        alternative_vcall(hvm_funcs.set_info_guest, v);
 }
 
 static inline void hvm_invalidate_regs_fields(struct cpu_user_regs *regs)
@@ -690,6 +692,7 @@ unsigned long hvm_get_shadow_gs_base(struct vcpu *v);
 void hvm_set_info_guest(struct vcpu *v);
 void hvm_cpuid_policy_changed(struct vcpu *v);
 void hvm_set_tsc_offset(struct vcpu *v, uint64_t offset, uint64_t at_tsc);
+bool hvm_get_guest_bndcfgs(struct vcpu *v, uint64_t *val);
 
 /* End of prototype list */
 
@@ -762,6 +765,7 @@ static inline bool hvm_has_set_descriptor_access_exiting(void)
 }
 
 #define is_viridian_domain(d) ((void)(d), false)
+#define is_viridian_vcpu(v) ((void)(v), false)
 #define has_viridian_time_ref_count(d) ((void)(d), false)
 #define hvm_long_mode_active(v) ((void)(v), false)
 #define hvm_get_guest_time(v) ((void)(v), 0)

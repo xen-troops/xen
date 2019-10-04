@@ -58,6 +58,7 @@ struct arch_domain
     /* Continuable domain_relinquish_resources(). */
     enum {
         RELMEM_not_started,
+        RELMEM_tee,
         RELMEM_xen,
         RELMEM_page,
         RELMEM_mapping,
@@ -97,6 +98,9 @@ struct arch_domain
     struct vpl011 vpl011;
 #endif
 
+#ifdef CONFIG_TEE
+    void *tee;
+#endif
 }  __cacheline_aligned;
 
 struct arch_vcpu
@@ -163,7 +167,8 @@ struct arch_vcpu
 #endif
 
     /* Control Registers */
-    uint32_t actlr, sctlr;
+    register_t sctlr;
+    uint32_t actlr;
     uint32_t cpacr;
 
     uint32_t contextidr;

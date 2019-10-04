@@ -31,6 +31,9 @@ config HAS_DEVICE_TREE
 config HAS_EX_TABLE
 	bool
 
+config HAS_FAST_MULTIPLY
+	bool
+
 config MEM_ACCESS_ALWAYS_ON
 	bool
 
@@ -43,9 +46,6 @@ config MEM_ACCESS
 	  related events in userspace.
 
 config HAS_MEM_PAGING
-	bool
-
-config HAS_MEM_SHARING
 	bool
 
 config HAS_PDX
@@ -88,21 +88,6 @@ config KEXEC
 
 	  If unsure, say Y.
 
-config TMEM
-	bool "Transcendent Memory Support (deprecated)" if EXPERT = "y"
-	---help---
-	  Transcendent memory allows PV-aware guests to collaborate on memory
-	  usage. Guests can 'swap' their memory to the hypervisor or have an
-	  collective pool of memory shared across guests. The end result is
-	  less memory usage by guests allowing higher guest density.
-
-	  You also have to enable it on the Xen commandline by using tmem=1.
-
-	  WARNING: This option (and its underlying code) is going to go away
-	  in a future Xen version.
-
-	  If unsure, say N.
-
 config XENOPROF
 	def_bool y
 	prompt "Xen Oprofile Support" if EXPERT = "y"
@@ -117,7 +102,7 @@ config XENOPROF
 
 config XSM
 	bool "Xen Security Modules support"
-	default n
+	default ARM
 	---help---
 	  Enables the security framework known as Xen Security Modules which
 	  allows administrators fine-grained control over a Xen domain and
@@ -182,6 +167,7 @@ config XSM_SILO
 choice
 	prompt "Default XSM implementation"
 	depends on XSM
+	default XSM_SILO_DEFAULT if XSM_SILO && ARM
 	default XSM_FLASK_DEFAULT if XSM_FLASK
 	default XSM_SILO_DEFAULT if XSM_SILO
 	default XSM_DUMMY_DEFAULT
@@ -367,5 +353,14 @@ config DOM0_MEM
 	  See docs/misc/xen-command-line.markdown for the supported syntax.
 
 	  Leave empty if you are not sure what to specify.
+
+config TRACEBUFFER
+	bool "Enable tracing infrastructure" if EXPERT = "y"
+	default y
+	---help---
+	  Enable tracing infrastructure and pre-defined tracepoints within Xen.
+	  This will allow live information about Xen’s execution and performance
+	  to be collected at run time for debugging or performance analysis.
+	  Memory and execution overhead when not active is minimal.
 
 endmenu

@@ -195,7 +195,7 @@ static bool pci_cfg_ok(struct domain *currd, unsigned int start,
     /* AMD extended configuration space access? */
     if ( CF8_ADDR_HI(currd->arch.pci_cf8) &&
          boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
-         boot_cpu_data.x86 >= 0x10 && boot_cpu_data.x86 <= 0x17 )
+         boot_cpu_data.x86 >= 0x10 && boot_cpu_data.x86 < 0x17 )
     {
         uint64_t msr_val;
 
@@ -712,7 +712,7 @@ static int read_cr(unsigned int reg, unsigned long *val,
         if ( !is_pv_32bit_domain(currd) )
         {
             mfn = pagetable_get_mfn(curr->arch.guest_table);
-            *val = xen_pfn_to_cr3(mfn_to_gmfn(currd, mfn_x(mfn)));
+            *val = xen_pfn_to_cr3(gfn_x(mfn_to_gfn(currd, mfn)));
         }
         else
         {
@@ -721,10 +721,9 @@ static int read_cr(unsigned int reg, unsigned long *val,
 
             mfn = l4e_get_mfn(*pl4e);
             unmap_domain_page(pl4e);
-            *val = compat_pfn_to_cr3(mfn_to_gmfn(currd, mfn_x(mfn)));
+            *val = compat_pfn_to_cr3(gfn_x(mfn_to_gfn(currd, mfn)));
         }
-        /* PTs should not be shared */
-        BUG_ON(page_get_owner(mfn_to_page(mfn)) == dom_cow);
+
         return X86EMUL_OKAY;
     }
     }
@@ -819,7 +818,7 @@ static inline bool is_cpufreq_controller(const struct domain *d)
 static int read_msr(unsigned int reg, uint64_t *val,
                     struct x86_emulate_ctxt *ctxt)
 {
-    const struct vcpu *curr = current;
+    struct vcpu *curr = current;
     const struct domain *currd = curr->domain;
     bool vpmu_msr = false;
     int ret;
@@ -893,16 +892,16 @@ static int read_msr(unsigned int reg, uint64_t *val,
         *val = 0;
         return X86EMUL_OKAY;
 
-    case MSR_IA32_UCODE_REV:
-        BUILD_BUG_ON(MSR_IA32_UCODE_REV != MSR_AMD_PATCHLEVEL);
-        if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
-        {
-            if ( wrmsr_safe(MSR_IA32_UCODE_REV, 0) )
-                break;
-            /* As documented in the SDM: Do a CPUID 1 here */
-            cpuid_eax(1);
-        }
-        goto normal;
+    case MSR_FAM10H_MMIO_CONF_BASE:
+        if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ||
+             boot_cpu_data.x86 < 0x10 || boot_cpu_data.x86 >= 0x17 )
+            break;
+        /* fall through */
+    case MSR_AMD64_NB_CFG:
+        if ( is_hwdom_pinned_vcpu(curr) )
+            goto normal;
+        *val = 0;
+        return X86EMUL_OKAY;
 
     case MSR_IA32_MISC_ENABLE:
         rdmsrl(reg, *val);
@@ -924,7 +923,8 @@ static int read_msr(unsigned int reg, uint64_t *val,
             /* fall through */
     case MSR_AMD_FAM15H_EVNTSEL0 ... MSR_AMD_FAM15H_PERFCTR5:
     case MSR_K7_EVNTSEL0 ... MSR_K7_PERFCTR3:
-            if ( vpmu_msr || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) )
+            if ( vpmu_msr || (boot_cpu_data.x86_vendor &
+                              (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
             {
                 if ( vpmu_do_rdmsr(reg, val) )
                     break;
@@ -1006,7 +1006,8 @@ static int write_msr(unsigned int reg, uint64_t val,
     case MSR_K8_PSTATE6:
     case MSR_K8_PSTATE7:
     case MSR_K8_HWCR:
-        if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD )
+        if ( !(boot_cpu_data.x86_vendor &
+               (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
             break;
         if ( likely(!is_cpufreq_controller(currd)) ||
              wrmsr_safe(reg, val) == 0 )
@@ -1014,10 +1015,7 @@ static int write_msr(unsigned int reg, uint64_t val,
         break;
 
     case MSR_AMD64_NB_CFG:
-        if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ||
-             boot_cpu_data.x86 < 0x10 || boot_cpu_data.x86 > 0x17 )
-            break;
-        if ( !is_hardware_domain(currd) || !is_pinned_vcpu(curr) )
+        if ( !is_hwdom_pinned_vcpu(curr) )
             return X86EMUL_OKAY;
         if ( (rdmsr_safe(MSR_AMD64_NB_CFG, temp) != 0) ||
              ((val ^ temp) & ~(1ULL << AMD64_NB_CFG_CF8_EXT_ENABLE_BIT)) )
@@ -1028,9 +1026,9 @@ static int write_msr(unsigned int reg, uint64_t val,
 
     case MSR_FAM10H_MMIO_CONF_BASE:
         if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ||
-             boot_cpu_data.x86 < 0x10 || boot_cpu_data.x86 > 0x17 )
+             boot_cpu_data.x86 < 0x10 || boot_cpu_data.x86 >= 0x17 )
             break;
-        if ( !is_hardware_domain(currd) || !is_pinned_vcpu(curr) )
+        if ( !is_hwdom_pinned_vcpu(curr) )
             return X86EMUL_OKAY;
         if ( rdmsr_safe(MSR_FAM10H_MMIO_CONF_BASE, temp) != 0 )
             break;
@@ -1047,17 +1045,6 @@ static int write_msr(unsigned int reg, uint64_t val,
             return X86EMUL_OKAY;
         break;
 
-    case MSR_IA32_UCODE_REV:
-        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
-            break;
-        if ( !is_hardware_domain(currd) || !is_pinned_vcpu(curr) )
-            return X86EMUL_OKAY;
-        if ( rdmsr_safe(reg, temp) )
-            break;
-        if ( val )
-            goto invalid;
-        return X86EMUL_OKAY;
-
     case MSR_IA32_MISC_ENABLE:
         rdmsrl(reg, temp);
         if ( val != guest_misc_enable(temp) )
@@ -1066,8 +1053,8 @@ static int write_msr(unsigned int reg, uint64_t val,
 
     case MSR_IA32_MPERF:
     case MSR_IA32_APERF:
-        if ( (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL) &&
-             (boot_cpu_data.x86_vendor != X86_VENDOR_AMD) )
+        if ( !(boot_cpu_data.x86_vendor &
+               (X86_VENDOR_INTEL | X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
             break;
         if ( likely(!is_cpufreq_controller(currd)) ||
              wrmsr_safe(reg, val) == 0 )
@@ -1086,8 +1073,7 @@ static int write_msr(unsigned int reg, uint64_t val,
     case MSR_IA32_ENERGY_PERF_BIAS:
         if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
             break;
-        if ( !is_hardware_domain(currd) || !is_pinned_vcpu(curr) ||
-             wrmsr_safe(reg, val) == 0 )
+        if ( !is_hwdom_pinned_vcpu(curr) || wrmsr_safe(reg, val) == 0 )
             return X86EMUL_OKAY;
         break;
 
@@ -1100,7 +1086,8 @@ static int write_msr(unsigned int reg, uint64_t val,
             vpmu_msr = true;
     case MSR_AMD_FAM15H_EVNTSEL0 ... MSR_AMD_FAM15H_PERFCTR5:
     case MSR_K7_EVNTSEL0 ... MSR_K7_PERFCTR3:
-            if ( vpmu_msr || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) )
+            if ( vpmu_msr || (boot_cpu_data.x86_vendor &
+                              (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
             {
                 if ( (vpmu_mode & XENPMU_MODE_ALL) &&
                      !is_hardware_domain(currd) )
@@ -1130,9 +1117,11 @@ static int write_msr(unsigned int reg, uint64_t val,
     return X86EMUL_UNHANDLEABLE;
 }
 
-/* Name it differently to avoid clashing with wbinvd() */
-static int _wbinvd(struct x86_emulate_ctxt *ctxt)
+static int cache_op(enum x86emul_cache_op op, enum x86_segment seg,
+                    unsigned long offset, struct x86_emulate_ctxt *ctxt)
 {
+    ASSERT(op == x86emul_wbinvd || op == x86emul_wbnoinvd);
+
     /* Ignore the instruction if unprivileged. */
     if ( !cache_flush_permitted(current->domain) )
         /*
@@ -1140,16 +1129,10 @@ static int _wbinvd(struct x86_emulate_ctxt *ctxt)
          * newer linux uses this in some start-of-day timing loops.
          */
         ;
+    else if ( op == x86emul_wbnoinvd /* && cpu_has_wbnoinvd */ )
+        wbnoinvd();
     else
         wbinvd();
-
-    return X86EMUL_OKAY;
-}
-
-int pv_emul_cpuid(uint32_t leaf, uint32_t subleaf,
-                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt)
-{
-    guest_cpuid(current, leaf, subleaf, res);
 
     return X86EMUL_OKAY;
 }
@@ -1257,8 +1240,8 @@ static const struct x86_emulate_ops priv_op_ops = {
     .write_xcr           = x86emul_write_xcr,
     .read_msr            = read_msr,
     .write_msr           = write_msr,
-    .cpuid               = pv_emul_cpuid,
-    .wbinvd              = _wbinvd,
+    .cpuid               = x86emul_cpuid,
+    .cache_op            = cache_op,
 };
 
 int pv_emulate_privileged_op(struct cpu_user_regs *regs)
@@ -1267,7 +1250,7 @@ int pv_emulate_privileged_op(struct cpu_user_regs *regs)
     struct domain *currd = curr->domain;
     struct priv_op_ctxt ctxt = {
         .ctxt.regs = regs,
-        .ctxt.vendor = currd->arch.cpuid->x86_vendor,
+        .ctxt.cpuid = currd->arch.cpuid,
         .ctxt.lma = !is_pv_32bit_domain(currd),
     };
     int rc;

@@ -8,6 +8,7 @@
 #include <err.h>
 
 #include <xen-tools/libs.h>
+#include <xen/asm/x86-vendors.h>
 #include <xen/lib/x86/cpuid.h>
 #include <xen/lib/x86/msr.h>
 #include <xen/domctl.h>
@@ -19,6 +20,53 @@ static unsigned int nr_failures;
     printf(fmt, ##__VA_ARGS__);                 \
 })
 
+#define memdup(ptr)                             \
+({                                              \
+    typeof(*(ptr)) *p_ = (ptr);                 \
+    void *n_ = malloc(sizeof(*p_));             \
+                                                \
+    if ( !n_ )                                  \
+        err(1, "%s malloc failure", __func__);  \
+                                                \
+    memcpy(n_, p_, sizeof(*p_));                \
+})
+
+static void test_vendor_identification(void)
+{
+    static const struct test {
+        union {
+            char ident[12];
+            struct {
+                uint32_t b, d, c;
+            };
+        };
+        unsigned int vendor;
+    } tests[] = {
+        /* The 1st entry should remain here to work around gcc bug 91667. */
+        { { ""             }, X86_VENDOR_UNKNOWN },
+        { { "            " }, X86_VENDOR_UNKNOWN },
+        { { "xxxxxxxxxxxx" }, X86_VENDOR_UNKNOWN },
+
+        { { "GenuineIntel" }, X86_VENDOR_INTEL },
+        { { "AuthenticAMD" }, X86_VENDOR_AMD },
+        { { "CentaurHauls" }, X86_VENDOR_CENTAUR },
+        { { "  Shanghai  " }, X86_VENDOR_SHANGHAI },
+        { { "HygonGenuine" }, X86_VENDOR_HYGON },
+    };
+
+    printf("Testing CPU vendor identification:\n");
+
+    for ( size_t i = 0; i < ARRAY_SIZE(tests); ++i )
+    {
+        const struct test *t = &tests[i];
+        unsigned int vendor = x86_cpuid_lookup_vendor(t->b, t->c, t->d);
+
+        if ( vendor != t->vendor )
+            fail("  Test '%.12s', expected vendor %u, got %u\n",
+                 t->ident, t->vendor, vendor);
+    }
+}
+
 static void test_cpuid_serialise_success(void)
 {
     static const struct test {
@@ -29,6 +77,77 @@ static void test_cpuid_serialise_success(void)
         {
             .name = "empty policy",
             .nr_leaves = 4,
+        },
+
+        /* Leaf 4 serialisation stops at the first subleaf with type 0. */
+        {
+            .name = "empty leaf 4",
+            .p = {
+                .basic.max_leaf = 4,
+            },
+            .nr_leaves = 4 + 4,
+        },
+        {
+            .name = "partial leaf 4",
+            .p = {
+                .basic.max_leaf = 4,
+                .cache.subleaf[0].type = 1,
+            },
+            .nr_leaves = 4 + 4 + 1,
+        },
+
+        /* Leaf 7 serialisation stops at max_subleaf. */
+        {
+            .name = "empty leaf 7",
+            .p = {
+                .basic.max_leaf = 7,
+            },
+            .nr_leaves = 4 + 7,
+        },
+        {
+            .name = "partial leaf 7",
+            .p = {
+                .basic.max_leaf = 7,
+                .feat.max_subleaf = 1,
+            },
+            .nr_leaves = 4 + 7 + 1,
+        },
+
+        /* Leaf 0xb serialisation stops at the first subleaf with type 0. */
+        {
+            .name = "empty leaf 0xb",
+            .p = {
+                .basic.max_leaf = 0xb,
+            },
+            .nr_leaves = 4 + 0xb,
+        },
+        {
+            .name = "partial leaf 0xb",
+            .p = {
+                .basic.max_leaf = 0xb,
+                .topo.subleaf[0].type = 1,
+            },
+            .nr_leaves = 4 + 0xb + 1,
+        },
+
+        /*
+         * Leaf 0xd serialisation automatically has two leaves, and stops the
+         * highest bit set in {xcr0,xss}_{high,low}.
+         */
+        {
+            .name = "empty leaf 0xd",
+            .p = {
+                .basic.max_leaf = 0xd,
+            },
+            .nr_leaves = 4 + 0xd + 1,
+        },
+        {
+            .name = "partial 0xd",
+            .p = {
+                .basic.max_leaf = 0xd,
+                .xstate.xcr0_low = 7,
+            },
+            .nr_leaves = 4 + 0xd + 1 + 1,
         },
     };
 
@@ -239,14 +358,162 @@ static void test_msr_deserialise_failure(void)
     }
 }
 
+static void test_cpuid_out_of_range_clearing(void)
+{
+    static const struct test {
+        const char *name;
+        unsigned int nr_markers;
+        struct cpuid_policy p;
+    } tests[] = {
+        {
+            .name = "basic",
+            .nr_markers = 1,
+            .p = {
+                /* Retains marker in leaf 0.  Clears others. */
+                .basic.max_leaf = 0,
+                .basic.vendor_ebx = 0xc2,
+
+                .basic.raw_fms = 0xc2,
+                .cache.raw[0].a = 0xc2,
+                .feat.raw[0].a = 0xc2,
+                .topo.raw[0].a = 0xc2,
+                .xstate.raw[0].a = 0xc2,
+                .xstate.raw[1].a = 0xc2,
+            },
+        },
+        {
+            .name = "cache",
+            .nr_markers = 1,
+            .p = {
+                /* Retains marker in subleaf 0.  Clears others. */
+                .basic.max_leaf = 4,
+                .cache.raw[0] = { .a = 1, .b = 0xc2 },
+
+                .cache.raw[1].b = 0xc2,
+                .feat.raw[0].a = 0xc2,
+                .topo.raw[0].a = 0xc2,
+                .xstate.raw[0].a = 0xc2,
+                .xstate.raw[1].a = 0xc2,
+            },
+        },
+        {
+            .name = "feat",
+            .nr_markers = 1,
+            .p = {
+                /* Retains marker in subleaf 0.  Clears others. */
+                .basic.max_leaf = 7,
+                .feat.raw[0].b = 0xc2,
+
+                .feat.raw[1].b = 0xc2,
+                .topo.raw[0].a = 0xc2,
+                .xstate.raw[0].a = 0xc2,
+                .xstate.raw[1].a = 0xc2,
+            },
+        },
+        {
+            .name = "topo",
+            .nr_markers = 1,
+            .p = {
+                /* Retains marker in subleaf 0.  Clears others. */
+                .basic.max_leaf = 0xb,
+                .topo.raw[0] = { .b = 0xc2, .c = 0x0100 },
+
+                .topo.raw[1].b = 0xc2,
+                .xstate.raw[0].a = 0xc2,
+                .xstate.raw[1].a = 0xc2,
+            },
+        },
+        {
+            .name = "xstate x87",
+            .nr_markers = 2,
+            .p = {
+                /* First two subleaves always valid.  Others cleared. */
+                .basic.max_leaf = 0xd,
+                .xstate.raw[0].a = 1,
+                .xstate.raw[0].b = 0xc2,
+                .xstate.raw[1].b = 0xc2,
+
+                .xstate.raw[2].b = 0xc2,
+                .xstate.raw[3].b = 0xc2,
+            },
+        },
+        {
+            .name = "xstate sse",
+            .nr_markers = 2,
+            .p = {
+                /* First two subleaves always valid.  Others cleared. */
+                .basic.max_leaf = 0xd,
+                .xstate.raw[0].a = 2,
+                .xstate.raw[0].b = 0xc2,
+                .xstate.raw[1].b = 0xc2,
+
+                .xstate.raw[2].b = 0xc2,
+                .xstate.raw[3].b = 0xc2,
+            },
+        },
+        {
+            .name = "xstate avx",
+            .nr_markers = 3,
+            .p = {
+                /* Third subleaf also valid.  Others cleared. */
+                .basic.max_leaf = 0xd,
+                .xstate.raw[0].a = 7,
+                .xstate.raw[0].b = 0xc2,
+                .xstate.raw[1].b = 0xc2,
+                .xstate.raw[2].b = 0xc2,
+
+                .xstate.raw[3].b = 0xc2,
+            },
+        },
+        {
+            .name = "extd",
+            .nr_markers = 1,
+            .p = {
+                /* Retains marker in leaf 0.  Clears others. */
+                .extd.max_leaf = 0,
+                .extd.vendor_ebx = 0xc2,
+
+                .extd.raw_fms = 0xc2,
+            },
+        },
+    };
+
+    printf("Testing CPUID out-of-range clearing:\n");
+
+    for ( size_t i = 0; i < ARRAY_SIZE(tests); ++i )
+    {
+        const struct test *t = &tests[i];
+        struct cpuid_policy *p = memdup(&t->p);
+        void *ptr;
+        unsigned int nr_markers;
+
+        x86_cpuid_policy_clear_out_of_range_leaves(p);
+
+        /* Count the number of 0xc2's still remaining. */
+        for ( ptr = p, nr_markers = 0;
+              (ptr = memchr(ptr, 0xc2, (void *)p + sizeof(*p) - ptr));
+              ptr++, nr_markers++ )
+            ;
+
+        if ( nr_markers != t->nr_markers )
+             fail("  Test %s fail - expected %u markers, got %u\n",
+                  t->name, t->nr_markers, nr_markers);
+
+        free(p);
+    }
+}
+
 int main(int argc, char **argv)
 {
     printf("CPU Policy unit tests\n");
 
-    test_cpuid_serialise_success();
-    test_msr_serialise_success();
+    test_vendor_identification();
 
+    test_cpuid_serialise_success();
     test_cpuid_deserialise_failure();
+    test_cpuid_out_of_range_clearing();
+
+    test_msr_serialise_success();
     test_msr_deserialise_failure();
 
     if ( nr_failures )

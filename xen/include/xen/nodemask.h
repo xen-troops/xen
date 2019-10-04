@@ -14,7 +14,7 @@
  * void node_clear(node, mask)		turn off bit 'node' in mask
  * void nodes_setall(mask)		set all bits
  * void nodes_clear(mask)		clear all bits
- * int node_isset(node, mask)		true iff bit 'node' set in mask
+ * bool nodemask_test(node, mask)	true iff bit 'node' set in mask
  * int node_test_and_set(node, mask)	test and set bit 'node' in mask
  *
  * void nodes_and(dst, src1, src2)	dst = src1 & src2  [intersection]
@@ -30,40 +30,27 @@
  * int nodes_full(mask)			Is mask full (all bits sets)?
  * int nodes_weight(mask)		Hamming weight - number of set bits
  *
- * void nodes_shift_right(dst, src, n)	Shift right
- * void nodes_shift_left(dst, src, n)	Shift left
- *
  * int first_node(mask)			Number lowest set bit, or MAX_NUMNODES
  * int next_node(node, mask)		Next node past 'node', or MAX_NUMNODES
  * int last_node(mask)			Number highest set bit, or MAX_NUMNODES
- * int first_unset_node(mask)		First node not set in mask, or 
- *					MAX_NUMNODES.
  * int cycle_node(node, mask)		Next node cycling from 'node', or
  *					MAX_NUMNODES
  *
  * nodemask_t nodemask_of_node(node)	Return nodemask with bit 'node' set
  * NODE_MASK_ALL			Initializer - all bits set
  * NODE_MASK_NONE			Initializer - no bits set
- * unsigned long *nodes_addr(mask)	Array of unsigned long's in mask
+ * unsigned long *nodemask_bits(mask)	Array of unsigned long's in mask
  *
  * for_each_node_mask(node, mask)	for-loop node over mask
  *
  * int num_online_nodes()		Number of online Nodes
  *
- * int node_online(node)		Is some node online?
- *
- * int any_online_node(mask)		First online node in mask
+ * bool node_online(node)		Is this node online?
  *
  * node_set_online(node)		set bit 'node' in node_online_map
  * node_set_offline(node)		clear bit 'node' in node_online_map
  *
  * for_each_online_node(node)		for-loop node over node_online_map
- *
- * Subtlety:
- * 1) The 'type-checked' form of node_isset() causes gcc (3.3.2, anyway)
- *    to generate slightly worse code.  So use a simple one-line #define
- *    for node_isset(), instead of wrapping an inline inside a macro, the
- *    way we do the other calls.
  */
 
 #include <xen/kernel.h>
@@ -71,6 +58,15 @@
 #include <xen/numa.h>
 
 typedef struct { DECLARE_BITMAP(bits, MAX_NUMNODES); } nodemask_t;
+
+/*
+ * printf arguments for a nodemask.  Shorthand for using '%*pb[l]' when
+ * printing a nodemask.
+ */
+#define NODEMASK_PR(src) MAX_NUMNODES, nodemask_bits(src)
+
+#define nodemask_bits(src) ((src)->bits)
+
 extern nodemask_t _unused_nodemask_arg_;
 
 #define node_set(node, dst) __node_set((node), &(dst))
@@ -97,8 +93,10 @@ static inline void __nodes_clear(nodemask_t *dstp, int nbits)
 	bitmap_zero(dstp->bits, nbits);
 }
 
-/* No static inline type checking - see Subtlety (1) above. */
-#define node_isset(node, nodemask) test_bit((node), (nodemask).bits)
+static inline bool nodemask_test(unsigned int node, const nodemask_t *dst)
+{
+    return test_bit(node, dst->bits);
+}
 
 #define node_test_and_set(node, nodemask) \
 			__node_test_and_set((node), &(nodemask))
@@ -189,22 +187,6 @@ static inline int __nodes_weight(const nodemask_t *srcp, int nbits)
 	return bitmap_weight(srcp->bits, nbits);
 }
 
-#define nodes_shift_right(dst, src, n) \
-			__nodes_shift_right(&(dst), &(src), (n), MAX_NUMNODES)
-static inline void __nodes_shift_right(nodemask_t *dstp,
-					const nodemask_t *srcp, int n, int nbits)
-{
-	bitmap_shift_right(dstp->bits, srcp->bits, n, nbits);
-}
-
-#define nodes_shift_left(dst, src, n) \
-			__nodes_shift_left(&(dst), &(src), (n), MAX_NUMNODES)
-static inline void __nodes_shift_left(nodemask_t *dstp,
-					const nodemask_t *srcp, int n, int nbits)
-{
-	bitmap_shift_left(dstp->bits, srcp->bits, n, nbits);
-}
-
 /* FIXME: better would be to fix all architectures to never return
           > MAX_NUMNODES, then the silly min_ts could be dropped. */
 
@@ -243,13 +225,6 @@ static inline int __last_node(const nodemask_t *srcp, int nbits)
 	m;								\
 })
 
-#define first_unset_node(mask) __first_unset_node(&(mask))
-static inline int __first_unset_node(const nodemask_t *maskp)
-{
-	return min_t(int,MAX_NUMNODES,
-			find_first_zero_bit(maskp->bits, MAX_NUMNODES));
-}
-
 #define cycle_node(n, src) __cycle_node((n), &(src), MAX_NUMNODES)
 static inline int __cycle_node(int n, const nodemask_t *maskp, int nbits)
 {
@@ -284,8 +259,6 @@ static inline int __cycle_node(int n, const nodemask_t *maskp, int nbits)
 	[0 ... BITS_TO_LONGS(MAX_NUMNODES)-1] =  0UL			\
 } })
 
-#define nodes_addr(src) ((src).bits)
-
 #if MAX_NUMNODES > 1
 #define for_each_node_mask(node, mask)			\
 	for ((node) = first_node(mask);			\
@@ -306,20 +279,11 @@ extern nodemask_t node_online_map;
 
 #if MAX_NUMNODES > 1
 #define num_online_nodes()	nodes_weight(node_online_map)
-#define node_online(node)	node_isset((node), node_online_map)
+#define node_online(node)	nodemask_test(node, &node_online_map)
 #else
 #define num_online_nodes()	1
 #define node_online(node)	((node) == 0)
 #endif
-
-#define any_online_node(mask)			\
-({						\
-	int node;				\
-	for_each_node_mask(node, (mask))	\
-		if (node_online(node))		\
-			break;			\
-	node;					\
-})
 
 #define node_set_online(node)	   set_bit((node), node_online_map.bits)
 #define node_set_offline(node)	   clear_bit((node), node_online_map.bits)

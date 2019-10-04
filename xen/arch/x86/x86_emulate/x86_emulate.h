@@ -176,6 +176,38 @@ enum x86_emulate_fpu_type {
     X86EMUL_FPU_none
 };
 
+enum x86emul_cache_op {
+    x86emul_clflush,
+    x86emul_clflushopt,
+    x86emul_clwb,
+    x86emul_invd,
+    x86emul_wbinvd,
+    x86emul_wbnoinvd,
+};
+
+enum x86emul_tlb_op {
+    x86emul_invlpg,
+    x86emul_invlpga,
+    x86emul_invpcid,
+};
+
+static inline unsigned int x86emul_invpcid_aux(unsigned int pcid,
+                                            unsigned int type)
+{
+    ASSERT(!(pcid & ~0xfff));
+    return (type << 12) | pcid;
+}
+
+static inline unsigned int x86emul_invpcid_pcid(unsigned int aux)
+{
+    return aux & 0xfff;
+}
+
+static inline unsigned int x86emul_invpcid_type(unsigned int aux)
+{
+    return aux >> 12;
+}
+
 struct x86_emulate_state;
 
 /*
@@ -452,8 +484,30 @@ struct x86_emulate_ops
         uint64_t val,
         struct x86_emulate_ctxt *ctxt);
 
-    /* wbinvd: Write-back and invalidate cache contents. */
-    int (*wbinvd)(
+    /*
+     * cache_op: Write-back and/or invalidate cache contents.
+     *
+     * @seg:@offset applicable only to some of enum x86emul_cache_op.
+     */
+    int (*cache_op)(
+        enum x86emul_cache_op op,
+        enum x86_segment seg,
+        unsigned long offset,
+        struct x86_emulate_ctxt *ctxt);
+
+    /*
+     * tlb_op: Invalidate paging structures which map addressed byte.
+     *
+     * @addr and @aux have @op-specific meaning:
+     * - INVLPG:  @aux:@addr represent seg:offset
+     * - INVLPGA: @addr is the linear address, @aux the ASID
+     * - INVPCID: @addr is the linear address, @aux the combination of
+     *            PCID and type (see x86emul_invpcid_*()).
+     */
+    int (*tlb_op)(
+        enum x86emul_tlb_op op,
+        unsigned long addr,
+        unsigned long aux,
         struct x86_emulate_ctxt *ctxt);
 
     /* cpuid: Emulate CPUID via given set of EAX-EDX inputs/outputs. */
@@ -483,12 +537,6 @@ struct x86_emulate_ops
         enum x86_emulate_fpu_type backout,
         const struct x86_emul_fpu_aux *aux);
 
-    /* invlpg: Invalidate paging structures which map addressed byte. */
-    int (*invlpg)(
-        enum x86_segment seg,
-        unsigned long offset,
-        struct x86_emulate_ctxt *ctxt);
-
     /* vmfunc: Emulate VMFUNC via given set of EAX ECX inputs */
     int (*vmfunc)(
         struct x86_emulate_ctxt *ctxt);
@@ -502,8 +550,8 @@ struct x86_emulate_ctxt
      * Input-only state:
      */
 
-    /* CPU vendor (X86_VENDOR_UNKNOWN for "don't care") */
-    unsigned char vendor;
+    /* CPUID Policy for the domain. */
+    const struct cpuid_policy *cpuid;
 
     /* Set this if writes may have side effects. */
     bool force_writeback;
@@ -642,6 +690,12 @@ int x86_emulate_wrapper(
 #define x86_emulate x86_emulate_wrapper
 #endif
 
+#ifdef __XEN__
+# include <xen/nospec.h>
+#else
+# define array_access_nospec(arr, idx) arr[idx]
+#endif
+
 /* Map GPRs by ModRM encoding to their offset within struct cpu_user_regs. */
 extern const uint8_t cpu_user_regs_gpr_offsets[X86_NR_GPRS];
 
@@ -656,9 +710,12 @@ static inline unsigned long *decode_gpr(struct cpu_user_regs *regs,
     BUILD_BUG_ON(ARRAY_SIZE(cpu_user_regs_gpr_offsets) &
                  (ARRAY_SIZE(cpu_user_regs_gpr_offsets) - 1));
 
-    ASSERT(modrm < ARRAY_SIZE(cpu_user_regs_gpr_offsets));
-
-    /* For safety in release builds.  Debug builds will hit the ASSERT() */
+    /*
+     * Note that this also acts as array_access_nospec() stand-in.  Higher
+     * bits may legitimately come in set here, from EVEX decoding, and
+     * hence truncation is what we want (bits not ignored will get checked
+     * elsewhere).
+     */
     modrm &= ARRAY_SIZE(cpu_user_regs_gpr_offsets) - 1;
 
     return (void *)regs + cpu_user_regs_gpr_offsets[modrm];
@@ -725,6 +782,8 @@ int x86emul_read_dr(unsigned int reg, unsigned long *val,
                     struct x86_emulate_ctxt *ctxt);
 int x86emul_write_dr(unsigned int reg, unsigned long val,
                      struct x86_emulate_ctxt *ctxt);
+int x86emul_cpuid(uint32_t leaf, uint32_t subleaf,
+                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt);
 
 #endif
 

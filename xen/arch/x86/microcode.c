@@ -61,6 +61,9 @@ static struct ucode_mod_blob __initdata ucode_blob;
  */
 static bool_t __initdata ucode_scan;
 
+/* Protected by microcode_mutex */
+static struct microcode_patch *microcode_cache;
+
 void __init microcode_set_module(unsigned int idx)
 {
     ucode_mod_idx = idx;
@@ -184,7 +187,7 @@ const struct microcode_ops *microcode_ops;
 
 static DEFINE_SPINLOCK(microcode_mutex);
 
-DEFINE_PER_CPU(struct ucode_cpu_info, ucode_cpu_info);
+DEFINE_PER_CPU(struct cpu_signature, cpu_sig);
 
 struct microcode_info {
     unsigned int cpu;
@@ -193,89 +196,70 @@ struct microcode_info {
     char buffer[1];
 };
 
-static void __microcode_fini_cpu(unsigned int cpu)
-{
-    struct ucode_cpu_info *uci = &per_cpu(ucode_cpu_info, cpu);
-
-    xfree(uci->mc.mc_valid);
-    memset(uci, 0, sizeof(*uci));
-}
-
-static void microcode_fini_cpu(unsigned int cpu)
-{
-    spin_lock(&microcode_mutex);
-    __microcode_fini_cpu(cpu);
-    spin_unlock(&microcode_mutex);
-}
-
-int microcode_resume_cpu(unsigned int cpu)
+int microcode_resume_cpu(void)
 {
     int err;
-    struct ucode_cpu_info *uci = &per_cpu(ucode_cpu_info, cpu);
-    struct cpu_signature nsig;
-    unsigned int cpu2;
+    struct cpu_signature *sig = &this_cpu(cpu_sig);
 
     if ( !microcode_ops )
         return 0;
 
     spin_lock(&microcode_mutex);
 
-    err = microcode_ops->collect_cpu_info(cpu, &uci->cpu_sig);
-    if ( err )
-    {
-        __microcode_fini_cpu(cpu);
-        spin_unlock(&microcode_mutex);
-        return err;
-    }
-
-    if ( uci->mc.mc_valid )
-    {
-        err = microcode_ops->microcode_resume_match(cpu, uci->mc.mc_valid);
-        if ( err >= 0 )
-        {
-            if ( err )
-                err = microcode_ops->apply_microcode(cpu);
-            spin_unlock(&microcode_mutex);
-            return err;
-        }
-    }
-
-    nsig = uci->cpu_sig;
-    __microcode_fini_cpu(cpu);
-    uci->cpu_sig = nsig;
-
-    err = -EIO;
-    for_each_online_cpu ( cpu2 )
-    {
-        uci = &per_cpu(ucode_cpu_info, cpu2);
-        if ( uci->mc.mc_valid &&
-             microcode_ops->microcode_resume_match(cpu, uci->mc.mc_valid) > 0 )
-        {
-            err = microcode_ops->apply_microcode(cpu);
-            break;
-        }
-    }
-
-    __microcode_fini_cpu(cpu);
+    err = microcode_ops->collect_cpu_info(sig);
+    if ( likely(!err) )
+        err = microcode_ops->apply_microcode(microcode_cache);
     spin_unlock(&microcode_mutex);
 
     return err;
+}
+
+void microcode_free_patch(struct microcode_patch *microcode_patch)
+{
+    microcode_ops->free_patch(microcode_patch->mc);
+    xfree(microcode_patch);
+}
+
+const struct microcode_patch *microcode_get_cache(void)
+{
+    ASSERT(spin_is_locked(&microcode_mutex));
+
+    return microcode_cache;
+}
+
+/* Return true if cache gets updated. Otherwise, return false */
+bool microcode_update_cache(struct microcode_patch *patch)
+{
+    ASSERT(spin_is_locked(&microcode_mutex));
+
+    if ( !microcode_cache )
+        microcode_cache = patch;
+    else if ( microcode_ops->compare_patch(patch,
+                                           microcode_cache) == NEW_UCODE )
+    {
+        microcode_free_patch(microcode_cache);
+        microcode_cache = patch;
+    }
+    else
+    {
+        microcode_free_patch(patch);
+        return false;
+    }
+
+    return true;
 }
 
 static int microcode_update_cpu(const void *buf, size_t size)
 {
     int err;
     unsigned int cpu = smp_processor_id();
-    struct ucode_cpu_info *uci = &per_cpu(ucode_cpu_info, cpu);
+    struct cpu_signature *sig = &per_cpu(cpu_sig, cpu);
 
     spin_lock(&microcode_mutex);
 
-    err = microcode_ops->collect_cpu_info(cpu, &uci->cpu_sig);
+    err = microcode_ops->collect_cpu_info(sig);
     if ( likely(!err) )
-        err = microcode_ops->cpu_request_microcode(cpu, buf, size);
-    else
-        __microcode_fini_cpu(cpu);
-
+        err = microcode_ops->cpu_request_microcode(buf, size);
     spin_unlock(&microcode_mutex);
 
     return err;
@@ -291,6 +275,9 @@ static long do_microcode_update(void *_info)
     error = microcode_update_cpu(info->buffer, info->buffer_size);
     if ( error )
         info->error = error;
+
+    if ( microcode_ops->end_update_percpu )
+        microcode_ops->end_update_percpu();
 
     info->cpu = cpumask_next(info->cpu, &cpu_online_map);
     if ( info->cpu < nr_cpu_ids )
@@ -362,30 +349,14 @@ static int __init microcode_init(void)
 }
 __initcall(microcode_init);
 
-static int microcode_percpu_callback(
-    struct notifier_block *nfb, unsigned long action, void *hcpu)
-{
-    unsigned int cpu = (unsigned long)hcpu;
-
-    switch ( action )
-    {
-    case CPU_DEAD:
-        microcode_fini_cpu(cpu);
-        break;
-    }
-
-    return NOTIFY_DONE;
-}
-
-static struct notifier_block microcode_percpu_nfb = {
-    .notifier_call = microcode_percpu_callback,
-};
-
 int __init early_microcode_update_cpu(bool start_update)
 {
     int rc = 0;
     void *data = NULL;
     size_t len;
+
+    if ( !microcode_ops )
+        return -ENOSYS;
 
     if ( ucode_blob.size )
     {
@@ -397,6 +368,9 @@ int __init early_microcode_update_cpu(bool start_update)
         len = ucode_mod.mod_end;
         data = bootstrap_map(&ucode_mod);
     }
+
+    microcode_ops->collect_cpu_info(&this_cpu(cpu_sig));
+
     if ( data )
     {
         if ( start_update && microcode_ops->start_update )
@@ -405,7 +379,12 @@ int __init early_microcode_update_cpu(bool start_update)
         if ( rc )
             return rc;
 
-        return microcode_update_cpu(data, len);
+        rc = microcode_update_cpu(data, len);
+
+        if ( microcode_ops->end_update_percpu )
+            microcode_ops->end_update_percpu();
+
+        return rc;
     }
     else
         return -ENOMEM;
@@ -425,10 +404,10 @@ int __init early_microcode_init(void)
 
     if ( microcode_ops )
     {
+        microcode_ops->collect_cpu_info(&this_cpu(cpu_sig));
+
         if ( ucode_mod.mod_end || ucode_blob.size )
             rc = early_microcode_update_cpu(true);
-
-        register_cpu_notifier(&microcode_percpu_nfb);
     }
 
     return rc;

@@ -32,6 +32,8 @@ enum {
 #include <xen/arch-x86/cpufeatureset.h>
 };
 
+#include <xen/asm/x86-vendors.h>
+
 #include <xen/lib/x86/cpuid.h>
 #include <xen/lib/x86/msr.h>
 
@@ -229,12 +231,7 @@ int xc_get_domain_cpu_policy(xc_interface *xch, uint32_t domid,
 
 struct cpuid_domain_info
 {
-    enum
-    {
-        VENDOR_UNKNOWN,
-        VENDOR_INTEL,
-        VENDOR_AMD,
-    } vendor;
+    unsigned int vendor; /* X86_VENDOR_* */
 
     bool hvm;
     uint64_t xfeature_mask;
@@ -296,16 +293,7 @@ static int get_cpuid_domain_info(xc_interface *xch, uint32_t domid,
     int rc;
 
     cpuid(in, regs);
-    if ( regs[1] == 0x756e6547U &&      /* "GenuineIntel" */
-         regs[2] == 0x6c65746eU &&
-         regs[3] == 0x49656e69U )
-        info->vendor = VENDOR_INTEL;
-    else if ( regs[1] == 0x68747541U && /* "AuthenticAMD" */
-              regs[2] == 0x444d4163U &&
-              regs[3] == 0x69746e65U )
-        info->vendor = VENDOR_AMD;
-    else
-        info->vendor = VENDOR_UNKNOWN;
+    info->vendor = x86_cpuid_lookup_vendor(regs[1], regs[2], regs[3]);
 
     if ( xc_domain_getinfo(xch, domid, 1, &di) != 1 ||
          di.domid != domid )
@@ -397,7 +385,7 @@ static void amd_xc_cpuid_policy(const struct cpuid_domain_info *info,
     {
     case 0x00000002:
     case 0x00000004:
-        regs[0] = regs[1] = regs[2] = 0;
+        regs[0] = regs[1] = regs[2] = regs[3] = 0;
         break;
 
     case 0x80000000:
@@ -407,11 +395,20 @@ static void amd_xc_cpuid_policy(const struct cpuid_domain_info *info,
 
     case 0x80000008:
         /*
-         * ECX[15:12] is ApicIdCoreSize: ECX[7:0] is NumberOfCores (minus one).
-         * Update to reflect vLAPIC_ID = vCPU_ID * 2.
+         * ECX[15:12] is ApicIdCoreSize.
+         * ECX[7:0] is NumberOfCores (minus one).
+         * Update to reflect vLAPIC_ID = vCPU_ID * 2.  But make sure to avoid
+         * - overflow,
+         * - going out of sync with leaf 1 EBX[23:16],
+         * - incrementing ApicIdCoreSize when it's zero (which changes the
+         *   meaning of bits 7:0).
          */
-        regs[2] = ((regs[2] + (1u << 12)) & 0xf000u) |
-                  ((regs[2] & 0xffu) << 1) | 1u;
+        if ( (regs[2] & 0x7fu) < 0x7fu )
+        {
+            if ( (regs[2] & 0xf000u) && (regs[2] & 0xf000u) != 0xf000u )
+                regs[2] = ((regs[2] + 0x1000u) & 0xf000u) | (regs[2] & 0xffu);
+            regs[2] = (regs[2] & 0xf000u) | ((regs[2] & 0x7fu) << 1) | 1u;
+        }
         break;
 
     case 0x8000000a: {
@@ -490,9 +487,13 @@ static void xc_cpuid_hvm_policy(const struct cpuid_domain_info *info,
     case 0x00000001:
         /*
          * EBX[23:16] is Maximum Logical Processors Per Package.
-         * Update to reflect vLAPIC_ID = vCPU_ID * 2.
+         * Update to reflect vLAPIC_ID = vCPU_ID * 2, but make sure to avoid
+         * overflow.
          */
-        regs[1] = (regs[1] & 0x0000ffffu) | ((regs[1] & 0x007f0000u) << 1);
+        if ( !(regs[1] & 0x00800000u) )
+            regs[1] = (regs[1] & 0x0000ffffu) | ((regs[1] & 0x007f0000u) << 1);
+        else
+            regs[1] &= 0x00ffffffu;
 
         regs[2] = info->featureset[featureword_of(X86_FEATURE_SSE3)];
         regs[3] = (info->featureset[featureword_of(X86_FEATURE_FPU)] |
@@ -568,7 +569,7 @@ static void xc_cpuid_hvm_policy(const struct cpuid_domain_info *info,
         break;
     }
 
-    if ( info->vendor == VENDOR_AMD )
+    if ( info->vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
         amd_xc_cpuid_policy(info, input, regs);
     else
         intel_xc_cpuid_policy(info, input, regs);
@@ -630,7 +631,7 @@ static void xc_cpuid_pv_policy(const struct cpuid_domain_info *info,
 
     case 0x80000000:
     {
-        unsigned int max = info->vendor == VENDOR_AMD
+        unsigned int max = (info->vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON))
             ? DEF_MAX_AMDEXT : DEF_MAX_INTELEXT;
 
         if ( regs[0] > max )
@@ -736,7 +737,7 @@ static void sanitise_featureset(struct cpuid_domain_info *info)
         if ( !info->pv64 )
         {
             clear_bit(X86_FEATURE_LM, info->featureset);
-            if ( info->vendor != VENDOR_AMD )
+            if ( !(info->vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
                 clear_bit(X86_FEATURE_SYSCALL, info->featureset);
         }
 
@@ -787,7 +788,7 @@ int xc_cpuid_apply_policy(xc_interface *xch, uint32_t domid,
     input[0] = 0x80000000;
     cpuid(input, regs);
 
-    if ( info.vendor == VENDOR_AMD )
+    if ( info.vendor == X86_VENDOR_AMD || info.vendor == X86_VENDOR_HYGON )
         ext_max = (regs[0] <= DEF_MAX_AMDEXT) ? regs[0] : DEF_MAX_AMDEXT;
     else
         ext_max = (regs[0] <= DEF_MAX_INTELEXT) ? regs[0] : DEF_MAX_INTELEXT;

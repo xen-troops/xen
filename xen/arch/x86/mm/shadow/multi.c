@@ -180,7 +180,7 @@ sh_walk_guest_tables(struct vcpu *v, unsigned long va, walk_t *gw,
                              INVALID_MFN, v->arch.paging.shadow.gl3e);
 #else /* 32 or 64 */
     const struct domain *d = v->domain;
-    mfn_t root_mfn = ((v->arch.flags & TF_kernel_mode) || is_pv_32bit_domain(d)
+    mfn_t root_mfn = (v->arch.flags & TF_kernel_mode
                       ? pagetable_get_mfn(v->arch.guest_table)
                       : pagetable_get_mfn(v->arch.guest_table_user));
     void *root_map = map_domain_page(root_mfn);
@@ -559,7 +559,7 @@ _sh_propagate(struct vcpu *v,
      * caching attributes in the shadows to match what was asked for.
      */
     if ( (level == 1) && is_hvm_domain(d) &&
-         !is_xen_heap_mfn(mfn_x(target_mfn)) )
+         !is_xen_heap_mfn(target_mfn) )
     {
         int type;
 
@@ -1076,7 +1076,7 @@ static inline void shadow_vram_get_l1e(shadow_l1e_t new_sl1e,
          || !mfn_valid(mfn) )   /* mfn can be invalid in mmio_direct */
         return;
 
-    gfn = mfn_to_gfn(d, mfn);
+    gfn = gfn_x(mfn_to_gfn(d, mfn));
     /* Page sharing not supported on shadow PTs */
     BUG_ON(SHARED_M2P(gfn));
 
@@ -1107,7 +1107,7 @@ static inline void shadow_vram_put_l1e(shadow_l1e_t old_sl1e,
          || !mfn_valid(mfn) )   /* mfn can be invalid in mmio_direct */
         return;
 
-    gfn = mfn_to_gfn(d, mfn);
+    gfn = gfn_x(mfn_to_gfn(d, mfn));
     /* Page sharing not supported on shadow PTs */
     BUG_ON(SHARED_M2P(gfn));
 
@@ -3305,10 +3305,12 @@ static int sh_page_fault(struct vcpu *v,
     {
         /*
          * If we are in the middle of injecting an exception or interrupt then
-         * we should not emulate: it is not the instruction at %eip that caused
-         * the fault. Furthermore it is almost certainly the case the handler
-         * stack is currently considered to be a page table, so we should
-         * unshadow the faulting page before exiting.
+         * we should not emulate: the fault is a side effect of the processor
+         * trying to deliver the exception (e.g. IDT/GDT accesses, pushing the
+         * exception frame onto the stack).  Furthermore it is almost
+         * certainly the case the handler stack is currently considered to be
+         * a page table, so we should unshadow the faulting page before
+         * exiting.
          */
         if ( unlikely(hvm_event_pending(v)) )
         {
@@ -3319,9 +3321,6 @@ static int sh_page_fault(struct vcpu *v,
                 v->arch.paging.last_write_emul_ok = 0;
             }
 #endif
-            gdprintk(XENLOG_DEBUG, "write to pagetable during event "
-                     "injection: cr2=%#lx, mfn=%#lx\n",
-                     va, mfn_x(gmfn));
             sh_remove_shadows(d, gmfn, 0 /* thorough */, 1 /* must succeed */);
             trace_shadow_emulate_other(TRC_SHADOW_EMULATE_UNSHADOW_EVTINJ,
                                        va, gfn);
@@ -3976,7 +3975,7 @@ sh_update_cr3(struct vcpu *v, int do_locking, bool noflush)
                   v, (unsigned long)pagetable_get_pfn(v->arch.guest_table));
 
 #if GUEST_PAGING_LEVELS == 4
-    if ( !(v->arch.flags & TF_kernel_mode) && !is_pv_32bit_domain(d) )
+    if ( !(v->arch.flags & TF_kernel_mode) )
         gmfn = pagetable_get_mfn(v->arch.guest_table_user);
     else
 #endif

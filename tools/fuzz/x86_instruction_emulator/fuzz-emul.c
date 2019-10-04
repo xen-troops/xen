@@ -76,6 +76,8 @@ static inline bool input_read(struct fuzz_state *s, void *dst, size_t size)
     return true;
 }
 
+static bool check_state(struct x86_emulate_ctxt *ctxt);
+
 static const char* const x86emul_return_string[] = {
     [X86EMUL_OKAY] = "X86EMUL_OKAY",
     [X86EMUL_UNHANDLEABLE] = "X86EMUL_UNHANDLEABLE",
@@ -368,22 +370,33 @@ static int fuzz_cmpxchg(
     return maybe_fail(ctxt, "cmpxchg", true);
 }
 
-static int fuzz_invlpg(
+static int fuzz_tlb_op(
+    enum x86emul_tlb_op op,
+    unsigned long addr,
+    unsigned long aux,
+    struct x86_emulate_ctxt *ctxt)
+{
+    switch ( op )
+    {
+    case x86emul_invlpg:
+        assert(is_x86_user_segment(aux));
+        /* fall through */
+    case x86emul_invlpga:
+    case x86emul_invpcid:
+        assert(ctxt->addr_size == 64 || !(addr >> 32));
+        break;
+    }
+
+    return maybe_fail(ctxt, "TLB-management", false);
+}
+
+static int fuzz_cache_op(
+    enum x86emul_cache_op op,
     enum x86_segment seg,
     unsigned long offset,
     struct x86_emulate_ctxt *ctxt)
 {
-    /* invlpg(), unlike all other hooks, may be called with x86_seg_none. */
-    assert(is_x86_user_segment(seg) || seg == x86_seg_none);
-    assert(ctxt->addr_size == 64 || !(offset >> 32));
-
-    return maybe_fail(ctxt, "invlpg", false);
-}
-
-static int fuzz_wbinvd(
-    struct x86_emulate_ctxt *ctxt)
-{
-    return maybe_fail(ctxt, "wbinvd", true);
+    return maybe_fail(ctxt, "cache-management", true);
 }
 
 static int fuzz_write_io(
@@ -424,7 +437,18 @@ static int fuzz_write_segment(
     rc = maybe_fail(ctxt, "write_segment", true);
 
     if ( rc == X86EMUL_OKAY )
+    {
+        struct segment_register old = c->segments[seg];
+
         c->segments[seg] = *reg;
+
+        if ( !check_state(ctxt) )
+        {
+            c->segments[seg] = old;
+            x86_emul_hw_exception(13 /* #GP */, 0, ctxt);
+            rc = X86EMUL_EXCEPTION;
+        }
+    }
 
     return rc;
 }
@@ -452,6 +476,7 @@ static int fuzz_write_cr(
 {
     struct fuzz_state *s = ctxt->data;
     struct fuzz_corpus *c = s->corpus;
+    unsigned long old;
     int rc;
 
     if ( reg >= ARRAY_SIZE(c->cr) )
@@ -461,9 +486,17 @@ static int fuzz_write_cr(
     if ( rc != X86EMUL_OKAY )
         return rc;
 
+    old = c->cr[reg];
     c->cr[reg] = val;
 
-    return X86EMUL_OKAY;
+    if ( !check_state(ctxt) )
+    {
+        c->cr[reg] = old;
+        x86_emul_hw_exception(13 /* #GP */, 0, ctxt);
+        rc = X86EMUL_EXCEPTION;
+    }
+
+    return rc;
 }
 
 #define fuzz_read_xcr emul_test_read_xcr
@@ -561,7 +594,16 @@ static int fuzz_write_msr(
     {
         if ( msr_index[idx] == reg )
         {
+            uint64_t old = c->msr[idx];
+
             c->msr[idx] = val;
+
+            if ( !check_state(ctxt) )
+            {
+                c->msr[idx] = old;
+                break;
+            }
+
             return X86EMUL_OKAY;
         }
     }
@@ -589,8 +631,8 @@ static const struct x86_emulate_ops all_fuzzer_ops = {
     SET(read_xcr),
     SET(read_msr),
     SET(write_msr),
-    SET(wbinvd),
-    SET(invlpg),
+    SET(cache_op),
+    SET(tlb_op),
     .get_fpu    = emul_test_get_fpu,
     .put_fpu    = emul_test_put_fpu,
     .cpuid      = emul_test_cpuid,
@@ -662,21 +704,21 @@ static void set_sizes(struct x86_emulate_ctxt *ctxt)
     }
 }
 
-#define CANONICALIZE(x)                                   \
+#define CANONICALIZE(x, bits)                             \
     do {                                                  \
         uint64_t _y = (x);                                \
-        if ( _y & (1ULL << 47) )                          \
-            _y |= (~0ULL) << 48;                          \
+        if ( _y & (1ULL << ((bits) - 1)) )                \
+            _y |= (~0ULL) << (bits);                      \
         else                                              \
-            _y &= (1ULL << 48)-1;                         \
+            _y &= (1ULL << (bits)) - 1;                   \
         printf("Canonicalized %" PRIx64 " to %" PRIx64 "\n", x, _y);    \
         (x) = _y;                                       \
     } while( 0 )
 
-/* Expects bitmap and regs to be defined */
+/* Expects bitmap, regs, and c to be defined */
 #define CANONICALIZE_MAYBE(reg)                       \
     if ( !(bitmap & (1 << CANONICALIZE_##reg)) )      \
-        CANONICALIZE(regs->reg);                      \
+        CANONICALIZE(regs->reg, c->cr[4] & X86_CR4_LA57 ? 57 : 48); \
 
 enum {
     HOOK_read,
@@ -698,17 +740,16 @@ enum {
     HOOK_read_xcr,
     HOOK_read_msr,
     HOOK_write_msr,
-    HOOK_wbinvd,
+    HOOK_cache_op,
+    HOOK_tlb_op,
     HOOK_cpuid,
     HOOK_inject_hw_exception,
     HOOK_inject_sw_interrupt,
     HOOK_get_fpu,
     HOOK_put_fpu,
-    HOOK_invlpg,
     HOOK_vmfunc,
     CANONICALIZE_rip,
     CANONICALIZE_rsp,
-    CANONICALIZE_rbp
 };
 
 /* Expects bitmap to be defined */
@@ -743,10 +784,10 @@ static void disable_hooks(struct x86_emulate_ctxt *ctxt)
     MAYBE_DISABLE_HOOK(read_xcr);
     MAYBE_DISABLE_HOOK(read_msr);
     MAYBE_DISABLE_HOOK(write_msr);
-    MAYBE_DISABLE_HOOK(wbinvd);
+    MAYBE_DISABLE_HOOK(cache_op);
+    MAYBE_DISABLE_HOOK(tlb_op);
     MAYBE_DISABLE_HOOK(cpuid);
     MAYBE_DISABLE_HOOK(get_fpu);
-    MAYBE_DISABLE_HOOK(invlpg);
 }
 
 /*
@@ -785,9 +826,13 @@ static void sanitize_input(struct x86_emulate_ctxt *ctxt)
     regs->error_code = 0;
     regs->entry_vector = 0;
 
+    /*
+     * For both RIP and RSP make sure we test with canonical values in at
+     * least a fair number of cases. As all other registers aren't tied to
+     * special addressing purposes, leave everything else alone.
+     */
     CANONICALIZE_MAYBE(rip);
     CANONICALIZE_MAYBE(rsp);
-    CANONICALIZE_MAYBE(rbp);
 
     /*
      * CR0.PG can't be set if CR0.PE isn't set.  Set is more interesting, so
@@ -806,6 +851,30 @@ static void sanitize_input(struct x86_emulate_ctxt *ctxt)
         c->segments[x86_seg_cs].db = 0;
         c->segments[x86_seg_ss].db = 0;
     }
+}
+
+/*
+ * Call this function from hooks potentially altering machine state into
+ * something that's not architecturally valid, yet which - as per above -
+ * the emulator relies on.
+ */
+static bool check_state(struct x86_emulate_ctxt *ctxt)
+{
+    const struct fuzz_state *s = ctxt->data;
+    const struct fuzz_corpus *c = s->corpus;
+    const struct cpu_user_regs *regs = &c->regs;
+
+    if ( long_mode_active(ctxt) && !(c->cr[0] & X86_CR0_PG) )
+        return false;
+
+    if ( (c->cr[0] & X86_CR0_PG) && !(c->cr[0] & X86_CR0_PE) )
+        return false;
+
+    if ( (regs->rflags & X86_EFLAGS_VM) &&
+         (c->segments[x86_seg_cs].db || c->segments[x86_seg_ss].db) )
+        return false;
+
+    return true;
 }
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
@@ -827,6 +896,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data_p, size_t size)
     struct x86_emulate_ctxt ctxt = {
         .data = &state,
         .regs = &input.regs,
+        .cpuid = &cp,
         .addr_size = 8 * sizeof(void *),
         .sp_size = 8 * sizeof(void *),
     };

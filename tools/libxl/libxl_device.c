@@ -321,26 +321,9 @@ static int disk_try_backend(disk_try_backend_args *a,
         return 0;
 
     case LIBXL_DISK_BACKEND_TAP:
-        if (a->disk->script) goto bad_script;
-
-        if (libxl_defbool_val(a->disk->colo_enable))
-            goto bad_colo;
-
-        if (a->disk->is_cdrom) {
-            LOG(DEBUG, "Disk vdev=%s, backend tap unsuitable for cdroms",
-                       a->disk->vdev);
-            return 0;
-        }
-        if (!libxl__blktap_enabled(a->gc)) {
-            LOG(DEBUG, "Disk vdev=%s, backend tap unsuitable because blktap "
-                       "not available", a->disk->vdev);
-            return 0;
-        }
-        if (!(a->disk->format == LIBXL_DISK_FORMAT_RAW ||
-              a->disk->format == LIBXL_DISK_FORMAT_VHD)) {
-            goto bad_format;
-        }
-        return backend;
+        LOG(DEBUG, "Disk vdev=%s, backend tap unsuitable because blktap "
+                   "not available", a->disk->vdev);
+        return 0;
 
     case LIBXL_DISK_BACKEND_QDISK:
         if (a->disk->script) goto bad_script;
@@ -661,6 +644,8 @@ void libxl__prepare_ao_device(libxl__ao *ao, libxl__ao_device *aodev)
      * without actually calling any hotplug script */
     libxl__async_exec_init(&aodev->aes);
     libxl__ev_child_init(&aodev->child);
+
+    libxl__ev_qmp_init(&aodev->qmp);
 }
 
 /* multidev */
@@ -746,8 +731,6 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
     const char *be_path = NULL;
     const char *fe_path = NULL;
     const char *libxl_path = libxl__device_libxl_path(gc, dev);
-    const char *tapdisk_path = NULL;
-    const char *tapdisk_params = NULL;
     xs_transaction_t t = 0;
     int rc;
     uint32_t domid;
@@ -756,7 +739,6 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
     if (!libxl_only) {
         be_path = libxl__device_backend_path(gc, dev);
         fe_path = libxl__device_frontend_path(gc, dev);
-        tapdisk_path = GCSPRINTF("%s/%s", be_path, "tapdisk-params");
     }
 
     rc = libxl__get_domid(gc, &domid);
@@ -765,12 +747,6 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
         if (rc) goto out;
-
-        /* May not exist if this is not a tap device */
-        if (tapdisk_path) {
-            rc = libxl__xs_read_checked(gc, t, tapdisk_path, &tapdisk_params);
-            if (rc) goto out;
-        }
 
         if (domid == LIBXL_TOOLSTACK_DOMID) {
             /*
@@ -793,9 +769,6 @@ int libxl__device_destroy(libxl__gc *gc, libxl__device *dev)
         if (!rc) break;
         if (rc < 0) goto out;
     }
-
-    if (tapdisk_params)
-        rc = libxl__device_destroy_tapdisk(gc, tapdisk_params);
 
 out:
     libxl__xs_transaction_abort(gc, &t);
@@ -1852,7 +1825,7 @@ out:
 }
 
 void device_add_domain_config(libxl__gc *gc, libxl_domain_config *d_config,
-                              const struct libxl_device_type *dt, void *type)
+                              const libxl__device_type *dt, const void *dev)
 {
     int *num_dev;
     unsigned int i;
@@ -1862,7 +1835,7 @@ void device_add_domain_config(libxl__gc *gc, libxl_domain_config *d_config,
 
     /* Check for existing device */
     for (i = 0; i < *num_dev; i++) {
-        if (dt->compare(libxl__device_type_get_elem(dt, d_config, i), type)) {
+        if (dt->compare(libxl__device_type_get_elem(dt, d_config, i), dev)) {
             item = libxl__device_type_get_elem(dt, d_config, i);
         }
     }
@@ -1878,11 +1851,11 @@ void device_add_domain_config(libxl__gc *gc, libxl_domain_config *d_config,
     }
 
     dt->init(item);
-    dt->copy(CTX, item, type);
+    dt->copy(CTX, item, dev);
 }
 
 void libxl__device_add_async(libxl__egc *egc, uint32_t domid,
-                             const struct libxl_device_type *dt, void *type,
+                             const libxl__device_type *dt, void *type,
                              libxl__ao_device *aodev)
 {
     STATE_AO_GC(aodev->ao);
@@ -1997,7 +1970,7 @@ out:
 }
 
 int libxl__device_add(libxl__gc *gc, uint32_t domid,
-                      const struct libxl_device_type *dt, void *type)
+                      const libxl__device_type *dt, void *type)
 {
     flexarray_t *back;
     flexarray_t *front, *ro_front;
@@ -2046,7 +2019,7 @@ out:
     return rc;
 }
 
-void *libxl__device_list(libxl__gc *gc, const struct libxl_device_type *dt,
+void *libxl__device_list(libxl__gc *gc, const libxl__device_type *dt,
                          uint32_t domid, int *num)
 {
     void *r = NULL;
@@ -2055,6 +2028,7 @@ void *libxl__device_list(libxl__gc *gc, const struct libxl_device_type *dt,
     char *libxl_path;
     char **dir = NULL;
     unsigned int ndirs = 0;
+    unsigned int ndevs = 0;
     int rc;
 
     *num = 0;
@@ -2066,21 +2040,34 @@ void *libxl__device_list(libxl__gc *gc, const struct libxl_device_type *dt,
     dir = libxl__xs_directory(gc, XBT_NULL, libxl_path, &ndirs);
 
     if (dir && ndirs) {
-        list = libxl__malloc(NOGC, dt->dev_elem_size * ndirs);
+        if (dt->get_num) {
+            if (ndirs != 1) {
+                LOGD(ERROR, domid, "multiple entries in %s\n", libxl_path);
+                rc = ERROR_FAIL;
+                goto out;
+            }
+            rc = dt->get_num(gc, GCSPRINTF("%s/%s", libxl_path, *dir), &ndevs);
+            if (rc) goto out;
+        } else {
+            ndevs = ndirs;
+        }
+        list = libxl__malloc(NOGC, dt->dev_elem_size * ndevs);
         item = list;
 
-        while (*num < ndirs) {
+        while (*num < ndevs) {
             dt->init(item);
-            ++(*num);
 
             if (dt->from_xenstore) {
+                int nr = dt->get_num ? *num : atoi(*dir);
                 char *device_libxl_path = GCSPRINTF("%s/%s", libxl_path, *dir);
-                rc = dt->from_xenstore(gc, device_libxl_path, atoi(*dir), item);
+                rc = dt->from_xenstore(gc, device_libxl_path, nr, item);
                 if (rc) goto out;
             }
 
             item = (uint8_t *)item + dt->dev_elem_size;
-            ++dir;
+            ++(*num);
+            if (!dt->get_num)
+                ++dir;
         }
     }
 
@@ -2097,7 +2084,7 @@ out:
     return r;
 }
 
-void libxl__device_list_free(const struct libxl_device_type *dt,
+void libxl__device_list_free(const libxl__device_type *dt,
                              void *list, int num)
 {
     int i;

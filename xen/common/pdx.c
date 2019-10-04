@@ -18,6 +18,7 @@
 #include <xen/init.h>
 #include <xen/mm.h>
 #include <xen/bitops.h>
+#include <xen/nospec.h>
 
 /* Parameters for PFN/MADDR compression. */
 unsigned long __read_mostly max_pdx;
@@ -33,8 +34,9 @@ unsigned long __read_mostly pdx_group_valid[BITS_TO_LONGS(
 
 bool __mfn_valid(unsigned long mfn)
 {
-    return likely(mfn < max_page) &&
-           likely(!(mfn & pfn_hole_mask)) &&
+    if ( unlikely(evaluate_nospec(mfn >= max_page)) )
+        return false;
+    return likely(!(mfn & pfn_hole_mask)) &&
            likely(test_bit(pfn_to_pdx(mfn) / PDX_GROUP_COUNT,
                            pdx_group_valid));
 }
@@ -48,9 +50,11 @@ static u64 __init fill_mask(u64 mask)
     return mask;
 }
 
-u64 __init pdx_init_mask(u64 base_addr)
+/* We don't want to compress the low MAX_ORDER bits of the addresses. */
+uint64_t __init pdx_init_mask(uint64_t base_addr)
 {
-    return fill_mask(base_addr - 1);
+    return fill_mask(max(base_addr,
+                         (uint64_t)1 << (MAX_ORDER + PAGE_SHIFT)) - 1);
 }
 
 u64 __init pdx_region_mask(u64 base, u64 len)
@@ -78,11 +82,16 @@ void __init pfn_pdx_hole_setup(unsigned long mask)
      * This guarantees that page-pointer arithmetic remains valid within
      * contiguous aligned ranges of 2^MAX_ORDER pages. Among others, our
      * buddy allocator relies on this assumption.
+     *
+     * If the logic changes here, we might have to update the ARM specific
+     * init_pdx too.
      */
     for ( j = MAX_ORDER-1; ; )
     {
-        i = find_next_zero_bit(&mask, BITS_PER_LONG, j);
-        j = find_next_bit(&mask, BITS_PER_LONG, i);
+        i = find_next_zero_bit(&mask, BITS_PER_LONG, j + 1);
+        if ( i >= BITS_PER_LONG )
+            break;
+        j = find_next_bit(&mask, BITS_PER_LONG, i + 1);
         if ( j >= BITS_PER_LONG )
             break;
         if ( j - i > hole_shift )

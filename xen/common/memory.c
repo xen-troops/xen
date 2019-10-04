@@ -7,6 +7,7 @@
  * Copyright (c) 2003-2005, K A Fraser
  */
 
+#include <xen/domain_page.h>
 #include <xen/types.h>
 #include <xen/lib.h>
 #include <xen/mm.h>
@@ -18,8 +19,6 @@
 #include <xen/guest_access.h>
 #include <xen/hypercall.h>
 #include <xen/errno.h>
-#include <xen/tmem.h>
-#include <xen/tmem_xen.h>
 #include <xen/numa.h>
 #include <xen/mem_access.h>
 #include <xen/trace.h>
@@ -250,11 +249,10 @@ static void populate_physmap(struct memop_args *a)
 
                 if ( unlikely(!page) )
                 {
-                    if ( !tmem_enabled() || a->extent_order )
-                        gdprintk(XENLOG_INFO,
-                                 "Could not allocate order=%u extent: id=%d memflags=%#x (%u of %u)\n",
-                                 a->extent_order, d->domain_id, a->memflags,
-                                 i, a->nr_extents);
+                    gdprintk(XENLOG_INFO,
+                             "Could not allocate order=%u extent: id=%d memflags=%#x (%u of %u)\n",
+                             a->extent_order, d->domain_id, a->memflags,
+                             i, a->nr_extents);
                     goto out;
                 }
 
@@ -270,16 +268,10 @@ static void populate_physmap(struct memop_args *a)
 
             guest_physmap_add_page(d, _gfn(gpfn), mfn, a->extent_order);
 
-            if ( !paging_mode_translate(d) )
-            {
-                for ( j = 0; j < (1U << a->extent_order); j++ )
-                    set_gpfn_from_mfn(mfn_x(mfn_add(mfn, j)), gpfn + j);
-
-                /* Inform the domain of the new page's machine address. */ 
-                if ( unlikely(__copy_mfn_to_guest_offset(a->extent_list, i,
-                                                         mfn)) )
-                    goto out;
-            }
+            if ( !paging_mode_translate(d) &&
+                 /* Inform the domain of the new page's machine address. */
+                 unlikely(__copy_mfn_to_guest_offset(a->extent_list, i, mfn)) )
+                goto out;
         }
     }
 
@@ -396,9 +388,8 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
      * For this purpose (and to match populate_physmap() behavior), the page
      * is kept allocated.
      */
-    if ( !rc && !is_domain_direct_mapped(d) &&
-         test_and_clear_bit(_PGC_allocated, &page->count_info) )
-        put_page(page);
+    if ( !rc && !is_domain_direct_mapped(d) )
+        put_page_alloc_ref(page);
 
     put_page(page);
 
@@ -548,6 +539,9 @@ static long memory_exchange(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
         rc = -EINVAL;
         goto fail_early;
     }
+
+    if ( exch.nr_exchanged == exch.in.nr_extents )
+        return 0;
 
     if ( !guest_handle_subrange_okay(exch.in.extent_start, exch.nr_exchanged,
                                      exch.in.nr_extents - 1) )
@@ -755,15 +749,11 @@ static long memory_exchange(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
             guest_physmap_add_page(d, _gfn(gpfn), mfn,
                                    exch.out.extent_order);
 
-            if ( !paging_mode_translate(d) )
-            {
-                for ( k = 0; k < (1UL << exch.out.extent_order); k++ )
-                    set_gpfn_from_mfn(mfn_x(mfn_add(mfn, k)), gpfn + k);
-                if ( __copy_mfn_to_guest_offset(exch.out.extent_start,
-                                                (i << out_chunk_order) + j,
-                                                mfn) )
-                    rc = -EFAULT;
-            }
+            if ( !paging_mode_translate(d) &&
+                 __copy_mfn_to_guest_offset(exch.out.extent_start,
+                                            (i << out_chunk_order) + j,
+                                            mfn) )
+                rc = -EFAULT;
         }
         BUG_ON( !(d->is_dying) && (j != (1UL << out_chunk_order)) );
 
@@ -814,6 +804,8 @@ int xenmem_add_to_physmap(struct domain *d, struct xen_add_to_physmap *xatp,
     unsigned int done = 0;
     long rc = 0;
     union xen_add_to_physmap_batch_extra extra;
+
+    ASSERT(paging_mode_translate(d));
 
     if ( xatp->space != XENMAPSPACE_gmfn_foreign )
         extra.res0 = 0;
@@ -876,8 +868,11 @@ static int xenmem_add_to_physmap_batch(struct domain *d,
                                        struct xen_add_to_physmap_batch *xatpb,
                                        unsigned int extent)
 {
-    if ( xatpb->size < extent )
+    if ( unlikely(xatpb->size < extent) )
         return -EILSEQ;
+
+    if ( unlikely(xatpb->size == extent) )
+        return extent ? -EILSEQ : 0;
 
     if ( !guest_handle_subrange_okay(xatpb->idxs, extent, xatpb->size - 1) ||
          !guest_handle_subrange_okay(xatpb->gpfns, extent, xatpb->size - 1) ||
@@ -972,8 +967,8 @@ static int get_reserved_device_memory(xen_pfn_t start, xen_ulong_t nr,
                                       u32 id, void *ctxt)
 {
     struct get_reserved_device_memory *grdm = ctxt;
-    u32 sbdf = PCI_SBDF3(grdm->map.dev.pci.seg, grdm->map.dev.pci.bus,
-                         grdm->map.dev.pci.devfn);
+    uint32_t sbdf = PCI_SBDF3(grdm->map.dev.pci.seg, grdm->map.dev.pci.bus,
+                              grdm->map.dev.pci.devfn).sbdf;
 
     if ( !(grdm->map.flags & XENMEM_RDM_ALL) && (sbdf != id) )
         return 0;
@@ -997,12 +992,15 @@ static int get_reserved_device_memory(xen_pfn_t start, xen_ulong_t nr,
 
 static long xatp_permission_check(struct domain *d, unsigned int space)
 {
+    if ( !paging_mode_translate(d) )
+        return -EACCES;
+
     /*
      * XENMAPSPACE_dev_mmio mapping is only supported for hardware Domain
      * to map this kind of space to itself.
      */
     if ( (space == XENMAPSPACE_dev_mmio) &&
-         (!is_hardware_domain(current->domain) || (d != current->domain)) )
+         (!is_hardware_domain(d) || (d != current->domain)) )
         return -EACCES;
 
     return xsm_add_to_physmap(XSM_TARGET, current->domain, d);
@@ -1062,7 +1060,7 @@ static int acquire_resource(
     if ( copy_from_guest(&xmar, arg, 1) )
         return -EFAULT;
 
-    if ( xmar.flags != 0 )
+    if ( xmar.pad != 0 )
         return -EINVAL;
 
     if ( guest_handle_is_null(xmar.frame_list) )
@@ -1098,7 +1096,7 @@ static int acquire_resource(
 
     default:
         rc = arch_acquire_resource(d, xmar.type, xmar.id, xmar.frame,
-                                   xmar.nr_frames, mfn_list, &xmar.flags);
+                                   xmar.nr_frames, mfn_list);
         break;
     }
 
@@ -1118,11 +1116,9 @@ static int acquire_resource(
         /*
          * FIXME: Until foreign pages inserted into the P2M are properly
          *        reference counted, it is unsafe to allow mapping of
-         *        non-caller-owned resource pages unless the caller is
-         *        the hardware domain.
+         *        resource pages unless the caller is the hardware domain.
          */
-        if ( !(xmar.flags & XENMEM_rsrc_acq_caller_owned) &&
-             !is_hardware_domain(currd) )
+        if ( !is_hardware_domain(currd) )
             return -EACCES;
 
         if ( copy_from_guest(gfn_list, xmar.frame_list, xmar.nr_frames) )
@@ -1137,10 +1133,6 @@ static int acquire_resource(
                 rc = -EIO;
         }
     }
-
-    if ( xmar.flags != 0 &&
-         __copy_field_to_guest(arg, &xmar, flags) )
-        rc = -EFAULT;
 
  out:
     rcu_unlock_domain(d);
@@ -1386,7 +1378,9 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( d == NULL )
             return -ESRCH;
 
-        rc = xsm_remove_from_physmap(XSM_TARGET, curr_d, d);
+        rc = paging_mode_translate(d)
+             ? xsm_remove_from_physmap(XSM_TARGET, curr_d, d)
+             : -EACCES;
         if ( rc )
         {
             rcu_unlock_domain(d);
@@ -1648,7 +1642,7 @@ void destroy_ring_for_helper(
 }
 
 /*
- * Acquire a pointer to struct page_info for a specified doman and GFN,
+ * Acquire a pointer to struct page_info for a specified domain and GFN,
  * checking whether the page has been paged out, or needs unsharing.
  * If the function succeeds then zero is returned, page_p is written
  * with a pointer to the struct page_info with a reference taken, and
@@ -1676,7 +1670,7 @@ int check_get_page_from_gfn(struct domain *d, gfn_t gfn, bool readonly,
         return -EAGAIN;
     }
 #endif
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
     if ( (q & P2M_UNSHARE) && p2m_is_shared(p2mt) )
     {
         if ( page )

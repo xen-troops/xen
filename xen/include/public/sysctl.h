@@ -34,7 +34,6 @@
 #include "xen.h"
 #include "domctl.h"
 #include "physdev.h"
-#include "tmem.h"
 
 #define XEN_SYSCTL_INTERFACE_VERSION 0x00000012
 
@@ -82,15 +81,29 @@ struct xen_sysctl_tbuf_op {
  * Get physical information about the host machine
  */
 /* XEN_SYSCTL_physinfo */
- /* (x86) The platform supports HVM guests. */
+ /* The platform supports HVM guests. */
 #define _XEN_SYSCTL_PHYSCAP_hvm          0
 #define XEN_SYSCTL_PHYSCAP_hvm           (1u<<_XEN_SYSCTL_PHYSCAP_hvm)
- /* (x86) The platform supports PV guests. */
+ /* The platform supports PV guests. */
 #define _XEN_SYSCTL_PHYSCAP_pv           1
 #define XEN_SYSCTL_PHYSCAP_pv            (1u<<_XEN_SYSCTL_PHYSCAP_pv)
- /* (x86) The platform supports direct access to I/O devices with IOMMU. */
+ /* The platform supports direct access to I/O devices with IOMMU. */
 #define _XEN_SYSCTL_PHYSCAP_directio     2
 #define XEN_SYSCTL_PHYSCAP_directio  (1u<<_XEN_SYSCTL_PHYSCAP_directio)
+/* The platform supports Hardware Assisted Paging. */
+#define _XEN_SYSCTL_PHYSCAP_hap          3
+#define XEN_SYSCTL_PHYSCAP_hap           (1u<<_XEN_SYSCTL_PHYSCAP_hap)
+/* The platform supports software paging. */
+#define _XEN_SYSCTL_PHYSCAP_shadow       4
+#define XEN_SYSCTL_PHYSCAP_shadow        (1u<<_XEN_SYSCTL_PHYSCAP_shadow)
+/* The platform supports sharing of HAP page tables with the IOMMU. */
+#define _XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share 5
+#define XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share  \
+    (1u << _XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share)
+
+/* Max XEN_SYSCTL_PHYSCAP_* constant.  Used for ABI checking. */
+#define XEN_SYSCTL_PHYSCAP_MAX XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share
+
 struct xen_sysctl_physinfo {
     uint32_t threads_per_core;
     uint32_t cores_per_socket;
@@ -246,8 +259,27 @@ struct xen_sysctl_get_pmstat {
 struct xen_sysctl_cpu_hotplug {
     /* IN variables */
     uint32_t cpu;   /* Physical cpu. */
+
+    /* Single CPU enable/disable. */
 #define XEN_SYSCTL_CPU_HOTPLUG_ONLINE  0
 #define XEN_SYSCTL_CPU_HOTPLUG_OFFLINE 1
+
+    /*
+     * SMT enable/disable.
+     *
+     * These two ops loop over all present CPUs, and either online or offline
+     * every non-primary sibling thread (those with a thread id which is not
+     * 0).  This behaviour is chosen to simplify the implementation.
+     *
+     * They are intended as a shorthand for identifying and feeding the cpu
+     * numbers individually to HOTPLUG_{ON,OFF}LINE.
+     *
+     * These are not expected to be used in conjunction with debugging options
+     * such as `maxcpus=` or when other manual configuration of offline cpus
+     * is in use.
+     */
+#define XEN_SYSCTL_CPU_HOTPLUG_SMT_ENABLE  2
+#define XEN_SYSCTL_CPU_HOTPLUG_SMT_DISABLE 3
     uint32_t op;    /* hotplug opcode */
 };
 
@@ -332,7 +364,11 @@ struct xen_sysctl_pm_op {
     /* set/reset scheduler power saving option */
     #define XEN_SYSCTL_pm_op_set_sched_opt_smt    0x21
 
-    /* cpuidle max_cstate access command */
+    /*
+     * cpuidle max C-state and max C-sub-state access command:
+     * Set cpuid to 0 for max C-state.
+     * Set cpuid to 1 for max C-sub-state.
+     */
     #define XEN_SYSCTL_pm_op_get_max_cstate       0x22
     #define XEN_SYSCTL_pm_op_set_max_cstate       0x23
 
@@ -352,6 +388,7 @@ struct xen_sysctl_pm_op {
         struct xen_set_cpufreq_para set_para;
         uint64_aligned_t get_avgfreq;
         uint32_t                    set_sched_opt_smt;
+#define XEN_SYSCTL_CX_UNLIMITED 0xffffffff
         uint32_t                    get_max_cstate;
         uint32_t                    set_max_cstate;
     } u;
@@ -732,110 +769,6 @@ struct xen_sysctl_psr_alloc {
     } u;
 };
 
-#define XEN_SYSCTL_TMEM_OP_ALL_CLIENTS 0xFFFFU
-
-#define XEN_SYSCTL_TMEM_OP_THAW                   0
-#define XEN_SYSCTL_TMEM_OP_FREEZE                 1
-#define XEN_SYSCTL_TMEM_OP_FLUSH                  2
-#define XEN_SYSCTL_TMEM_OP_DESTROY                3
-#define XEN_SYSCTL_TMEM_OP_LIST                   4
-#define XEN_SYSCTL_TMEM_OP_GET_CLIENT_INFO        5
-#define XEN_SYSCTL_TMEM_OP_SET_CLIENT_INFO        6
-#define XEN_SYSCTL_TMEM_OP_GET_POOLS              7
-#define XEN_SYSCTL_TMEM_OP_QUERY_FREEABLE_MB      8
-#define XEN_SYSCTL_TMEM_OP_SET_POOLS              9
-#define XEN_SYSCTL_TMEM_OP_SAVE_BEGIN             10
-#define XEN_SYSCTL_TMEM_OP_SET_AUTH               11
-#define XEN_SYSCTL_TMEM_OP_SAVE_GET_NEXT_PAGE     19
-#define XEN_SYSCTL_TMEM_OP_SAVE_GET_NEXT_INV      20
-#define XEN_SYSCTL_TMEM_OP_SAVE_END               21
-#define XEN_SYSCTL_TMEM_OP_RESTORE_BEGIN          30
-#define XEN_SYSCTL_TMEM_OP_RESTORE_PUT_PAGE       32
-#define XEN_SYSCTL_TMEM_OP_RESTORE_FLUSH_PAGE     33
-
-/*
- * XEN_SYSCTL_TMEM_OP_SAVE_GET_NEXT_[PAGE|INV] override the 'buf' in
- * xen_sysctl_tmem_op with this structure - sometimes with an extra
- * page tackled on.
- */
-struct tmem_handle {
-    uint32_t pool_id;
-    uint32_t index;
-    xen_tmem_oid_t oid;
-};
-
-/*
- * XEN_SYSCTL_TMEM_OP_[GET,SAVE]_CLIENT uses the 'client' in
- * xen_tmem_op with this structure, which is mostly used during migration.
- */
-struct xen_tmem_client {
-    uint32_t version;   /* If mismatched we will get XEN_EOPNOTSUPP. */
-    uint32_t maxpools;  /* If greater than what hypervisor supports, will get
-                           XEN_ERANGE. */
-    uint32_t nr_pools;  /* Current amount of pools. Ignored on SET*/
-    union {             /* See TMEM_CLIENT_[COMPRESS,FROZEN] */
-        uint32_t raw;
-        struct {
-            uint8_t frozen:1,
-                    compress:1,
-                    migrating:1;
-        } u;
-    } flags;
-    uint32_t weight;
-};
-typedef struct xen_tmem_client xen_tmem_client_t;
-DEFINE_XEN_GUEST_HANDLE(xen_tmem_client_t);
-
-/*
- * XEN_SYSCTL_TMEM_OP_[GET|SET]_POOLS or XEN_SYSCTL_TMEM_OP_SET_AUTH
- * uses the 'pool' array in * xen_sysctl_tmem_op with this structure.
- * The XEN_SYSCTL_TMEM_OP_GET_POOLS hypercall will
- * return the number of entries in 'pool' or a negative value
- * if an error was encountered.
- * The XEN_SYSCTL_TMEM_OP_SET_[AUTH|POOLS] will return the number of
- * entries in 'pool' processed or a negative value if an error
- * was encountered.
- */
-struct xen_tmem_pool_info {
-    union {
-        uint32_t raw;
-        struct {
-            uint32_t persist:1,    /* See TMEM_POOL_PERSIST. */
-                     shared:1,     /* See TMEM_POOL_SHARED. */
-                     auth:1,       /* See TMEM_POOL_AUTH. */
-                     rsv1:1,
-                     pagebits:8,   /* TMEM_POOL_PAGESIZE_[SHIFT,MASK]. */
-                     rsv2:12,
-                     version:8;    /* TMEM_POOL_VERSION_[SHIFT,MASK]. */
-        } u;
-    } flags;
-    uint32_t id;                  /* Less than tmem_client.maxpools. */
-    uint64_t n_pages;             /* Zero on XEN_SYSCTL_TMEM_OP_SET_[AUTH|POOLS]. */
-    uint64_aligned_t uuid[2];
-};
-typedef struct xen_tmem_pool_info xen_tmem_pool_info_t;
-DEFINE_XEN_GUEST_HANDLE(xen_tmem_pool_info_t);
-
-struct xen_sysctl_tmem_op {
-    uint32_t cmd;       /* IN: XEN_SYSCTL_TMEM_OP_* . */
-    int32_t pool_id;    /* IN: 0 by default unless _SAVE_*, RESTORE_* .*/
-    uint32_t cli_id;    /* IN: client id, 0 for XEN_SYSCTL_TMEM_QUERY_FREEABLE_MB
-                           for all others can be the domain id or
-                           XEN_SYSCTL_TMEM_OP_ALL_CLIENTS for all. */
-    uint32_t len;       /* IN: length of 'buf'. If not applicable to use 0. */
-    uint32_t arg;       /* IN: If not applicable to command use 0. */
-    uint32_t pad;       /* Padding so structure is the same under 32 and 64. */
-    xen_tmem_oid_t oid; /* IN: If not applicable to command use 0s. */
-    union {
-        XEN_GUEST_HANDLE_64(char) buf; /* IN/OUT: Buffer to save/restore */
-        XEN_GUEST_HANDLE_64(xen_tmem_client_t) client; /* IN/OUT for */
-                        /*  XEN_SYSCTL_TMEM_OP_[GET,SAVE]_CLIENT. */
-        XEN_GUEST_HANDLE_64(xen_tmem_pool_info_t) pool; /* OUT for */
-                        /* XEN_SYSCTL_TMEM_OP_GET_POOLS. Must have 'len' */
-                        /* of them. */
-    } u;
-};
-
 /*
  * XEN_SYSCTL_get_cpu_levelling_caps (x86 specific)
  *
@@ -1124,7 +1057,7 @@ struct xen_sysctl {
 #define XEN_SYSCTL_psr_cmt_op                    21
 #define XEN_SYSCTL_pcitopoinfo                   22
 #define XEN_SYSCTL_psr_alloc                     23
-#define XEN_SYSCTL_tmem_op                       24
+/* #define XEN_SYSCTL_tmem_op                       24 */
 #define XEN_SYSCTL_get_cpu_levelling_caps        25
 #define XEN_SYSCTL_get_cpu_featureset            26
 #define XEN_SYSCTL_livepatch_op                  27
@@ -1154,7 +1087,6 @@ struct xen_sysctl {
         struct xen_sysctl_coverage_op       coverage_op;
         struct xen_sysctl_psr_cmt_op        psr_cmt_op;
         struct xen_sysctl_psr_alloc         psr_alloc;
-        struct xen_sysctl_tmem_op           tmem_op;
         struct xen_sysctl_cpu_levelling_caps cpu_levelling_caps;
         struct xen_sysctl_cpu_featureset    cpu_featureset;
         struct xen_sysctl_livepatch_op      livepatch;

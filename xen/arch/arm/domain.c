@@ -27,11 +27,13 @@
 #include <asm/event.h>
 #include <asm/gic.h>
 #include <asm/guest_access.h>
+#include <asm/guest_atomics.h>
 #include <asm/irq.h>
 #include <asm/p2m.h>
 #include <asm/platform.h>
 #include <asm/procinfo.h>
 #include <asm/regs.h>
+#include <asm/tee/tee.h>
 #include <asm/vfp.h>
 #include <asm/vgic.h>
 #include <asm/vtimer.h>
@@ -305,6 +307,8 @@ static void update_runstate_area(struct vcpu *v)
 
 static void schedule_tail(struct vcpu *prev)
 {
+    ASSERT(prev != current);
+
     ctxt_switch_from(prev);
 
     ctxt_switch_to(current);
@@ -313,8 +317,7 @@ static void schedule_tail(struct vcpu *prev)
 
     context_saved(prev);
 
-    if ( prev != current )
-        update_runstate_area(current);
+    update_runstate_area(current);
 
     /* Ensure that the vcpu has an up-to-date time base. */
     update_vcpu_system_time(current);
@@ -343,8 +346,7 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
     ASSERT(prev != next);
     ASSERT(!vcpu_cpu_dirty(next));
 
-    if ( prev != next )
-        update_runstate_area(prev);
+    update_runstate_area(prev);
 
     local_irq_disable();
 
@@ -557,7 +559,6 @@ int arch_vcpu_create(struct vcpu *v)
                                            - sizeof(struct cpu_info));
     memset(v->arch.cpu_info, 0, sizeof(*v->arch.cpu_info));
 
-    memset(&v->arch.saved_context, 0, sizeof(v->arch.saved_context));
     v->arch.saved_context.sp = (register_t)v->arch.cpu_info;
     v->arch.saved_context.pc = (register_t)continue_new_vcpu;
 
@@ -607,9 +608,12 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
 {
     unsigned int max_vcpus;
 
-    if ( config->flags != (XEN_DOMCTL_CDF_hvm_guest | XEN_DOMCTL_CDF_hap) )
+    /* HVM and HAP must be set. IOMMU may or may not be */
+    if ( (config->flags & ~XEN_DOMCTL_CDF_iommu) !=
+         (XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap) )
     {
-        dprintk(XENLOG_INFO, "Unsupported configuration %#x\n", config->flags);
+        dprintk(XENLOG_INFO, "Unsupported configuration %#x\n",
+                config->flags);
         return -EINVAL;
     }
 
@@ -645,6 +649,13 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
     {
         dprintk(XENLOG_INFO, "Requested vCPUs (%u) exceeds max (%u)\n",
                 config->max_vcpus, max_vcpus);
+        return -EINVAL;
+    }
+
+    if ( config->arch.tee_type != XEN_DOMCTL_CONFIG_TEE_NONE &&
+         config->arch.tee_type != tee_get_type() )
+    {
+        dprintk(XENLOG_INFO, "Unsupported TEE type\n");
         return -EINVAL;
     }
 
@@ -703,6 +714,9 @@ int arch_domain_create(struct domain *d,
         goto fail;
 
     if ( (rc = domain_vtimer_init(d, &config->arch)) != 0 )
+        goto fail;
+
+    if ( (rc = tee_domain_init(d, config->arch.tee_type)) != 0 )
         goto fail;
 
     update_domain_wallclock_time(d);
@@ -915,9 +929,7 @@ static int relinquish_memory(struct domain *d, struct page_list_head *list)
              */
             continue;
 
-        if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
-            put_page(page);
-
+        put_page_alloc_ref(page);
         put_page(page);
 
         if ( hypercall_preempt_check() )
@@ -948,6 +960,14 @@ int domain_relinquish_resources(struct domain *d)
          * allocated via a DOMCTL call XEN_DOMCTL_vuart_op.
          */
         domain_vpl011_deinit(d);
+
+        d->arch.relmem = RELMEM_tee;
+        /* Fallthrough */
+
+    case RELMEM_tee:
+        ret = tee_relinquish_resources(d);
+        if (ret )
+            return ret;
 
         d->arch.relmem = RELMEM_xen;
         /* Fallthrough */
@@ -1017,7 +1037,7 @@ void arch_dump_vcpu_info(struct vcpu *v)
 
 void vcpu_mark_events_pending(struct vcpu *v)
 {
-    int already_pending = test_and_set_bit(
+    bool already_pending = guest_test_and_set_bit(v->domain,
         0, (unsigned long *)&vcpu_info(v, evtchn_upcall_pending));
 
     if ( already_pending )
