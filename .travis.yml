@@ -9,7 +9,7 @@ language: c
 os:
     - linux
 
-dist: trusty
+dist: bionic
 sudo: required
 
 branches:
@@ -18,9 +18,9 @@ branches:
 
 before_install:
     - echo -n | openssl s_client -connect https://scan.coverity.com:443 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' | sudo tee -a /etc/ssl/certs/ca-
-    - wget -c http://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.4.1-2019.02-x86_64_aarch64-linux-gnu.tar.xz
-    - tar xf gcc-linaro-7.4.1-2019.02-x86_64_aarch64-linux-gnu.tar.xz
-    - export PATH=$PWD/gcc-linaro-7.4.1-2019.02-x86_64_aarch64-linux-gnu/bin/:$PATH
+    - wget -c https://developer.arm.com/-/media/Files/downloads/gnu-a/8.3-2019.03/binrel/gcc-arm-8.3-2019.03-x86_64-aarch64-linux-gnu.tar.xz
+    - tar xf gcc-arm-8.3-2019.03-x86_64-aarch64-linux-gnu.tar.xz
+    - export PATH=$PWD/gcc-arm-8.3-2019.03-x86_64-aarch64-linux-gnu/bin/:$PATH
     - aarch64-linux-gnu-gcc --version
     # exporting the variable to be used by make utility
     - export CROSS_COMPILE=aarch64-linux-gnu-
@@ -30,9 +30,6 @@ before_install:
 addons:
     apt:
         update: true
-        sources:
-            - ubuntu-toolchain-r-test
-            - llvm-toolchain-trusty-6.0
         packages:
             - zlib1g-dev
             - libncurses5-dev
@@ -57,8 +54,8 @@ addons:
             - libfindlib-ocaml-dev
             - transfig
             - pandoc
-            - gcc-7
-            - g++-7
+            - gcc-8
+            - g++-8
             - clang-6.0
     coverity_scan:
         project:
