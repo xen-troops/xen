@@ -46,19 +46,29 @@
 #define PG_SH_enable   0
 #define PG_SH_forced   0
 #endif
+#ifdef CONFIG_HVM
 #define PG_HAP_enable  (1U << PG_HAP_shift)
+#else
+#define PG_HAP_enable  0
+#endif
 
 /* common paging mode bits */
 #define PG_mode_shift  10 
+#ifdef CONFIG_HVM
 /* Refcounts based on shadow tables instead of guest tables */
 #define PG_refcounts   (XEN_DOMCTL_SHADOW_ENABLE_REFCOUNT << PG_mode_shift)
-/* Enable log dirty mode */
-#define PG_log_dirty   (XEN_DOMCTL_SHADOW_ENABLE_LOG_DIRTY << PG_mode_shift)
 /* Xen does p2m translation, not guest */
 #define PG_translate   (XEN_DOMCTL_SHADOW_ENABLE_TRANSLATE << PG_mode_shift)
 /* Xen does not steal address space from the domain for its own booking;
  * requires VT or similar mechanisms */
 #define PG_external    (XEN_DOMCTL_SHADOW_ENABLE_EXTERNAL << PG_mode_shift)
+#else
+#define PG_refcounts   0
+#define PG_translate   0
+#define PG_external    0
+#endif
+/* Enable log dirty mode */
+#define PG_log_dirty   (XEN_DOMCTL_SHADOW_ENABLE_LOG_DIRTY << PG_mode_shift)
 
 /* All paging modes. */
 #define PG_MASK (PG_refcounts | PG_log_dirty | PG_translate | PG_external)
@@ -147,7 +157,7 @@ void paging_log_dirty_range(struct domain *d,
                             uint8_t *dirty_bitmap);
 
 /* enable log dirty */
-int paging_log_dirty_enable(struct domain *d, bool_t log_global);
+int paging_log_dirty_enable(struct domain *d, bool log_global);
 
 /* log dirty initialization */
 void paging_log_dirty_init(struct domain *d, const struct log_dirty_ops *ops);
@@ -197,7 +207,7 @@ void paging_vcpu_init(struct vcpu *v);
 
 /* Set up the paging-assistance-specific parts of a domain struct at
  * start of day.  Called for every domain from arch_domain_create() */
-int paging_domain_init(struct domain *d, unsigned int domcr_flags);
+int paging_domain_init(struct domain *d);
 
 /* Handler for paging-control ops: operations from user-space to enable
  * and disable ephemeral shadow modes (test mode and log-dirty mode) and
@@ -373,7 +383,7 @@ static inline bool gfn_valid(const struct domain *d, gfn_t gfn)
 }
 
 /* Maxphysaddr supportable by the paging infrastructure. */
-static inline unsigned int paging_max_paddr_bits(const struct domain *d)
+static always_inline unsigned int paging_max_paddr_bits(const struct domain *d)
 {
     unsigned int bits = paging_mode_hap(d) ? hap_paddr_bits : paddr_bits;
 

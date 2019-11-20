@@ -146,7 +146,7 @@ static void control_write(const struct pci_dev *pdev, unsigned int reg,
 
     val = control_read(pdev, reg, data);
     if ( pci_msi_conf_write_intercept(msix->pdev, reg, 2, &val) >= 0 )
-        pci_conf_write16(pdev->seg, pdev->bus, slot, func, reg, val);
+        pci_conf_write16(pdev->sbdf, reg, val);
 }
 
 static struct vpci_msix *msix_find(const struct domain *d, unsigned long addr)
@@ -457,8 +457,7 @@ static int init_msix(struct pci_dev *pdev)
     if ( !msix_offset )
         return 0;
 
-    control = pci_conf_read16(pdev->seg, pdev->bus, slot, func,
-                              msix_control_reg(msix_offset));
+    control = pci_conf_read16(pdev->sbdf, msix_control_reg(msix_offset));
 
     max_entries = msix_table_size(control);
 
@@ -470,11 +469,9 @@ static int init_msix(struct pci_dev *pdev)
     pdev->vpci->msix->pdev = pdev;
 
     pdev->vpci->msix->tables[VPCI_MSIX_TABLE] =
-        pci_conf_read32(pdev->seg, pdev->bus, slot, func,
-                        msix_table_offset_reg(msix_offset));
+        pci_conf_read32(pdev->sbdf, msix_table_offset_reg(msix_offset));
     pdev->vpci->msix->tables[VPCI_MSIX_PBA] =
-        pci_conf_read32(pdev->seg, pdev->bus, slot, func,
-                        msix_pba_offset_reg(msix_offset));
+        pci_conf_read32(pdev->sbdf, msix_pba_offset_reg(msix_offset));
 
     for ( i = 0; i < pdev->vpci->msix->max_entries; i++)
     {

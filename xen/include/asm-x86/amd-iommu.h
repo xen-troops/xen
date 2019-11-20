@@ -46,11 +46,6 @@ typedef struct cmd_entry
 {
     uint32_t data[4];
 } cmd_entry_t;
-
-typedef struct dev_entry
-{
-    uint32_t data[8];
-} dev_entry_t;
 #pragma pack()
 
 struct table_struct {
@@ -88,10 +83,12 @@ struct amd_iommu {
     iommu_cap_t cap;
 
     u8 ht_flags;
-    u64 features;
+    union amd_iommu_ext_features features;
 
     void *mmio_base;
     unsigned long mmio_base_phys;
+
+    union amd_iommu_control ctrl;
 
     struct table_struct dev_table;
     struct ring_buffer cmd_buffer;
@@ -109,11 +106,16 @@ struct amd_iommu {
 };
 
 struct ivrs_mappings {
-    u16 dte_requestor_id;
-    u8 dte_allow_exclusion;
-    u8 unity_map_enable;
-    u8 write_permission;
-    u8 read_permission;
+    uint16_t dte_requestor_id;
+    bool valid:1;
+    bool dte_allow_exclusion:1;
+    bool unity_map_enable:1;
+    bool write_permission:1;
+    bool read_permission:1;
+
+    /* ivhd device data settings */
+    uint8_t device_flags;
+
     unsigned long addr_range_start;
     unsigned long addr_range_length;
     struct amd_iommu *iommu;
@@ -122,9 +124,6 @@ struct ivrs_mappings {
     void *intremap_table;
     unsigned long *intremap_inuse;
     spinlock_t intremap_lock;
-
-    /* ivhd device data settings */
-    u8 device_flags;
 };
 
 extern unsigned int ivrs_bdf_entries;
@@ -132,7 +131,8 @@ extern u8 ivhd_type;
 
 struct ivrs_mappings *get_ivrs_mappings(u16 seg);
 int iterate_ivrs_mappings(int (*)(u16 seg, struct ivrs_mappings *));
-int iterate_ivrs_entries(int (*)(u16 seg, struct ivrs_mappings *));
+int iterate_ivrs_entries(int (*)(const struct amd_iommu *,
+                                 struct ivrs_mappings *, uint16_t));
 
 /* iommu tables in guest space */
 struct mmio_reg {
@@ -177,9 +177,9 @@ struct guest_iommu {
     uint64_t                mmio_base;             /* MMIO base address */
 
     /* MMIO regs */
-    struct mmio_reg         reg_ctrl;              /* MMIO offset 0018h */
+    union amd_iommu_control reg_ctrl;              /* MMIO offset 0018h */
     struct mmio_reg         reg_status;            /* MMIO offset 2020h */
-    struct mmio_reg         reg_ext_feature;       /* MMIO offset 0030h */
+    union amd_iommu_ext_features reg_ext_feature;  /* MMIO offset 0030h */
 
     /* guest interrupt settings */
     struct guest_iommu_msi  msi;

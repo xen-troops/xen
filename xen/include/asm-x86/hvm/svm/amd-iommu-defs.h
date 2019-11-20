@@ -107,74 +107,58 @@
 #define IOMMU_DEV_TABLE_INT_CONTROL_FORWARDED	0x1
 #define IOMMU_DEV_TABLE_INT_CONTROL_TRANSLATED	0x2
 
-/* DeviceTable Entry[31:0] */
-#define IOMMU_DEV_TABLE_VALID_MASK			0x00000001
-#define IOMMU_DEV_TABLE_VALID_SHIFT			0
-#define IOMMU_DEV_TABLE_TRANSLATION_VALID_MASK		0x00000002
-#define IOMMU_DEV_TABLE_TRANSLATION_VALID_SHIFT		1
-#define IOMMU_DEV_TABLE_PAGING_MODE_MASK		0x00000E00
-#define IOMMU_DEV_TABLE_PAGING_MODE_SHIFT		9
-#define IOMMU_DEV_TABLE_PAGE_TABLE_PTR_LOW_MASK		0xFFFFF000
-#define IOMMU_DEV_TABLE_PAGE_TABLE_PTR_LOW_SHIFT	12
+struct amd_iommu_dte {
+    /* 0 - 63 */
+    bool v:1;
+    bool tv:1;
+    unsigned int :5;
+    unsigned int had:2;
+    unsigned int paging_mode:3;
+    uint64_t pt_root:40;
+    bool ppr:1;
+    bool gprp:1;
+    bool giov:1;
+    bool gv:1;
+    unsigned int glx:2;
+    unsigned int gcr3_trp_14_12:3;
+    bool ir:1;
+    bool iw:1;
+    unsigned int :1;
 
-/* DeviceTable Entry[63:32] */
-#define IOMMU_DEV_TABLE_GV_SHIFT                    23
-#define IOMMU_DEV_TABLE_GV_MASK                     0x800000
-#define IOMMU_DEV_TABLE_GLX_SHIFT                   24
-#define IOMMU_DEV_TABLE_GLX_MASK                    0x3000000
-#define IOMMU_DEV_TABLE_GCR3_1_SHIFT                26
-#define IOMMU_DEV_TABLE_GCR3_1_MASK                 0x1c000000
+    /* 64 - 127 */
+    unsigned int domain_id:16;
+    unsigned int gcr3_trp_30_15:16;
+    bool i:1;
+    bool se:1;
+    bool sa:1;
+    unsigned int ioctl:2;
+    bool cache:1;
+    bool sd:1;
+    bool ex:1;
+    unsigned int sys_mgt:2;
+    unsigned int :1;
+    unsigned int gcr3_trp_51_31:21;
 
-#define IOMMU_DEV_TABLE_PAGE_TABLE_PTR_HIGH_MASK	0x000FFFFF
-#define IOMMU_DEV_TABLE_PAGE_TABLE_PTR_HIGH_SHIFT	0
-#define IOMMU_DEV_TABLE_IO_READ_PERMISSION_MASK		0x20000000
-#define IOMMU_DEV_TABLE_IO_READ_PERMISSION_SHIFT	29
-#define IOMMU_DEV_TABLE_IO_WRITE_PERMISSION_MASK	0x40000000
-#define IOMMU_DEV_TABLE_IO_WRITE_PERMISSION_SHIFT	30
+    /* 128 - 191 */
+    bool iv:1;
+    unsigned int int_tab_len:4;
+    bool ig:1;
+    uint64_t it_root:46;
+    unsigned int :4;
+    bool init_pass:1;
+    bool ext_int_pass:1;
+    bool nmi_pass:1;
+    unsigned int :1;
+    unsigned int int_ctl:2;
+    bool lint0_pass:1;
+    bool lint1_pass:1;
 
-/* DeviceTable Entry[95:64] */
-#define IOMMU_DEV_TABLE_DOMAIN_ID_MASK	0x0000FFFF
-#define IOMMU_DEV_TABLE_DOMAIN_ID_SHIFT	0
-#define IOMMU_DEV_TABLE_GCR3_2_SHIFT                16
-#define IOMMU_DEV_TABLE_GCR3_2_MASK                 0xFFFF0000
-
-/* DeviceTable Entry[127:96] */
-#define IOMMU_DEV_TABLE_IOTLB_SUPPORT_MASK		0x00000001
-#define IOMMU_DEV_TABLE_IOTLB_SUPPORT_SHIFT		0
-#define IOMMU_DEV_TABLE_SUPRESS_LOGGED_PAGES_MASK	0x00000002
-#define IOMMU_DEV_TABLE_SUPRESS_LOGGED_PAGES_SHIFT	1
-#define IOMMU_DEV_TABLE_SUPRESS_ALL_PAGES_MASK		0x00000004
-#define IOMMU_DEV_TABLE_SUPRESS_ALL_PAGES_SHIFT		2
-#define IOMMU_DEV_TABLE_IO_CONTROL_MASK			0x00000018
-#define IOMMU_DEV_TABLE_IO_CONTROL_SHIFT		3
-#define IOMMU_DEV_TABLE_IOTLB_CACHE_HINT_MASK		0x00000020
-#define IOMMU_DEV_TABLE_IOTLB_CACHE_HINT_SHIFT		5
-#define IOMMU_DEV_TABLE_SNOOP_DISABLE_MASK		0x00000040
-#define IOMMU_DEV_TABLE_SNOOP_DISABLE_SHIFT		6
-#define IOMMU_DEV_TABLE_ALLOW_EXCLUSION_MASK		0x00000080
-#define IOMMU_DEV_TABLE_ALLOW_EXCLUSION_SHIFT		7
-#define IOMMU_DEV_TABLE_SYS_MGT_MSG_ENABLE_MASK		0x00000300
-#define IOMMU_DEV_TABLE_SYS_MGT_MSG_ENABLE_SHIFT	8
-
-/* DeviceTable Entry[159:128] */
-#define IOMMU_DEV_TABLE_INT_VALID_MASK          0x00000001
-#define IOMMU_DEV_TABLE_INT_VALID_SHIFT         0
-#define IOMMU_DEV_TABLE_INT_TABLE_LENGTH_MASK       0x0000001E
-#define IOMMU_DEV_TABLE_INT_TABLE_LENGTH_SHIFT      1
-#define IOMMU_DEV_TABLE_INT_TABLE_IGN_UNMAPPED_MASK      0x0000000020
-#define IOMMU_DEV_TABLE_INT_TABLE_IGN_UNMAPPED_SHIFT      5
-#define IOMMU_DEV_TABLE_INT_TABLE_PTR_LOW_MASK      0xFFFFFFC0
-#define IOMMU_DEV_TABLE_INT_TABLE_PTR_LOW_SHIFT     6
-#define IOMMU_DEV_TABLE_GCR3_3_SHIFT                11
-#define IOMMU_DEV_TABLE_GCR3_3_MASK                 0xfffff800
-
-/* DeviceTable Entry[191:160] */
-#define IOMMU_DEV_TABLE_INT_TABLE_PTR_HIGH_MASK     0x000FFFFF
-#define IOMMU_DEV_TABLE_INT_TABLE_PTR_HIGH_SHIFT    0
-#define IOMMU_DEV_TABLE_IVHD_FLAGS_SHIFT        24
-#define IOMMU_DEV_TABLE_IVHD_FLAGS_MASK         0xC7000000
-#define IOMMU_DEV_TABLE_INT_CONTROL_MASK        0x30000000
-#define IOMMU_DEV_TABLE_INT_CONTROL_SHIFT       28
+    /* 192 - 255 */
+    uint64_t :54;
+    bool attr_v:1;
+    bool mode0_fc:1;
+    unsigned int snoop_attr:8;
+};
 
 /* Command Buffer */
 #define IOMMU_CMD_BUFFER_BASE_LOW_OFFSET	0x08
@@ -311,38 +295,56 @@
 
 /* Control Register */
 #define IOMMU_CONTROL_MMIO_OFFSET			0x18
-#define IOMMU_CONTROL_TRANSLATION_ENABLE_MASK		0x00000001
-#define IOMMU_CONTROL_TRANSLATION_ENABLE_SHIFT		0
-#define IOMMU_CONTROL_HT_TUNNEL_TRANSLATION_MASK	0x00000002
-#define IOMMU_CONTROL_HT_TUNNEL_TRANSLATION_SHIFT	1
-#define IOMMU_CONTROL_EVENT_LOG_ENABLE_MASK		0x00000004
-#define IOMMU_CONTROL_EVENT_LOG_ENABLE_SHIFT		2
-#define IOMMU_CONTROL_EVENT_LOG_INT_MASK		0x00000008
-#define IOMMU_CONTROL_EVENT_LOG_INT_SHIFT		3
-#define IOMMU_CONTROL_COMP_WAIT_INT_MASK		0x00000010
-#define IOMMU_CONTROL_COMP_WAIT_INT_SHIFT		4
-#define IOMMU_CONTROL_INVALIDATION_TIMEOUT_MASK		0x000000E0
-#define IOMMU_CONTROL_INVALIDATION_TIMEOUT_SHIFT	5
-#define IOMMU_CONTROL_PASS_POSTED_WRITE_MASK		0x00000100
-#define IOMMU_CONTROL_PASS_POSTED_WRITE_SHIFT		8
-#define IOMMU_CONTROL_RESP_PASS_POSTED_WRITE_MASK	0x00000200
-#define IOMMU_CONTROL_RESP_PASS_POSTED_WRITE_SHIFT	9
-#define IOMMU_CONTROL_COHERENT_MASK			0x00000400
-#define IOMMU_CONTROL_COHERENT_SHIFT			10
-#define IOMMU_CONTROL_ISOCHRONOUS_MASK			0x00000800
-#define IOMMU_CONTROL_ISOCHRONOUS_SHIFT			11
-#define IOMMU_CONTROL_COMMAND_BUFFER_ENABLE_MASK	0x00001000
-#define IOMMU_CONTROL_COMMAND_BUFFER_ENABLE_SHIFT	12
-#define IOMMU_CONTROL_PPR_LOG_ENABLE_MASK		0x00002000
-#define IOMMU_CONTROL_PPR_LOG_ENABLE_SHIFT		13
-#define IOMMU_CONTROL_PPR_LOG_INT_MASK			0x00004000
-#define IOMMU_CONTROL_PPR_LOG_INT_SHIFT			14
-#define IOMMU_CONTROL_PPR_ENABLE_MASK			0x00008000
-#define IOMMU_CONTROL_PPR_ENABLE_SHIFT			15
-#define IOMMU_CONTROL_GT_ENABLE_MASK			0x00010000
-#define IOMMU_CONTROL_GT_ENABLE_SHIFT			16
-#define IOMMU_CONTROL_RESTART_MASK			0x80000000
-#define IOMMU_CONTROL_RESTART_SHIFT			31
+
+union amd_iommu_control {
+    uint64_t raw;
+    struct {
+        bool iommu_en:1;
+        bool ht_tun_en:1;
+        bool event_log_en:1;
+        bool event_int_en:1;
+        bool com_wait_int_en:1;
+        unsigned int inv_timeout:3;
+        bool pass_pw:1;
+        bool res_pass_pw:1;
+        bool coherent:1;
+        bool isoc:1;
+        bool cmd_buf_en:1;
+        bool ppr_log_en:1;
+        bool ppr_int_en:1;
+        bool ppr_en:1;
+        bool gt_en:1;
+        bool ga_en:1;
+        unsigned int crw:4;
+        bool smif_en:1;
+        bool slf_wb_dis:1;
+        bool smif_log_en:1;
+        unsigned int gam_en:3;
+        bool ga_log_en:1;
+        bool ga_int_en:1;
+        unsigned int dual_ppr_log_en:2;
+        unsigned int dual_event_log_en:2;
+        unsigned int dev_tbl_seg_en:3;
+        unsigned int priv_abrt_en:2;
+        bool ppr_auto_rsp_en:1;
+        bool marc_en:1;
+        bool blk_stop_mrk_en:1;
+        bool ppr_auto_rsp_aon:1;
+        bool domain_id_pne:1;
+        unsigned int :1;
+        bool eph_en:1;
+        unsigned int had_update:2;
+        bool gd_update_dis:1;
+        unsigned int :1;
+        bool xt_en:1;
+        bool int_cap_xt_en:1;
+        bool vcmd_en:1;
+        bool viommu_en:1;
+        bool ga_update_dis:1;
+        bool gappi_en:1;
+        unsigned int :8;
+    };
+};
 
 /* Exclusion Register */
 #define IOMMU_EXCLUSION_BASE_LOW_OFFSET		0x20
@@ -362,26 +364,76 @@
 #define IOMMU_EXCLUSION_LIMIT_HIGH_MASK		0xFFFFFFFF
 #define IOMMU_EXCLUSION_LIMIT_HIGH_SHIFT	0
 
-/* Extended Feature Register*/
+/* Extended Feature Register */
 #define IOMMU_EXT_FEATURE_MMIO_OFFSET                   0x30
-#define IOMMU_EXT_FEATURE_PREFSUP_SHIFT                 0x0
-#define IOMMU_EXT_FEATURE_PPRSUP_SHIFT                  0x1
-#define IOMMU_EXT_FEATURE_XTSUP_SHIFT                   0x2
-#define IOMMU_EXT_FEATURE_NXSUP_SHIFT                   0x3
-#define IOMMU_EXT_FEATURE_GTSUP_SHIFT                   0x4
-#define IOMMU_EXT_FEATURE_IASUP_SHIFT                   0x6
-#define IOMMU_EXT_FEATURE_GASUP_SHIFT                   0x7
-#define IOMMU_EXT_FEATURE_HESUP_SHIFT                   0x8
-#define IOMMU_EXT_FEATURE_PCSUP_SHIFT                   0x9
-#define IOMMU_EXT_FEATURE_HATS_SHIFT                    0x10
-#define IOMMU_EXT_FEATURE_HATS_MASK                     0x00000C00
-#define IOMMU_EXT_FEATURE_GATS_SHIFT                    0x12
-#define IOMMU_EXT_FEATURE_GATS_MASK                     0x00003000
-#define IOMMU_EXT_FEATURE_GLXSUP_SHIFT                  0x14
-#define IOMMU_EXT_FEATURE_GLXSUP_MASK                   0x0000C000
 
-#define IOMMU_EXT_FEATURE_PASMAX_SHIFT                  0x0
-#define IOMMU_EXT_FEATURE_PASMAX_MASK                   0x0000001F
+union amd_iommu_ext_features {
+    uint64_t raw;
+    struct {
+        unsigned int pref_sup:1;
+        unsigned int ppr_sup:1;
+        unsigned int xt_sup:1;
+        unsigned int nx_sup:1;
+        unsigned int gt_sup:1;
+        unsigned int gappi_sup:1;
+        unsigned int ia_sup:1;
+        unsigned int ga_sup:1;
+        unsigned int he_sup:1;
+        unsigned int pc_sup:1;
+        unsigned int hats:2;
+        unsigned int gats:2;
+        unsigned int glx_sup:2;
+        unsigned int smif_sup:2;
+        unsigned int smif_rc:3;
+        unsigned int gam_sup:3;
+        unsigned int dual_ppr_log_sup:2;
+        unsigned int :2;
+        unsigned int dual_event_log_sup:2;
+        unsigned int :1;
+        unsigned int sats_sup:1;
+        unsigned int pas_max:5;
+        unsigned int us_sup:1;
+        unsigned int dev_tbl_seg_sup:2;
+        unsigned int ppr_early_of_sup:1;
+        unsigned int ppr_auto_rsp_sup:1;
+        unsigned int marc_sup:2;
+        unsigned int blk_stop_mrk_sup:1;
+        unsigned int perf_opt_sup:1;
+        unsigned int msi_cap_mmio_sup:1;
+        unsigned int :1;
+        unsigned int gio_sup:1;
+        unsigned int ha_sup:1;
+        unsigned int eph_sup:1;
+        unsigned int attr_fw_sup:1;
+        unsigned int hd_sup:1;
+        unsigned int :1;
+        unsigned int inv_iotlb_type_sup:1;
+        unsigned int viommu_sup:1;
+        unsigned int vm_guard_io_sup:1;
+        unsigned int vm_table_size:4;
+        unsigned int ga_update_dis_sup:1;
+        unsigned int :2;
+    } flds;
+};
+
+/* x2APIC Control Registers */
+#define IOMMU_XT_INT_CTRL_MMIO_OFFSET		0x0170
+#define IOMMU_XT_PPR_INT_CTRL_MMIO_OFFSET	0x0178
+#define IOMMU_XT_GA_INT_CTRL_MMIO_OFFSET	0x0180
+
+union amd_iommu_x2apic_control {
+    uint64_t raw;
+    struct {
+        unsigned int :2;
+        unsigned int dest_mode:1;
+        unsigned int :5;
+        unsigned int dest_lo:24;
+        unsigned int vector:8;
+        unsigned int int_type:1; /* DM in IOMMU spec 3.04 */
+        unsigned int :15;
+        unsigned int dest_hi:8;
+    };
+};
 
 /* Status Register*/
 #define IOMMU_STATUS_MMIO_OFFSET		0x2020
@@ -413,38 +465,21 @@
 #define IOMMU_PAGE_TABLE_U32_PER_ENTRY	(IOMMU_PAGE_TABLE_ENTRY_SIZE / 4)
 #define IOMMU_PAGE_TABLE_ALIGNMENT	4096
 
-#define IOMMU_PTE_PRESENT_MASK			0x00000001
-#define IOMMU_PTE_PRESENT_SHIFT			0
-#define IOMMU_PTE_NEXT_LEVEL_MASK		0x00000E00
-#define IOMMU_PTE_NEXT_LEVEL_SHIFT		9
-#define IOMMU_PTE_ADDR_LOW_MASK			0xFFFFF000
-#define IOMMU_PTE_ADDR_LOW_SHIFT		12
-#define IOMMU_PTE_ADDR_HIGH_MASK		0x000FFFFF
-#define IOMMU_PTE_ADDR_HIGH_SHIFT		0
-#define IOMMU_PTE_U_MASK			0x08000000
-#define IOMMU_PTE_U_SHIFT			7
-#define IOMMU_PTE_FC_MASK			0x10000000
-#define IOMMU_PTE_FC_SHIFT			28
-#define IOMMU_PTE_IO_READ_PERMISSION_MASK	0x20000000
-#define IOMMU_PTE_IO_READ_PERMISSION_SHIFT	29
-#define IOMMU_PTE_IO_WRITE_PERMISSION_MASK	0x40000000
-#define IOMMU_PTE_IO_WRITE_PERMISSION_SHIFT	30
-
-/* I/O Page Directory */
-#define IOMMU_PAGE_DIRECTORY_ENTRY_SIZE		8
-#define IOMMU_PAGE_DIRECTORY_ALIGNMENT		4096
-#define IOMMU_PDE_PRESENT_MASK			0x00000001
-#define IOMMU_PDE_PRESENT_SHIFT			0
-#define IOMMU_PDE_NEXT_LEVEL_MASK		0x00000E00
-#define IOMMU_PDE_NEXT_LEVEL_SHIFT		9
-#define IOMMU_PDE_ADDR_LOW_MASK			0xFFFFF000
-#define IOMMU_PDE_ADDR_LOW_SHIFT		12
-#define IOMMU_PDE_ADDR_HIGH_MASK		0x000FFFFF
-#define IOMMU_PDE_ADDR_HIGH_SHIFT		0
-#define IOMMU_PDE_IO_READ_PERMISSION_MASK	0x20000000
-#define IOMMU_PDE_IO_READ_PERMISSION_SHIFT	29
-#define IOMMU_PDE_IO_WRITE_PERMISSION_MASK	0x40000000
-#define IOMMU_PDE_IO_WRITE_PERMISSION_SHIFT	30
+struct amd_iommu_pte {
+    uint64_t pr:1;
+    uint64_t ignored0:4;
+    uint64_t a:1;
+    uint64_t d:1;
+    uint64_t ignored1:2;
+    uint64_t next_level:3;
+    uint64_t mfn:40;
+    uint64_t reserved:7;
+    uint64_t u:1;
+    uint64_t fc:1;
+    uint64_t ir:1;
+    uint64_t iw:1;
+    uint64_t ignored2:1;
+};
 
 /* Paging modes */
 #define IOMMU_PAGING_MODE_DISABLED	0x0
@@ -452,22 +487,6 @@
 /* Flags */
 #define IOMMU_CONTROL_DISABLED	0
 #define IOMMU_CONTROL_ENABLED	1
-
-/* interrupt remapping table */
-#define INT_REMAP_ENTRY_REMAPEN_MASK    0x00000001
-#define INT_REMAP_ENTRY_REMAPEN_SHIFT   0
-#define INT_REMAP_ENTRY_SUPIOPF_MASK    0x00000002
-#define INT_REMAP_ENTRY_SUPIOPF_SHIFT   1
-#define INT_REMAP_ENTRY_INTTYPE_MASK    0x0000001C
-#define INT_REMAP_ENTRY_INTTYPE_SHIFT   2
-#define INT_REMAP_ENTRY_REQEOI_MASK     0x00000020
-#define INT_REMAP_ENTRY_REQEOI_SHIFT    5
-#define INT_REMAP_ENTRY_DM_MASK         0x00000040
-#define INT_REMAP_ENTRY_DM_SHIFT        6
-#define INT_REMAP_ENTRY_DEST_MAST       0x0000FF00
-#define INT_REMAP_ENTRY_DEST_SHIFT      8
-#define INT_REMAP_ENTRY_VECTOR_MASK     0x00FF0000
-#define INT_REMAP_ENTRY_VECTOR_SHIFT    16
 
 #define INV_IOMMU_ALL_PAGES_ADDRESS      ((1ULL << 63) - 1)
 

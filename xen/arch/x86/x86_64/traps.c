@@ -251,7 +251,7 @@ void do_double_fault(struct cpu_user_regs *regs)
 
     console_force_unlock();
 
-    asm ( "lsll %1, %0" : "=r" (cpu) : "rm" (PER_CPU_GDT_ENTRY << 3) );
+    asm ( "lsll %1, %0" : "=r" (cpu) : "rm" (PER_CPU_SELECTOR) );
 
     /* Find information saved during fault and dump it to the console. */
     printk("*** DOUBLE FAULT ***\n");
@@ -334,8 +334,7 @@ void subarch_percpu_traps_init(void)
                                    (unsigned long)lstar_enter);
     stub_va += offset;
 
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL ||
-         boot_cpu_data.x86_vendor == X86_VENDOR_CENTAUR )
+    if ( cpu_has_sep )
     {
         /* SYSENTER entry. */
         wrmsrl(MSR_IA32_SYSENTER_ESP, stack_bottom);
@@ -359,19 +358,6 @@ void subarch_percpu_traps_init(void)
     /* Common SYSCALL parameters. */
     wrmsrl(MSR_STAR, XEN_MSR_STAR);
     wrmsrl(MSR_SYSCALL_MASK, XEN_SYSCALL_MASK);
-}
-
-void hypercall_page_initialise(struct domain *d, void *hypercall_page)
-{
-    memset(hypercall_page, 0xCC, PAGE_SIZE);
-    if ( is_hvm_domain(d) )
-        hvm_hypercall_page_initialise(d, hypercall_page);
-    else if ( is_pv_64bit_domain(d) )
-        hypercall_page_initialise_ring3_kernel(hypercall_page);
-    else if ( is_pv_32bit_domain(d) )
-        hypercall_page_initialise_ring1_kernel(hypercall_page);
-    else
-        ASSERT_UNREACHABLE();
 }
 
 /*

@@ -28,6 +28,7 @@
 #define HvFlushVirtualAddressSpace 0x0002
 #define HvFlushVirtualAddressList  0x0003
 #define HvNotifyLongSpinWait       0x0008
+#define HvSendSyntheticClusterIpi  0x000b
 #define HvGetPartitionId           0x0046
 #define HvExtCallQueryCapabilities 0x8001
 
@@ -89,11 +90,13 @@ typedef union _HV_CRASH_CTL_REG_CONTENTS
 
 /* Viridian CPUID leaf 3, Hypervisor Feature Indication */
 #define CPUID3D_CRASH_MSRS (1 << 10)
+#define CPUID3D_SINT_POLLING (1 << 17)
 
 /* Viridian CPUID leaf 4: Implementation Recommendations. */
 #define CPUID4A_HCALL_REMOTE_TLB_FLUSH (1 << 2)
 #define CPUID4A_MSR_BASED_APIC         (1 << 3)
 #define CPUID4A_RELAX_TIMER_INT        (1 << 5)
+#define CPUID4A_SYNTHETIC_CLUSTER_IPI  (1 << 10)
 
 /* Viridian CPUID leaf 6: Implementation HW features detected and in use */
 #define CPUID6A_APIC_OVERLAY    (1 << 0)
@@ -122,6 +125,7 @@ void cpuid_viridian_leaves(const struct vcpu *v, uint32_t leaf,
                            uint32_t subleaf, struct cpuid_leaf *res)
 {
     const struct domain *d = v->domain;
+    const struct viridian_domain *vd = d->arch.hvm.viridian;
 
     ASSERT(is_viridian_domain(d));
     ASSERT(leaf >= 0x40000000 && leaf < 0x40000100);
@@ -146,7 +150,7 @@ void cpuid_viridian_leaves(const struct vcpu *v, uint32_t leaf,
          * Hypervisor information, but only if the guest has set its
          * own version number.
          */
-        if ( d->arch.hvm.viridian.guest_os_id.raw == 0 )
+        if ( vd->guest_os_id.raw == 0 )
             break;
         res->a = viridian_build;
         res->b = ((uint32_t)viridian_major << 16) | viridian_minor;
@@ -177,6 +181,10 @@ void cpuid_viridian_leaves(const struct vcpu *v, uint32_t leaf,
             mask.AccessPartitionReferenceCounter = 1;
         if ( viridian_feature_mask(d) & HVMPV_reference_tsc )
             mask.AccessPartitionReferenceTsc = 1;
+        if ( viridian_feature_mask(d) & HVMPV_synic )
+            mask.AccessSynicRegs = 1;
+        if ( viridian_feature_mask(d) & HVMPV_stimer )
+            mask.AccessSyntheticTimerRegs = 1;
 
         u.mask = mask;
 
@@ -185,20 +193,23 @@ void cpuid_viridian_leaves(const struct vcpu *v, uint32_t leaf,
 
         if ( viridian_feature_mask(d) & HVMPV_crash_ctl )
             res->d = CPUID3D_CRASH_MSRS;
+        if ( viridian_feature_mask(d) & HVMPV_synic )
+            res->d |= CPUID3D_SINT_POLLING;
 
         break;
     }
 
     case 4:
         /* Recommended hypercall usage. */
-        if ( (d->arch.hvm.viridian.guest_os_id.raw == 0) ||
-             (d->arch.hvm.viridian.guest_os_id.fields.os < 4) )
+        if ( vd->guest_os_id.raw == 0 || vd->guest_os_id.os < 4 )
             break;
         res->a = CPUID4A_RELAX_TIMER_INT;
         if ( viridian_feature_mask(d) & HVMPV_hcall_remote_tlb_flush )
             res->a |= CPUID4A_HCALL_REMOTE_TLB_FLUSH;
         if ( !cpu_has_vmx_apic_reg_virt )
             res->a |= CPUID4A_MSR_BASED_APIC;
+        if ( viridian_feature_mask(d) & HVMPV_hcall_ipi )
+            res->a |= CPUID4A_SYNTHETIC_CLUSTER_IPI;
 
         /*
          * This value is the recommended number of attempts to try to
@@ -224,30 +235,28 @@ static void dump_guest_os_id(const struct domain *d)
 {
     const union viridian_guest_os_id_msr *goi;
 
-    goi = &d->arch.hvm.viridian.guest_os_id;
+    goi = &d->arch.hvm.viridian->guest_os_id;
 
     printk(XENLOG_G_INFO
            "d%d: VIRIDIAN GUEST_OS_ID: vendor: %x os: %x major: %x minor: %x sp: %x build: %x\n",
-           d->domain_id,
-           goi->fields.vendor, goi->fields.os,
-           goi->fields.major, goi->fields.minor,
-           goi->fields.service_pack, goi->fields.build_number);
+           d->domain_id, goi->vendor, goi->os, goi->major, goi->minor,
+           goi->service_pack, goi->build_number);
 }
 
 static void dump_hypercall(const struct domain *d)
 {
     const union viridian_page_msr *hg;
 
-    hg = &d->arch.hvm.viridian.hypercall_gpa;
+    hg = &d->arch.hvm.viridian->hypercall_gpa;
 
     printk(XENLOG_G_INFO "d%d: VIRIDIAN HYPERCALL: enabled: %x pfn: %lx\n",
            d->domain_id,
-           hg->fields.enabled, (unsigned long)hg->fields.pfn);
+           hg->enabled, (unsigned long)hg->pfn);
 }
 
 static void enable_hypercall_page(struct domain *d)
 {
-    unsigned long gmfn = d->arch.hvm.viridian.hypercall_gpa.fields.pfn;
+    unsigned long gmfn = d->arch.hvm.viridian->hypercall_gpa.pfn;
     struct page_info *page = get_page_from_gfn(d, gmfn, NULL, P2M_ALLOC);
     uint8_t *p;
 
@@ -281,21 +290,23 @@ static void enable_hypercall_page(struct domain *d)
 
 int guest_wrmsr_viridian(struct vcpu *v, uint32_t idx, uint64_t val)
 {
+    struct viridian_vcpu *vv = v->arch.hvm.viridian;
     struct domain *d = v->domain;
+    struct viridian_domain *vd = d->arch.hvm.viridian;
 
     ASSERT(is_viridian_domain(d));
 
     switch ( idx )
     {
     case HV_X64_MSR_GUEST_OS_ID:
-        d->arch.hvm.viridian.guest_os_id.raw = val;
+        vd->guest_os_id.raw = val;
         dump_guest_os_id(d);
         break;
 
     case HV_X64_MSR_HYPERCALL:
-        d->arch.hvm.viridian.hypercall_gpa.raw = val;
+        vd->hypercall_gpa.raw = val;
         dump_hypercall(d);
-        if ( d->arch.hvm.viridian.hypercall_gpa.fields.enabled )
+        if ( vd->hypercall_gpa.enabled )
             enable_hypercall_page(d);
         break;
 
@@ -306,9 +317,19 @@ int guest_wrmsr_viridian(struct vcpu *v, uint32_t idx, uint64_t val)
     case HV_X64_MSR_ICR:
     case HV_X64_MSR_TPR:
     case HV_X64_MSR_VP_ASSIST_PAGE:
+    case HV_X64_MSR_SCONTROL:
+    case HV_X64_MSR_SVERSION:
+    case HV_X64_MSR_SIEFP:
+    case HV_X64_MSR_SIMP:
+    case HV_X64_MSR_EOM:
+    case HV_X64_MSR_SINT0 ... HV_X64_MSR_SINT15:
         return viridian_synic_wrmsr(v, idx, val);
 
+    case HV_X64_MSR_TSC_FREQUENCY:
+    case HV_X64_MSR_APIC_FREQUENCY:
     case HV_X64_MSR_REFERENCE_TSC:
+    case HV_X64_MSR_TIME_REF_COUNT:
+    case HV_X64_MSR_STIMER0_CONFIG ... HV_X64_MSR_STIMER3_COUNT:
         return viridian_time_wrmsr(v, idx, val);
 
     case HV_X64_MSR_CRASH_P0:
@@ -317,10 +338,10 @@ int guest_wrmsr_viridian(struct vcpu *v, uint32_t idx, uint64_t val)
     case HV_X64_MSR_CRASH_P3:
     case HV_X64_MSR_CRASH_P4:
         BUILD_BUG_ON(HV_X64_MSR_CRASH_P4 - HV_X64_MSR_CRASH_P0 >=
-                     ARRAY_SIZE(v->arch.hvm.viridian.crash_param));
+                     ARRAY_SIZE(vv->crash_param));
 
         idx -= HV_X64_MSR_CRASH_P0;
-        v->arch.hvm.viridian.crash_param[idx] = val;
+        vv->crash_param[idx] = val;
         break;
 
     case HV_X64_MSR_CRASH_CTL:
@@ -337,11 +358,8 @@ int guest_wrmsr_viridian(struct vcpu *v, uint32_t idx, uint64_t val)
         spin_unlock(&d->shutdown_lock);
 
         gprintk(XENLOG_WARNING, "VIRIDIAN CRASH: %lx %lx %lx %lx %lx\n",
-                v->arch.hvm.viridian.crash_param[0],
-                v->arch.hvm.viridian.crash_param[1],
-                v->arch.hvm.viridian.crash_param[2],
-                v->arch.hvm.viridian.crash_param[3],
-                v->arch.hvm.viridian.crash_param[4]);
+                vv->crash_param[0], vv->crash_param[1], vv->crash_param[2],
+                vv->crash_param[3], vv->crash_param[4]);
         break;
     }
 
@@ -357,18 +375,20 @@ int guest_wrmsr_viridian(struct vcpu *v, uint32_t idx, uint64_t val)
 
 int guest_rdmsr_viridian(const struct vcpu *v, uint32_t idx, uint64_t *val)
 {
-    struct domain *d = v->domain;
+    const struct viridian_vcpu *vv = v->arch.hvm.viridian;
+    const struct domain *d = v->domain;
+    const struct viridian_domain *vd = d->arch.hvm.viridian;
 
     ASSERT(is_viridian_domain(d));
 
     switch ( idx )
     {
     case HV_X64_MSR_GUEST_OS_ID:
-        *val = d->arch.hvm.viridian.guest_os_id.raw;
+        *val = vd->guest_os_id.raw;
         break;
 
     case HV_X64_MSR_HYPERCALL:
-        *val = d->arch.hvm.viridian.hypercall_gpa.raw;
+        *val = vd->hypercall_gpa.raw;
         break;
 
     case HV_X64_MSR_VP_INDEX:
@@ -379,12 +399,19 @@ int guest_rdmsr_viridian(const struct vcpu *v, uint32_t idx, uint64_t *val)
     case HV_X64_MSR_ICR:
     case HV_X64_MSR_TPR:
     case HV_X64_MSR_VP_ASSIST_PAGE:
+    case HV_X64_MSR_SCONTROL:
+    case HV_X64_MSR_SVERSION:
+    case HV_X64_MSR_SIEFP:
+    case HV_X64_MSR_SIMP:
+    case HV_X64_MSR_EOM:
+    case HV_X64_MSR_SINT0 ... HV_X64_MSR_SINT15:
         return viridian_synic_rdmsr(v, idx, val);
 
     case HV_X64_MSR_TSC_FREQUENCY:
     case HV_X64_MSR_APIC_FREQUENCY:
     case HV_X64_MSR_REFERENCE_TSC:
     case HV_X64_MSR_TIME_REF_COUNT:
+    case HV_X64_MSR_STIMER0_CONFIG ... HV_X64_MSR_STIMER3_COUNT:
         return viridian_time_rdmsr(v, idx, val);
 
     case HV_X64_MSR_CRASH_P0:
@@ -393,10 +420,10 @@ int guest_rdmsr_viridian(const struct vcpu *v, uint32_t idx, uint64_t *val)
     case HV_X64_MSR_CRASH_P3:
     case HV_X64_MSR_CRASH_P4:
         BUILD_BUG_ON(HV_X64_MSR_CRASH_P4 - HV_X64_MSR_CRASH_P0 >=
-                     ARRAY_SIZE(v->arch.hvm.viridian.crash_param));
+                     ARRAY_SIZE(vv->crash_param));
 
         idx -= HV_X64_MSR_CRASH_P0;
-        *val = v->arch.hvm.viridian.crash_param[idx];
+        *val = vv->crash_param[idx];
         break;
 
     case HV_X64_MSR_CRASH_CTL:
@@ -417,9 +444,65 @@ int guest_rdmsr_viridian(const struct vcpu *v, uint32_t idx, uint64_t *val)
     return X86EMUL_OKAY;
 }
 
+int viridian_vcpu_init(struct vcpu *v)
+{
+    int rc;
+
+    ASSERT(!v->arch.hvm.viridian);
+    v->arch.hvm.viridian = xzalloc(struct viridian_vcpu);
+    if ( !v->arch.hvm.viridian )
+        return -ENOMEM;
+
+    rc = viridian_synic_vcpu_init(v);
+    if ( rc )
+        goto fail;
+
+    rc = viridian_time_vcpu_init(v);
+    if ( rc )
+        goto fail;
+
+    return 0;
+
+ fail:
+    viridian_vcpu_deinit(v);
+
+    return rc;
+}
+
+int viridian_domain_init(struct domain *d)
+{
+    int rc;
+
+    ASSERT(!d->arch.hvm.viridian);
+    d->arch.hvm.viridian = xzalloc(struct viridian_domain);
+    if ( !d->arch.hvm.viridian )
+        return -ENOMEM;
+
+    rc = viridian_synic_domain_init(d);
+    if ( rc )
+        goto fail;
+
+    rc = viridian_time_domain_init(d);
+    if ( rc )
+        goto fail;
+
+    return 0;
+
+ fail:
+    viridian_domain_deinit(d);
+
+    return rc;
+}
+
 void viridian_vcpu_deinit(struct vcpu *v)
 {
-    viridian_synic_wrmsr(v, HV_X64_MSR_VP_ASSIST_PAGE, 0);
+    if ( !v->arch.hvm.viridian )
+        return;
+
+    viridian_time_vcpu_deinit(v);
+    viridian_synic_vcpu_deinit(v);
+
+    XFREE(v->arch.hvm.viridian);
 }
 
 void viridian_domain_deinit(struct domain *d)
@@ -428,6 +511,14 @@ void viridian_domain_deinit(struct domain *d)
 
     for_each_vcpu ( d, v )
         viridian_vcpu_deinit(v);
+
+    if ( !d->arch.hvm.viridian )
+        return;
+
+    viridian_time_domain_deinit(d);
+    viridian_synic_domain_deinit(d);
+
+    XFREE(d->arch.hvm.viridian);
 }
 
 /*
@@ -541,6 +632,65 @@ int viridian_hypercall(struct cpu_user_regs *regs)
         break;
     }
 
+    case HvSendSyntheticClusterIpi:
+    {
+        struct vcpu *v;
+        uint32_t vector;
+        uint64_t vcpu_mask;
+
+        status = HV_STATUS_INVALID_PARAMETER;
+
+        /* Get input parameters. */
+        if ( input.fast )
+        {
+            if ( input_params_gpa >> 32 )
+                break;
+
+            vector = input_params_gpa;
+            vcpu_mask = output_params_gpa;
+        }
+        else
+        {
+            struct {
+                uint32_t vector;
+                uint8_t target_vtl;
+                uint8_t reserved_zero[3];
+                uint64_t vcpu_mask;
+            } input_params;
+
+            if ( hvm_copy_from_guest_phys(&input_params, input_params_gpa,
+                                          sizeof(input_params)) !=
+                 HVMTRANS_okay )
+                break;
+
+            if ( input_params.target_vtl ||
+                 input_params.reserved_zero[0] ||
+                 input_params.reserved_zero[1] ||
+                 input_params.reserved_zero[2] )
+                break;
+
+            vector = input_params.vector;
+            vcpu_mask = input_params.vcpu_mask;
+        }
+
+        if ( vector < 0x10 || vector > 0xff )
+            break;
+
+        for_each_vcpu ( currd, v )
+        {
+            if ( v->vcpu_id >= (sizeof(vcpu_mask) * 8) )
+                break;
+
+            if ( !(vcpu_mask & (1ul << v->vcpu_id)) )
+                continue;
+
+            vlapic_set_irq(vcpu_vlapic(v), vector, 0);
+        }
+
+        status = HV_STATUS_SUCCESS;
+        break;
+    }
+
     default:
         gprintk(XENLOG_WARNING, "unimplemented hypercall %04x\n",
                 input.call_code);
@@ -574,17 +724,16 @@ out:
 void viridian_dump_guest_page(const struct vcpu *v, const char *name,
                               const struct viridian_page *vp)
 {
-    if ( !vp->msr.fields.enabled )
+    if ( !vp->msr.enabled )
         return;
 
     printk(XENLOG_G_INFO "%pv: VIRIDIAN %s: pfn: %lx\n",
-           v, name, (unsigned long)vp->msr.fields.pfn);
+           v, name, (unsigned long)vp->msr.pfn);
 }
 
-void viridian_map_guest_page(struct vcpu *v, struct viridian_page *vp)
+void viridian_map_guest_page(struct domain *d, struct viridian_page *vp)
 {
-    struct domain *d = v->domain;
-    unsigned long gmfn = vp->msr.fields.pfn;
+    unsigned long gmfn = vp->msr.pfn;
     struct page_info *page;
 
     if ( vp->ptr )
@@ -634,15 +783,17 @@ static int viridian_save_domain_ctxt(struct vcpu *v,
                                      hvm_domain_context_t *h)
 {
     const struct domain *d = v->domain;
+    const struct viridian_domain *vd = d->arch.hvm.viridian;
     struct hvm_viridian_domain_context ctxt = {
-        .hypercall_gpa  = d->arch.hvm.viridian.hypercall_gpa.raw,
-        .guest_os_id    = d->arch.hvm.viridian.guest_os_id.raw,
+        .hypercall_gpa = vd->hypercall_gpa.raw,
+        .guest_os_id = vd->guest_os_id.raw,
     };
 
     if ( !is_viridian_domain(d) )
         return 0;
 
     viridian_time_save_domain_ctxt(d, &ctxt);
+    viridian_synic_save_domain_ctxt(d, &ctxt);
 
     return (hvm_save_entry(VIRIDIAN_DOMAIN, 0, h, &ctxt) != 0);
 }
@@ -650,14 +801,16 @@ static int viridian_save_domain_ctxt(struct vcpu *v,
 static int viridian_load_domain_ctxt(struct domain *d,
                                      hvm_domain_context_t *h)
 {
+    struct viridian_domain *vd = d->arch.hvm.viridian;
     struct hvm_viridian_domain_context ctxt;
 
     if ( hvm_load_entry_zeroextend(VIRIDIAN_DOMAIN, h, &ctxt) != 0 )
         return -EINVAL;
 
-    d->arch.hvm.viridian.hypercall_gpa.raw  = ctxt.hypercall_gpa;
-    d->arch.hvm.viridian.guest_os_id.raw    = ctxt.guest_os_id;
+    vd->hypercall_gpa.raw = ctxt.hypercall_gpa;
+    vd->guest_os_id.raw = ctxt.guest_os_id;
 
+    viridian_synic_load_domain_ctxt(d, &ctxt);
     viridian_time_load_domain_ctxt(d, &ctxt);
 
     return 0;
@@ -670,9 +823,10 @@ static int viridian_save_vcpu_ctxt(struct vcpu *v, hvm_domain_context_t *h)
 {
     struct hvm_viridian_vcpu_context ctxt = {};
 
-    if ( !is_viridian_domain(v->domain) )
+    if ( !is_viridian_vcpu(v) )
         return 0;
 
+    viridian_time_save_vcpu_ctxt(v, &ctxt);
     viridian_synic_save_vcpu_ctxt(v, &ctxt);
 
     return hvm_save_entry(VIRIDIAN_VCPU, v->vcpu_id, h, &ctxt);
@@ -699,6 +853,7 @@ static int viridian_load_vcpu_ctxt(struct domain *d,
         return -EINVAL;
 
     viridian_synic_load_vcpu_ctxt(v, &ctxt);
+    viridian_time_load_vcpu_ctxt(v, &ctxt);
 
     return 0;
 }

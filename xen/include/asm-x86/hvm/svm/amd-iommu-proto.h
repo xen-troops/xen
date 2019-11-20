@@ -48,8 +48,11 @@ int amd_iommu_detect_acpi(void);
 void get_iommu_features(struct amd_iommu *iommu);
 
 /* amd-iommu-init functions */
-int amd_iommu_init(void);
+int amd_iommu_prepare(bool xt);
+int amd_iommu_init(bool xt);
+int amd_iommu_init_late(void);
 int amd_iommu_update_ivrs_mapping_acpi(void);
+int iov_adjust_irq_affinities(void);
 
 /* mapping functions */
 int __must_check amd_iommu_map_page(struct domain *d, dfn_t dfn,
@@ -57,7 +60,6 @@ int __must_check amd_iommu_map_page(struct domain *d, dfn_t dfn,
                                     unsigned int *flush_flags);
 int __must_check amd_iommu_unmap_page(struct domain *d, dfn_t dfn,
                                       unsigned int *flush_flags);
-uint64_t amd_iommu_get_address_from_pte(void *entry);
 int __must_check amd_iommu_alloc_root(struct domain_iommu *hd);
 int amd_iommu_reserve_domain_unity_map(struct domain *domain,
                                        paddr_t phys_addr, unsigned long size,
@@ -67,19 +69,19 @@ int __must_check amd_iommu_flush_iotlb_pages(struct domain *d, dfn_t dfn,
                                              unsigned int flush_flags);
 int __must_check amd_iommu_flush_iotlb_all(struct domain *d);
 
-/* Share p2m table with iommu */
-void amd_iommu_share_p2m(struct domain *d);
-
 /* device table functions */
-int get_dma_requestor_id(u16 seg, u16 bdf);
-void amd_iommu_set_intremap_table(
-    u32 *dte, u64 intremap_ptr, u8 int_valid);
-void amd_iommu_set_root_page_table(
-    u32 *dte, u64 root_ptr, u16 domain_id, u8 paging_mode, u8 valid);
-void iommu_dte_set_iotlb(u32 *dte, u8 i);
-void iommu_dte_add_device_entry(u32 *dte, struct ivrs_mappings *ivrs_dev);
-void iommu_dte_set_guest_cr3(u32 *dte, u16 dom_id, u64 gcr3,
-                             int gv, unsigned int glx);
+int get_dma_requestor_id(uint16_t seg, uint16_t bdf);
+void amd_iommu_set_intremap_table(struct amd_iommu_dte *dte,
+                                  const void *ptr,
+                                  const struct amd_iommu *iommu,
+                                  bool valid);
+void amd_iommu_set_root_page_table(struct amd_iommu_dte *dte,
+				   uint64_t root_ptr, uint16_t domain_id,
+				   uint8_t paging_mode, bool valid);
+void iommu_dte_add_device_entry(struct amd_iommu_dte *dte,
+                                const struct ivrs_mappings *ivrs_dev);
+void iommu_dte_set_guest_cr3(struct amd_iommu_dte *dte, uint16_t dom_id,
+                             uint64_t gcr3_mfn, bool gv, uint8_t glx);
 
 /* send cmd to iommu */
 void amd_iommu_flush_all_pages(struct domain *d);
@@ -95,9 +97,14 @@ void amd_iommu_flush_all_caches(struct amd_iommu *iommu);
 struct amd_iommu *find_iommu_for_device(int seg, int bdf);
 
 /* interrupt remapping */
+bool iov_supports_xt(void);
 int amd_iommu_setup_ioapic_remapping(void);
-void *amd_iommu_alloc_intremap_table(unsigned long **);
-int amd_iommu_free_intremap_table(u16 seg, struct ivrs_mappings *);
+void *amd_iommu_alloc_intremap_table(
+    const struct amd_iommu *, unsigned long **, unsigned int nr);
+int amd_iommu_free_intremap_table(
+    const struct amd_iommu *, struct ivrs_mappings *, uint16_t);
+unsigned int amd_iommu_intremap_table_order(
+    const void *irt, const struct amd_iommu *iommu);
 void amd_iommu_ioapic_update_ire(
     unsigned int apic, unsigned int reg, unsigned int value);
 unsigned int amd_iommu_read_ioapic_from_ire(
@@ -107,6 +114,7 @@ int amd_iommu_msi_msg_update_ire(
 void amd_iommu_read_msi_from_ire(
     struct msi_desc *msi_desc, struct msi_msg *msg);
 int amd_setup_hpet_msi(struct msi_desc *msi_desc);
+void amd_iommu_dump_intremap_tables(unsigned char key);
 
 extern struct ioapic_sbdf {
     u16 bdf, seg;
@@ -218,13 +226,6 @@ static inline int iommu_has_cap(struct amd_iommu *iommu, uint32_t bit)
     return !!(iommu->cap.header & (1u << bit));
 }
 
-static inline int amd_iommu_has_feature(struct amd_iommu *iommu, uint32_t bit)
-{
-    if ( !iommu_has_cap(iommu, PCI_CAP_EFRSUP_SHIFT) )
-        return 0;
-    return !!(iommu->features & (1U << bit));
-}
-
 /* access tail or head pointer of ring buffer */
 static inline uint32_t iommu_get_rb_pointer(uint32_t reg)
 {
@@ -278,20 +279,6 @@ static inline void iommu_set_addr_hi_to_reg(uint32_t *reg, uint32_t addr)
 {
     set_field_in_reg_u32(addr, *reg, IOMMU_REG_BASE_ADDR_HIGH_MASK,
                          IOMMU_REG_BASE_ADDR_HIGH_SHIFT, reg);
-}
-
-static inline int iommu_is_pte_present(const u32 *entry)
-{
-    return get_field_from_reg_u32(entry[0],
-                                  IOMMU_PDE_PRESENT_MASK,
-                                  IOMMU_PDE_PRESENT_SHIFT);
-}
-
-static inline unsigned int iommu_next_level(const u32 *entry)
-{
-    return get_field_from_reg_u32(entry[0],
-                                  IOMMU_PDE_NEXT_LEVEL_MASK,
-                                  IOMMU_PDE_NEXT_LEVEL_SHIFT);
 }
 
 #endif /* _ASM_X86_64_AMD_IOMMU_PROTO_H */

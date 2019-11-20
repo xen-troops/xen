@@ -27,8 +27,8 @@ static int get_reserved_device_memory(xen_pfn_t start, xen_ulong_t nr,
                                       u32 id, void *ctxt)
 {
     struct get_reserved_device_memory *grdm = ctxt;
-    u32 sbdf = PCI_SBDF3(grdm->map.dev.pci.seg, grdm->map.dev.pci.bus,
-                         grdm->map.dev.pci.devfn);
+    uint32_t sbdf = PCI_SBDF3(grdm->map.dev.pci.seg, grdm->map.dev.pci.bus,
+                              grdm->map.dev.pci.devfn).sbdf;
 
     if ( !(grdm->map.flags & XENMEM_RDM_ALL) && (sbdf != id) )
         return 0;
@@ -623,12 +623,6 @@ int compat_memory_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) compat)
                 if ( __copy_to_compat_offset(cmp.mar.frame_list, 0,
                                              compat_frame_list,
                                              cmp.mar.nr_frames) )
-                    return -EFAULT;
-
-                if ( __copy_field_to_guest(
-                         guest_handle_cast(compat,
-                                           compat_mem_acquire_resource_t),
-                         &cmp.mar, flags) )
                     return -EFAULT;
             }
 

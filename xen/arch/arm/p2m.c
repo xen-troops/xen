@@ -25,7 +25,7 @@ static unsigned int __read_mostly max_vmid = MAX_VMID_8_BIT;
 /* VMID is by default 8 bit width on AArch64 */
 #define MAX_VMID       max_vmid
 #else
-/* First level P2M is alway 2 consecutive pages */
+/* First level P2M is always 2 consecutive pages */
 #define P2M_ROOT_LEVEL 1
 #define P2M_ROOT_ORDER    1
 /* VMID is always 8 bit width on AArch32 */
@@ -34,7 +34,11 @@ static unsigned int __read_mostly max_vmid = MAX_VMID_8_BIT;
 
 #define P2M_ROOT_PAGES    (1<<P2M_ROOT_ORDER)
 
-unsigned int __read_mostly p2m_ipa_bits;
+/*
+ * Set larger than any possible value, so the number of IPA bits can be
+ * restricted by external entity (e.g. IOMMU).
+ */
+unsigned int __read_mostly p2m_ipa_bits = 64;
 
 /* Helpers to lookup the properties of each level */
 static const paddr_t level_masks[] =
@@ -151,7 +155,7 @@ void p2m_restore_state(struct vcpu *n)
      * when running multiple vCPU of the same domain on a single pCPU.
      */
     if ( *last_vcpu_ran != INVALID_VCPU_ID && *last_vcpu_ran != n->vcpu_id )
-        flush_tlb_local();
+        flush_guest_tlb_local();
 
     *last_vcpu_ran = n->vcpu_id;
 }
@@ -196,7 +200,7 @@ static void p2m_force_tlb_flush_sync(struct p2m_domain *p2m)
         isb();
     }
 
-    flush_tlb();
+    flush_guest_tlb();
 
     if ( ovttbr != READ_SYSREG64(VTTBR_EL2) )
     {
@@ -225,21 +229,14 @@ void p2m_tlb_flush_sync(struct p2m_domain *p2m)
 static lpae_t *p2m_get_root_pointer(struct p2m_domain *p2m,
                                     gfn_t gfn)
 {
-    unsigned int root_table;
-
-    if ( P2M_ROOT_PAGES == 1 )
-        return __map_domain_page(p2m->root);
+    unsigned long root_table;
 
     /*
-     * Concatenated root-level tables. The table number will be the
-     * offset at the previous level. It is not possible to
-     * concatenate a level-0 root.
+     * While the root table index is the offset from the previous level,
+     * we can't use (P2M_ROOT_LEVEL - 1) because the root level might be
+     * 0. Yet we still want to check if all the unused bits are zeroed.
      */
-    ASSERT(P2M_ROOT_LEVEL > 0);
-
-    root_table = gfn_x(gfn) >> (level_orders[P2M_ROOT_LEVEL - 1]);
-    root_table &= LPAE_ENTRY_MASK;
-
+    root_table = gfn_x(gfn) >> (level_orders[P2M_ROOT_LEVEL] + LPAE_SHIFT);
     if ( root_table >= P2M_ROOT_PAGES )
         return NULL;
 
@@ -366,14 +363,7 @@ mfn_t p2m_get_entry(struct p2m_domain *p2m, gfn_t gfn,
     int rc;
     mfn_t mfn = INVALID_MFN;
     p2m_type_t _t;
-
-    /* Convenience aliases */
-    const unsigned int offsets[4] = {
-        zeroeth_table_offset(addr),
-        first_table_offset(addr),
-        second_table_offset(addr),
-        third_table_offset(addr)
-    };
+    DECLARE_OFFSETS(offsets, addr);
 
     ASSERT(p2m_is_locked(p2m));
     BUILD_BUG_ON(THIRD_MASK != PAGE_MASK);
@@ -405,7 +395,12 @@ mfn_t p2m_get_entry(struct p2m_domain *p2m, gfn_t gfn,
      * the table should always be non-NULL because the gfn is below
      * p2m->max_mapped_gfn and the root table pages are always present.
      */
-    BUG_ON(table == NULL);
+    if ( !table )
+    {
+        ASSERT_UNREACHABLE();
+        level = P2M_ROOT_LEVEL;
+        goto out;
+    }
 
     for ( level = P2M_ROOT_LEVEL; level < 3; level++ )
     {
@@ -888,21 +883,13 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
                            p2m_type_t t,
                            p2m_access_t a)
 {
-    paddr_t addr = gfn_to_gaddr(sgfn);
     unsigned int level = 0;
     unsigned int target = 3 - (page_order / LPAE_SHIFT);
     lpae_t *entry, *table, orig_pte;
     int rc;
     /* A mapping is removed if the MFN is invalid. */
     bool removing_mapping = mfn_eq(smfn, INVALID_MFN);
-
-    /* Convenience aliases */
-    const unsigned int offsets[4] = {
-        zeroeth_table_offset(addr),
-        first_table_offset(addr),
-        second_table_offset(addr),
-        third_table_offset(addr)
-    };
+    DECLARE_OFFSETS(offsets, gfn_to_gaddr(sgfn));
 
     ASSERT(p2m_is_write_locked(p2m));
 
@@ -1059,19 +1046,11 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
         p2m_write_pte(entry, pte, p2m->clean_pte);
 
         p2m->max_mapped_gfn = gfn_max(p2m->max_mapped_gfn,
-                                      gfn_add(sgfn, 1 << page_order));
+                                      gfn_add(sgfn, (1UL << page_order) - 1));
         p2m->lowest_mapped_gfn = gfn_min(p2m->lowest_mapped_gfn, sgfn);
     }
 
-    /*
-     * Free the entry only if the original pte was valid and the base
-     * is different (to avoid freeing when permission is changed).
-     */
-    if ( p2m_is_valid(orig_pte) &&
-         !mfn_eq(lpae_get_mfn(*entry), lpae_get_mfn(orig_pte)) )
-        p2m_free_entry(p2m, orig_pte, level);
-
-    if ( has_iommu_pt(p2m->domain) &&
+    if ( is_iommu_enabled(p2m->domain) &&
          (lpae_is_valid(orig_pte) || lpae_is_valid(*entry)) )
     {
         unsigned int flush_flags = 0;
@@ -1086,6 +1065,14 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
     }
     else
         rc = 0;
+
+    /*
+     * Free the entry only if the original pte was valid and the base
+     * is different (to avoid freeing when permission is changed).
+     */
+    if ( p2m_is_valid(orig_pte) &&
+         !mfn_eq(lpae_get_mfn(*entry), lpae_get_mfn(orig_pte)) )
+        p2m_free_entry(p2m, orig_pte, level);
 
 out:
     unmap_domain_page(table);
@@ -1199,15 +1186,9 @@ bool p2m_resolve_translation_fault(struct domain *d, gfn_t gfn)
     unsigned int level = 0;
     bool resolved = false;
     lpae_t entry, *table;
-    paddr_t addr = gfn_to_gaddr(gfn);
 
     /* Convenience aliases */
-    const unsigned int offsets[4] = {
-        zeroeth_table_offset(addr),
-        first_table_offset(addr),
-        second_table_offset(addr),
-        third_table_offset(addr)
-    };
+    DECLARE_OFFSETS(offsets, gfn_to_gaddr(gfn));
 
     p2m_write_lock(p2m);
 
@@ -1220,7 +1201,11 @@ bool p2m_resolve_translation_fault(struct domain *d, gfn_t gfn)
      * The table should always be non-NULL because the gfn is below
      * p2m->max_mapped_gfn and the root table pages are always present.
      */
-    BUG_ON(table == NULL);
+    if ( !table )
+    {
+        ASSERT_UNREACHABLE();
+        goto out;
+    }
 
     /*
      * Go down the page-tables until an entry has the valid bit unset or
@@ -1552,7 +1537,7 @@ int p2m_init(struct domain *d)
      * shared with the CPU, Xen has to make sure that the PT changes have
      * reached the memory
      */
-    p2m->clean_pte = iommu_enabled &&
+    p2m->clean_pte = is_iommu_enabled(d) &&
         !iommu_has_feature(d, IOMMU_FEAT_COHERENT_WALK);
 
     rc = p2m_alloc_table(d);
@@ -1596,7 +1581,7 @@ int relinquish_p2m_mapping(struct domain *d)
     p2m_write_lock(p2m);
 
     start = p2m->lowest_mapped_gfn;
-    end = p2m->max_mapped_gfn;
+    end = gfn_add(p2m->max_mapped_gfn, 1);
 
     for ( ; gfn_x(start) < gfn_x(end);
           start = gfn_next_boundary(start, order) )
@@ -1665,7 +1650,7 @@ int p2m_cache_flush_range(struct domain *d, gfn_t *pstart, gfn_t end)
     p2m_read_lock(p2m);
 
     start = gfn_max(start, p2m->lowest_mapped_gfn);
-    end = gfn_min(end, p2m->max_mapped_gfn);
+    end = gfn_min(end, gfn_add(p2m->max_mapped_gfn, 1));
 
     next_block_gfn = start;
 
@@ -1948,6 +1933,16 @@ struct page_info *get_page_from_gva(struct vcpu *v, vaddr_t va,
     return page;
 }
 
+void __init p2m_restrict_ipa_bits(unsigned int ipa_bits)
+{
+    /*
+     * Calculate the minimum of the maximum IPA bits that any external entity
+     * can support.
+     */
+    if ( ipa_bits < p2m_ipa_bits )
+        p2m_ipa_bits = ipa_bits;
+}
+
 /* VTCR value to be configured by all CPUs. Set only once by the boot CPU */
 static uint32_t __read_mostly vtcr;
 
@@ -1969,7 +1964,7 @@ static void setup_virt_paging_one(void *data)
         WRITE_SYSREG(READ_SYSREG(HCR_EL2) | HCR_VM, HCR_EL2);
         isb();
 
-        flush_tlb_all_local();
+        flush_all_guests_tlb_local();
     }
 }
 
@@ -1979,6 +1974,10 @@ void __init setup_virt_paging(void)
     unsigned long val = VTCR_RES1|VTCR_SH0_IS|VTCR_ORGN0_WBWA|VTCR_IRGN0_WBWA;
 
 #ifdef CONFIG_ARM_32
+    if ( p2m_ipa_bits < 40 )
+        panic("P2M: Not able to support %u-bit IPA at the moment\n",
+              p2m_ipa_bits);
+
     printk("P2M: 40-bit IPA\n");
     p2m_ipa_bits = 40;
     val |= VTCR_T0SZ(0x18); /* 40 bit IPA */
@@ -1995,22 +1994,27 @@ void __init setup_virt_paging(void)
         [0] = { 32,      32/*32*/,  0,          1 },
         [1] = { 36,      28/*28*/,  0,          1 },
         [2] = { 40,      24/*24*/,  1,          1 },
-        [3] = { 42,      24/*22*/,  1,          1 },
+        [3] = { 42,      22/*22*/,  3,          1 },
         [4] = { 44,      20/*20*/,  0,          2 },
         [5] = { 48,      16/*16*/,  0,          2 },
         [6] = { 0 }, /* Invalid */
         [7] = { 0 }  /* Invalid */
     };
 
-    unsigned int cpu;
+    unsigned int i, cpu;
     unsigned int pa_range = 0x10; /* Larger than any possible value */
     bool vmid_8_bit = false;
 
     for_each_online_cpu ( cpu )
     {
         const struct cpuinfo_arm *info = &cpu_data[cpu];
-        if ( info->mm64.pa_range < pa_range )
-            pa_range = info->mm64.pa_range;
+
+        /*
+         * Restrict "p2m_ipa_bits" if needed. As P2M table is always configured
+         * with IPA bits == PA bits, compare against "pabits".
+         */
+        if ( pa_range_info[info->mm64.pa_range].pabits < p2m_ipa_bits )
+            p2m_ipa_bits = pa_range_info[info->mm64.pa_range].pabits;
 
         /* Set a flag if the current cpu does not support 16 bit VMIDs. */
         if ( info->mm64.vmid_bits != MM64_VMID_16_BITS_SUPPORT )
@@ -2023,6 +2027,16 @@ void __init setup_virt_paging(void)
      */
     if ( !vmid_8_bit )
         max_vmid = MAX_VMID_16_BIT;
+
+    /* Choose suitable "pa_range" according to the resulted "p2m_ipa_bits". */
+    for ( i = 0; i < ARRAY_SIZE(pa_range_info); i++ )
+    {
+        if ( p2m_ipa_bits == pa_range_info[i].pabits )
+        {
+            pa_range = i;
+            break;
+        }
+    }
 
     /* pa_range is 4 bits, but the defined encodings are only 3 bits */
     if ( pa_range >= ARRAY_SIZE(pa_range_info) || !pa_range_info[pa_range].pabits )

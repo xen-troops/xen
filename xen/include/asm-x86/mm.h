@@ -127,6 +127,8 @@ struct page_info
         /* For non-pinnable single-page shadows, a higher entry that points
          * at us. */
         paddr_t up;
+
+#ifdef CONFIG_MEM_SHARING
         /* For shared/sharable pages, we use a doubly-linked list
          * of all the {pfn,domain} pairs that map this page. We also include
          * an opaque handle, which is effectively a version, so that clients
@@ -134,6 +136,7 @@ struct page_info
          * This list is allocated and freed when a page is shared/unshared.
          */
         struct page_sharing_info *sharing;
+#endif
     };
 
     /* Reference count and various PGC_xxx flags and fields. */
@@ -228,19 +231,34 @@ struct page_info
          * setting the flag must not drop that reference, whereas the instance
          * clearing it will have to.
          *
-         * If @partial_pte is positive then PTE at @nr_validated_ptes+1 has
-         * been partially validated. This implies that the general reference
-         * to the page (acquired from get_page_from_lNe()) would be dropped
-         * (again due to the apparent failure) and hence must be re-acquired
-         * when resuming the validation, but must not be dropped when picking
-         * up the page for invalidation.
+         * If partial_flags & PTF_partial_set is set, then the page at
+         * at @nr_validated_ptes had PGT_partial set as a result of an
+         * operation on the current page.  (That page may or may not
+         * still have PGT_partial set.)
          *
-         * If @partial_pte is negative then PTE at @nr_validated_ptes+1 has
-         * been partially invalidated. This is basically the opposite case of
-         * above, i.e. the general reference to the page was not dropped in
-         * put_page_from_lNe() (due to the apparent failure), and hence it
-         * must be dropped when the put operation is resumed (and completes),
-         * but it must not be acquired if picking up the page for validation.
+         * Additionally, if PTF_partial_set is set, then the PTE at
+         * @nr_validated_ptef holds a general reference count for the
+         * page.
+         *
+         * This happens:
+         * - During validation or de-validation, if the operation was
+         *   interrupted
+         * - During validation, if an invalid entry is encountered and
+         *   validation is preemptible
+         * - During validation, if PTF_partial_set was set on this
+         *   entry to begin with (perhaps because it picked up a
+         *   previous operation)
+         *
+         * When resuming validation, if PTF_partial_set is clear, then
+         * a general reference must be re-acquired; if it is set, no
+         * reference should be acquired.
+         *
+         * When resuming de-validation, if PTF_partial_set is clear,
+         * no reference should be dropped; if it is set, a reference
+         * should be dropped.
+         *
+         * NB that PTF_partial_set is defined in mm.c, the only place
+         * where it is used.
          *
          * The 3rd field, @linear_pt_count, indicates
          * - by a positive value, how many same-level page table entries a page
@@ -250,8 +268,8 @@ struct page_info
          */
         struct {
             u16 nr_validated_ptes:PAGETABLE_ORDER + 1;
-            u16 :16 - PAGETABLE_ORDER - 1 - 2;
-            s16 partial_pte:2;
+            u16 :16 - PAGETABLE_ORDER - 1 - 1;
+            u16 partial_flags:1;
             s16 linear_pt_count;
         };
 
@@ -278,10 +296,10 @@ struct page_info
 
 #define is_xen_heap_page(page) ((page)->count_info & PGC_xen_heap)
 #define is_xen_heap_mfn(mfn) \
-    (__mfn_valid(mfn) && is_xen_heap_page(mfn_to_page(_mfn(mfn))))
+    (mfn_valid(mfn) && is_xen_heap_page(mfn_to_page(mfn)))
 #define is_xen_fixed_mfn(mfn)                     \
-    ((((mfn) << PAGE_SHIFT) >= __pa(&_stext)) &&  \
-     (((mfn) << PAGE_SHIFT) <= __pa(&__2M_rwdata_end)))
+    (((mfn_to_maddr(mfn)) >= __pa(_stext)) &&     \
+     ((mfn_to_maddr(mfn)) <= __pa(__2M_rwdata_end - 1)))
 
 #define PRtype_info "016lx"/* should only be used for printk's */
 
@@ -356,24 +374,15 @@ struct platform_bad_page {
 const struct platform_bad_page *get_platform_badpages(unsigned int *array_size);
 
 /* Per page locks:
- * page_lock() is used for two purposes: pte serialization, and memory sharing.
+ * page_lock() is used for pte serialization.
  *
  * All users of page lock for pte serialization live in mm.c, use it
  * to lock a page table page during pte updates, do not take other locks within
  * the critical section delimited by page_lock/unlock, and perform no
  * nesting.
  *
- * All users of page lock for memory sharing live in mm/mem_sharing.c. Page_lock
- * is used in memory sharing to protect addition (share) and removal (unshare)
- * of (gfn,domain) tupples to a list of gfn's that the shared page is currently
- * backing. Nesting may happen when sharing (and locking) two pages -- deadlock
- * is avoided by locking pages in increasing order.
- * All memory sharing code paths take the p2m lock of the affected gfn before
- * taking the lock for the underlying page. We enforce ordering between page_lock
- * and p2m_lock using an mm-locks.h construct.
- *
- * These two users (pte serialization and memory sharing) do not collide, since
- * sharing is only supported for hvm guests, which do not perform pv pte updates.
+ * The use of PGT_locked in mem_sharing does not collide, since mem_sharing is
+ * only supported for hvm guests, which do not have PV PTEs updated.
  */
 int page_lock(struct page_info *page);
 void page_unlock(struct page_info *page);
@@ -541,8 +550,6 @@ extern int mmcfg_intercept_write(enum x86_segment seg,
                                  void *p_data,
                                  unsigned int bytes,
                                  struct x86_emulate_ctxt *ctxt);
-int pv_emul_cpuid(uint32_t leaf, uint32_t subleaf,
-                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt);
 
 int audit_adjust_pgtables(struct domain *d, int dir, int noisy);
 
@@ -597,8 +604,6 @@ unsigned int domain_clamp_alloc_bitsize(struct domain *d, unsigned int bits);
 
 unsigned long domain_get_maximum_gpfn(struct domain *d);
 
-extern struct domain *dom_xen, *dom_io, *dom_cow;	/* for vmcoreinfo */
-
 /* Definition of an mm lock: spinlock with extra fields for debugging */
 typedef struct mm_lock {
     spinlock_t         lock;
@@ -638,7 +643,6 @@ static inline bool arch_mfn_in_directmap(unsigned long mfn)
 
 int arch_acquire_resource(struct domain *d, unsigned int type,
                           unsigned int id, unsigned long frame,
-                          unsigned int nr_frames, xen_pfn_t mfn_list[],
-                          unsigned int *flags);
+                          unsigned int nr_frames, xen_pfn_t mfn_list[]);
 
 #endif /* __ASM_X86_MM_H__ */

@@ -19,7 +19,8 @@ class State(object):
         self.output = open_file_or_fd(output, "w", 2)
 
         # State parsed from input
-        self.names = {} # Name => value mapping
+        self.names = {}  # Value => Name mapping
+        self.values = {} # Name => Value mapping
         self.raw_special = set()
         self.raw_pv = set()
         self.raw_hvm_shadow = set()
@@ -76,8 +77,9 @@ def parse_definitions(state):
             this_name = name
         setattr(this, this_name, val)
 
-        # Construct a reverse mapping of value to name
+        # Construct forward and reverse mappings between name and value
         state.names[val] = name
+        state.values[name.lower().replace("_", "-")] = val
 
         for a in attr:
 
@@ -196,17 +198,16 @@ def crunch_numbers(state):
         # instructions.  Several futher instruction sets are built on core
         # %XMM support, without specific inter-dependencies.  Additionally
         # AMD has a special mis-alignment sub-mode.
-        SSE: [SSE2, SSE3, SSSE3, SSE4A, MISALIGNSSE,
-              AESNI, PCLMULQDQ, SHA],
+        SSE: [SSE2, MISALIGNSSE],
 
-        # SSE2 was re-specified as core instructions for 64bit.
-        SSE2: [LM],
+        # SSE2 was re-specified as core instructions for 64bit.  Also ISA
+        # extensions dealing with vectors of integers are added here rather
+        # than to SSE.
+        SSE2: [SSE3, LM, AESNI, PCLMULQDQ, SHA, GFNI],
 
-        # SSE4.1 explicitly depends on SSE3 and SSSE3
-        SSE3: [SSE4_1],
-        SSSE3: [SSE4_1],
-
-        # SSE4.2 explicitly depends on SSE4.1
+        # Other SSEn each depend on their predecessor versions.
+        SSE3: [SSSE3],
+        SSSE3: [SSE4_1, SSE4A],
         SSE4_1: [SSE4_2],
 
         # AMD specify no relationship between POPCNT and SSE4.2.  Intel
@@ -216,10 +217,6 @@ def crunch_numbers(state):
         # Therefore, we do not specify a dependency between SSE4_2 and POPCNT.
         #
         # SSE4_2: [POPCNT]
-
-        # The INVPCID instruction depends on PCID infrastructure being
-        # available.
-        PCID: [INVPCID],
 
         # XSAVE is an extra set of instructions for state management, but
         # doesn't constitue new state itself.  Some of the dependent features
@@ -255,16 +252,27 @@ def crunch_numbers(state):
 
         # This is just the dependency between AVX512 and AVX2 of XSTATE
         # feature flags.  If want to use AVX512, AVX2 must be supported and
-        # enabled.
-        AVX2: [AVX512F],
+        # enabled.  Certain later extensions, acting on 256-bit vectors of
+        # integers, better depend on AVX2 than AVX.
+        AVX2: [AVX512F, VAES, VPCLMULQDQ],
 
         # AVX512F is taken to mean hardware support for 512bit registers
-        # (which in practice depends on the EVEX prefix to encode), and the
-        # instructions themselves. All further AVX512 features are built on
-        # top of AVX512F
-        AVX512F: [AVX512DQ, AVX512IFMA, AVX512PF, AVX512ER, AVX512CD,
-                  AVX512BW, AVX512VL, AVX512VBMI, AVX512_4VNNIW,
-                  AVX512_4FMAPS, AVX512_VPOPCNTDQ],
+        # (which in practice depends on the EVEX prefix to encode) as well
+        # as mask registers, and the instructions themselves. All further
+        # AVX512 features are built on top of AVX512F
+        AVX512F: [AVX512DQ, AVX512_IFMA, AVX512PF, AVX512ER, AVX512CD,
+                  AVX512BW, AVX512VL, AVX512_4VNNIW, AVX512_4FMAPS,
+                  AVX512_VNNI, AVX512_VPOPCNTDQ],
+
+        # AVX512 extensions acting on vectors of bytes/words are made
+        # dependents of AVX512BW (as to requiring wider than 16-bit mask
+        # registers), despite the SDM not formally making this connection.
+        AVX512BW: [AVX512_VBMI, AVX512_VBMI2, AVX512_BITALG, AVX512_BF16],
+
+        # Extensions with VEX/EVEX encodings keyed to a separate feature
+        # flag are made dependents of their respective legacy feature.
+        PCLMULQDQ: [VPCLMULQDQ],
+        AESNI: [VAES],
 
         # The features:
         #   * Single Thread Indirect Branch Predictors
@@ -389,6 +397,22 @@ def write_results(state):
             % (dep, state.names[dep],
                format_uint32s(state.deep_deps[dep], 8)
            ))
+
+    state.output.write(
+"""}
+
+#define INIT_FEATURE_NAMES { \\
+""")
+
+    try:
+        _tmp = state.values.iteritems()
+    except AttributeError:
+        _tmp = state.values.items()
+
+    for name, bit in sorted(_tmp):
+        state.output.write(
+            '    { "%s", %sU },\\\n' % (name, bit)
+            )
 
     state.output.write(
 """}

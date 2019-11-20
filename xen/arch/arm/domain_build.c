@@ -14,6 +14,7 @@
 #include <xen/guest_access.h>
 #include <xen/iocap.h>
 #include <xen/acpi.h>
+#include <xen/vmap.h>
 #include <xen/warning.h>
 #include <acpi/actables.h>
 #include <asm/device.h>
@@ -80,7 +81,7 @@ unsigned int __init dom0_max_vcpus(void)
 
 struct vcpu *__init alloc_dom0_vcpu0(struct domain *dom0)
 {
-    return vcpu_create(dom0, 0, 0);
+    return vcpu_create(dom0, 0);
 }
 
 static unsigned int __init get_allocation_size(paddr_t size)
@@ -358,10 +359,9 @@ static void __init allocate_memory_11(struct domain *d,
     }
 
     if ( kinfo->unassigned_mem )
-        printk("WARNING: Failed to allocate requested dom0 memory."
-               /* Don't want format this as PRIpaddr (16 digit hex) */
-               " %ldMB unallocated\n",
-               (unsigned long)kinfo->unassigned_mem >> 20);
+        /* Don't want format this as PRIpaddr (16 digit hex) */
+        panic("Failed to allocate requested dom0 memory. %ldMB unallocated\n",
+              (unsigned long)kinfo->unassigned_mem >> 20);
 
     for( i = 0; i < kinfo->mem.nr_banks; i++ )
     {
@@ -375,9 +375,9 @@ static void __init allocate_memory_11(struct domain *d,
 }
 
 static bool __init allocate_bank_memory(struct domain *d,
-                                       struct kernel_info *kinfo,
-                                       gfn_t sgfn,
-                                       unsigned long tot_size)
+                                        struct kernel_info *kinfo,
+                                        gfn_t sgfn,
+                                        paddr_t tot_size)
 {
     int res;
     struct page_info *pg;
@@ -433,7 +433,7 @@ static bool __init allocate_bank_memory(struct domain *d,
 static void __init allocate_memory(struct domain *d, struct kernel_info *kinfo)
 {
     unsigned int i;
-    unsigned long bank_size;
+    paddr_t bank_size;
 
     printk(XENLOG_INFO "Allocating mappings totalling %ldMB for %pd:\n",
            /* Don't want format this as PRIpaddr (16 digit hex) */
@@ -480,9 +480,24 @@ static int __init write_properties(struct domain *d, struct kernel_info *kinfo,
     const struct dt_property *prop, *status = NULL;
     int res = 0;
     int had_dom0_bootargs = 0;
+    struct dt_device_node *iommu_node;
 
     if ( kinfo->cmdline && kinfo->cmdline[0] )
         bootargs = &kinfo->cmdline[0];
+
+    /*
+     * We always skip the IOMMU device when creating DT for hwdom if there is
+     * an appropriate driver for it in Xen (device_get_class(iommu_node)
+     * returns DEVICE_IOMMU).
+     * We should also skip the IOMMU specific properties of the master device
+     * behind that IOMMU in order to avoid exposing an half complete IOMMU
+     * bindings to hwdom.
+     * Use "iommu_node" as an indicator of the master device which properties
+     * should be skipped.
+     */
+    iommu_node = dt_parse_phandle(node, "iommus", 0);
+    if ( iommu_node && device_get_class(iommu_node) != DEVICE_IOMMU )
+        iommu_node = NULL;
 
     dt_for_each_property_node (node, prop)
     {
@@ -538,6 +553,19 @@ static int __init write_properties(struct domain *d, struct kernel_info *kinfo,
         {
             status = prop;
             continue;
+        }
+
+        if ( iommu_node )
+        {
+            /* Don't expose IOMMU specific properties to hwdom */
+            if ( dt_property_name_is_equal(prop, "iommus") )
+                continue;
+
+            if ( dt_property_name_is_equal(prop, "iommu-map") )
+                continue;
+
+            if ( dt_property_name_is_equal(prop, "iommu-map-mask") )
+                continue;
         }
 
         res = fdt_property(kinfo->fdt, prop->name, prop_data, prop_len);
@@ -621,17 +649,19 @@ static void __init set_interrupt(gic_interrupt_t interrupt,
  *  "interrupts": contains the list of interrupts
  *  "interrupt-parent": link to the GIC
  */
-static int __init fdt_property_interrupts(void *fdt, gic_interrupt_t *intr,
+static int __init fdt_property_interrupts(const struct kernel_info *kinfo,
+                                          gic_interrupt_t *intr,
                                           unsigned num_irq)
 {
     int res;
 
-    res = fdt_property(fdt, "interrupts", intr, sizeof (intr[0]) * num_irq);
+    res = fdt_property(kinfo->fdt, "interrupts",
+                       intr, sizeof(intr[0]) * num_irq);
     if ( res )
         return res;
 
-    res = fdt_property_cell(fdt, "interrupt-parent",
-                            dt_interrupt_controller->phandle);
+    res = fdt_property_cell(kinfo->fdt, "interrupt-parent",
+                            kinfo->phandle_gic);
 
     return res;
 }
@@ -639,21 +669,26 @@ static int __init fdt_property_interrupts(void *fdt, gic_interrupt_t *intr,
 static int __init make_memory_node(const struct domain *d,
                                    void *fdt,
                                    int addrcells, int sizecells,
-                                   const struct kernel_info *kinfo)
+                                   struct meminfo *mem)
 {
     int res, i;
     int reg_size = addrcells + sizecells;
-    int nr_cells = reg_size*kinfo->mem.nr_banks;
+    int nr_cells = reg_size * mem->nr_banks;
+    /* Placeholder for memory@ + a 64-bit number + \0 */
+    char buf[24];
     __be32 reg[NR_MEM_BANKS * 4 /* Worst case addrcells + sizecells */];
     __be32 *cells;
 
     BUG_ON(nr_cells >= ARRAY_SIZE(reg));
+    if ( mem->nr_banks == 0 )
+        return -ENOENT;
 
     dt_dprintk("Create memory node (reg size %d, nr cells %d)\n",
                reg_size, nr_cells);
 
     /* ePAPR 3.4 */
-    res = fdt_begin_node(fdt, "memory");
+    snprintf(buf, sizeof(buf), "memory@%"PRIx64, mem->bank[0].start);
+    res = fdt_begin_node(fdt, buf);
     if ( res )
         return res;
 
@@ -662,10 +697,10 @@ static int __init make_memory_node(const struct domain *d,
         return res;
 
     cells = &reg[0];
-    for ( i = 0 ; i < kinfo->mem.nr_banks; i++ )
+    for ( i = 0 ; i < mem->nr_banks; i++ )
     {
-        u64 start = kinfo->mem.bank[i].start;
-        u64 size = kinfo->mem.bank[i].size;
+        u64 start = mem->bank[i].start;
+        u64 size = mem->bank[i].size;
 
         dt_dprintk("  Bank %d: %#"PRIx64"->%#"PRIx64"\n",
                    i, start, start + size);
@@ -733,7 +768,7 @@ static int __init make_hypervisor_node(struct domain *d,
      *  TODO: Handle properly the cpumask;
      */
     set_interrupt(intr, d->arch.evtchn_irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-    res = fdt_property_interrupts(fdt, &intr, 1);
+    res = fdt_property_interrupts(kinfo, &intr, 1);
     if ( res )
         return res;
 
@@ -742,8 +777,7 @@ static int __init make_hypervisor_node(struct domain *d,
     return res;
 }
 
-static int __init make_psci_node(void *fdt,
-                                 const struct dt_device_node *parent)
+static int __init make_psci_node(void *fdt)
 {
     int res;
     const char compat[] =
@@ -779,8 +813,7 @@ static int __init make_psci_node(void *fdt,
     return res;
 }
 
-static int __init make_cpus_node(const struct domain *d, void *fdt,
-                                 const struct dt_device_node *parent)
+static int __init make_cpus_node(const struct domain *d, void *fdt)
 {
     int res;
     const struct dt_device_node *cpus = dt_find_node_by_path("/cpus");
@@ -788,8 +821,8 @@ static int __init make_cpus_node(const struct domain *d, void *fdt,
     unsigned int cpu;
     const void *compatible = NULL;
     u32 len;
-    /* Placeholder for cpu@ + a 32-bit number + \0 */
-    char buf[15];
+    /* Placeholder for cpu@ + a 32-bit hexadecimal number + \0 */
+    char buf[13];
     u32 clock_frequency;
     bool clock_valid;
     uint64_t mpidr_aff;
@@ -847,11 +880,26 @@ static int __init make_cpus_node(const struct domain *d, void *fdt,
          * the MPIDR's affinity bits. We will use AFF0 and AFF1 when
          * constructing the reg value of the guest at the moment, for it
          * is enough for the current max vcpu number.
+         *
+         * We only deal with AFF{0, 1, 2} stored in bits [23:0] at the
+         * moment.
          */
         mpidr_aff = vcpuid_to_vaffinity(cpu);
+        if ( (mpidr_aff & ~GENMASK_ULL(23, 0)) != 0 )
+        {
+            printk(XENLOG_ERR "Unable to handle MPIDR AFFINITY 0x%"PRIx64"\n",
+                   mpidr_aff);
+            return -EINVAL;
+        }
+
         dt_dprintk("Create cpu@%"PRIx64" (logical CPUID: %d) node\n",
                    mpidr_aff, cpu);
 
+        /*
+         * We use PRIx64 because mpidr_aff is a 64bit integer. However,
+         * only bits [23:0] are used, thus, we are sure it will fit in
+         * buf.
+         */
         snprintf(buf, sizeof(buf), "cpu@%"PRIx64, mpidr_aff);
         res = fdt_begin_node(fdt, buf);
         if ( res )
@@ -962,9 +1010,9 @@ static int __init make_gic_node(const struct domain *d, void *fdt,
     return res;
 }
 
-static int __init make_timer_node(const struct domain *d, void *fdt,
-                                  const struct dt_device_node *node)
+static int __init make_timer_node(const struct kernel_info *kinfo)
 {
+    void *fdt = kinfo->fdt;
     static const struct dt_device_match timer_ids[] __initconst =
     {
         DT_MATCH_COMPATIBLE("arm,armv7-timer"),
@@ -972,10 +1020,8 @@ static int __init make_timer_node(const struct domain *d, void *fdt,
         { /* sentinel */ },
     };
     struct dt_device_node *dev;
-    u32 len;
-    const void *compatible;
     int res;
-    unsigned int irq;
+    unsigned int irq[MAX_TIMER_PPI];
     gic_interrupt_t intrs[3];
     u32 clock_frequency;
     bool clock_valid;
@@ -989,37 +1035,45 @@ static int __init make_timer_node(const struct domain *d, void *fdt,
         return -FDT_ERR_XEN(ENOENT);
     }
 
-    compatible = dt_get_property(dev, "compatible", &len);
-    if ( !compatible )
-    {
-        dprintk(XENLOG_ERR, "Can't find compatible property for timer node\n");
-        return -FDT_ERR_XEN(ENOENT);
-    }
-
     res = fdt_begin_node(fdt, "timer");
     if ( res )
         return res;
 
-    res = fdt_property(fdt, "compatible", compatible, len);
+    if ( !is_64bit_domain(kinfo->d) )
+        res = fdt_property_string(fdt, "compatible", "arm,armv7-timer");
+    else
+        res = fdt_property_string(fdt, "compatible", "arm,armv8-timer");
     if ( res )
         return res;
 
-    /* The timer IRQ is emulated by Xen. It always exposes an active-low
-     * level-sensitive interrupt */
+    /*
+     * The timer IRQ is emulated by Xen.
+     * It always exposes an active-low level-sensitive interrupt.
+     */
 
-    irq = timer_get_irq(TIMER_PHYS_SECURE_PPI);
-    dt_dprintk("  Secure interrupt %u\n", irq);
-    set_interrupt(intrs[0], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    if ( is_hardware_domain(kinfo->d) )
+    {
+        irq[TIMER_PHYS_SECURE_PPI] = timer_get_irq(TIMER_PHYS_SECURE_PPI);
+        irq[TIMER_PHYS_NONSECURE_PPI] =
+                                    timer_get_irq(TIMER_PHYS_NONSECURE_PPI);
+        irq[TIMER_VIRT_PPI] = timer_get_irq(TIMER_VIRT_PPI);
+    }
+    else
+    {
+        irq[TIMER_PHYS_SECURE_PPI] = GUEST_TIMER_PHYS_S_PPI;
+        irq[TIMER_PHYS_NONSECURE_PPI] = GUEST_TIMER_PHYS_NS_PPI;
+        irq[TIMER_VIRT_PPI] = GUEST_TIMER_VIRT_PPI;
+    }
+    dt_dprintk("  Secure interrupt %u\n", irq[TIMER_PHYS_SECURE_PPI]);
+    set_interrupt(intrs[0], irq[TIMER_PHYS_SECURE_PPI],
+                  0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    dt_dprintk("  Non secure interrupt %u\n", irq[TIMER_PHYS_NONSECURE_PPI]);
+    set_interrupt(intrs[1], irq[TIMER_PHYS_NONSECURE_PPI],
+                  0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    dt_dprintk("  Virt interrupt %u\n", irq[TIMER_VIRT_PPI]);
+    set_interrupt(intrs[2], irq[TIMER_VIRT_PPI], 0xf, DT_IRQ_TYPE_LEVEL_LOW);
 
-    irq = timer_get_irq(TIMER_PHYS_NONSECURE_PPI);
-    dt_dprintk("  Non secure interrupt %u\n", irq);
-    set_interrupt(intrs[1], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-
-    irq = timer_get_irq(TIMER_VIRT_PPI);
-    dt_dprintk("  Virt interrupt %u\n", irq);
-    set_interrupt(intrs[2], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-
-    res = fdt_property_interrupts(fdt, intrs, 3);
+    res = fdt_property_interrupts(kinfo, intrs, 3);
     if ( res )
         return res;
 
@@ -1158,15 +1212,24 @@ static int __init map_range_to_domain(const struct dt_device_node *dev,
     bool need_mapping = !dt_device_for_passthrough(dev);
     int res;
 
-    res = iomem_permit_access(d, paddr_to_pfn(addr),
-                              paddr_to_pfn(PAGE_ALIGN(addr + len - 1)));
-    if ( res )
+    /*
+     * reserved-memory regions are RAM carved out for a special purpose.
+     * They are not MMIO and therefore a domain should not be able to
+     * manage them via the IOMEM interface.
+     */
+    if ( strnicmp(dt_node_full_name(dev), "/reserved-memory/",
+         strlen("/reserved-memory/")) != 0 )
     {
-        printk(XENLOG_ERR "Unable to permit to dom%d access to"
-               " 0x%"PRIx64" - 0x%"PRIx64"\n",
-               d->domain_id,
-               addr & PAGE_MASK, PAGE_ALIGN(addr + len) - 1);
-        return res;
+        res = iomem_permit_access(d, paddr_to_pfn(addr),
+                paddr_to_pfn(PAGE_ALIGN(addr + len - 1)));
+        if ( res )
+        {
+            printk(XENLOG_ERR "Unable to permit to dom%d access to"
+                    " 0x%"PRIx64" - 0x%"PRIx64"\n",
+                    d->domain_id,
+                    addr & PAGE_MASK, PAGE_ALIGN(addr + len) - 1);
+            return res;
+        }
     }
 
     if ( need_mapping )
@@ -1223,41 +1286,22 @@ static int __init map_device_children(struct domain *d,
 }
 
 /*
- * For a given device node:
- *  - Give permission to the guest to manage IRQ and MMIO range
- *  - Retrieve the IRQ configuration (i.e edge/level) from device tree
- * When the device is not marked for guest passthrough:
- *  - Assign the device to the guest if it's protected by an IOMMU
- *  - Map the IRQs and iomem regions to DOM0
+ * handle_device_interrupts retrieves the interrupts configuration from
+ * a device tree node and maps those interrupts to the target domain.
+ *
+ * Returns:
+ *   < 0 error
+ *   0   success
  */
-static int __init handle_device(struct domain *d, struct dt_device_node *dev,
-                                p2m_type_t p2mt)
+static int __init handle_device_interrupts(struct domain *d,
+                                           struct dt_device_node *dev,
+                                           bool need_mapping)
 {
-    unsigned int nirq;
-    unsigned int naddr;
-    unsigned int i;
+    unsigned int i, nirq;
     int res;
     struct dt_raw_irq rirq;
-    u64 addr, size;
-    bool need_mapping = !dt_device_for_passthrough(dev);
 
     nirq = dt_number_of_irq(dev);
-    naddr = dt_number_of_address(dev);
-
-    dt_dprintk("%s passthrough = %d nirq = %d naddr = %u\n",
-               dt_node_full_name(dev), need_mapping, nirq, naddr);
-
-    if ( dt_device_is_protected(dev) && need_mapping )
-    {
-        dt_dprintk("%s setup iommu\n", dt_node_full_name(dev));
-        res = iommu_assign_dt_device(d, dev);
-        if ( res )
-        {
-            printk(XENLOG_ERR "Failed to setup the IOMMU for %s\n",
-                   dt_node_full_name(dev));
-            return res;
-        }
-    }
 
     /* Give permission and map IRQs */
     for ( i = 0; i < nirq; i++ )
@@ -1293,6 +1337,62 @@ static int __init handle_device(struct domain *d, struct dt_device_node *dev,
         if ( res )
             return res;
     }
+
+    return 0;
+}
+
+/*
+ * For a given device node:
+ *  - Give permission to the guest to manage IRQ and MMIO range
+ *  - Retrieve the IRQ configuration (i.e edge/level) from device tree
+ * When the device is not marked for guest passthrough:
+ *  - Try to call iommu_add_dt_device to protect the device by an IOMMU
+ *  - Assign the device to the guest if it's protected by an IOMMU
+ *  - Map the IRQs and iomem regions to DOM0
+ */
+static int __init handle_device(struct domain *d, struct dt_device_node *dev,
+                                p2m_type_t p2mt)
+{
+    unsigned int naddr;
+    unsigned int i;
+    int res;
+    u64 addr, size;
+    bool need_mapping = !dt_device_for_passthrough(dev);
+
+    naddr = dt_number_of_address(dev);
+
+    dt_dprintk("%s passthrough = %d naddr = %u\n",
+               dt_node_full_name(dev), need_mapping, naddr);
+
+    if ( need_mapping )
+    {
+        dt_dprintk("Check if %s is behind the IOMMU and add it\n",
+                   dt_node_full_name(dev));
+
+        res = iommu_add_dt_device(dev);
+        if ( res < 0 )
+        {
+            printk(XENLOG_ERR "Failed to add %s to the IOMMU\n",
+                   dt_node_full_name(dev));
+            return res;
+        }
+
+        if ( dt_device_is_protected(dev) )
+        {
+            dt_dprintk("%s setup iommu\n", dt_node_full_name(dev));
+            res = iommu_assign_dt_device(d, dev);
+            if ( res )
+            {
+                printk(XENLOG_ERR "Failed to setup the IOMMU for %s\n",
+                       dt_node_full_name(dev));
+                return res;
+            }
+        }
+    }
+
+    res = handle_device_interrupts(d, dev, need_mapping);
+    if ( res < 0 )
+        return res;
 
     /* Give permission and map MMIOs */
     for ( i = 0; i < naddr; i++ )
@@ -1353,7 +1453,7 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
         { /* sentinel */ },
     };
     struct dt_device_node *child;
-    int res;
+    int res, i, nirq, irq_id;
     const char *name;
     const char *path;
 
@@ -1380,7 +1480,7 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
     if ( device_get_class(node) == DEVICE_GIC )
         return make_gic_node(d, kinfo->fdt, node);
     if ( dt_match_node(timer_matches, node) )
-        return make_timer_node(d, kinfo->fdt, node);
+        return make_timer_node(kinfo);
 
     /* Skip nodes used by Xen */
     if ( dt_device_used_by(node) == DOMID_XEN )
@@ -1397,6 +1497,24 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
     {
         dt_dprintk(" IOMMU, skip it\n");
         return 0;
+    }
+
+    /*
+     * The vGIC does not support routing hardware PPIs to guest. So
+     * we need to skip any node using PPIs.
+     */
+    nirq = dt_number_of_irq(node);
+
+    for ( i = 0 ; i < nirq ; i++ )
+    {
+        irq_id = platform_get_irq(node, i);
+
+        /* PPIs ranges from ID 16 to 31 */
+        if ( irq_id >= 16 && irq_id < 32 )
+        {
+            dt_dprintk(" Skip it (using PPIs)\n");
+            return 0;
+        }
     }
 
     /*
@@ -1454,18 +1572,29 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
         if ( res )
             return res;
 
-        res = make_psci_node(kinfo->fdt, node);
+        res = make_psci_node(kinfo->fdt);
         if ( res )
             return res;
 
-        res = make_cpus_node(d, kinfo->fdt, node);
+        res = make_cpus_node(d, kinfo->fdt);
         if ( res )
             return res;
 
-        res = make_memory_node(d, kinfo->fdt, addrcells, sizecells, kinfo);
+        res = make_memory_node(d, kinfo->fdt, addrcells, sizecells, &kinfo->mem);
         if ( res )
             return res;
 
+        /*
+         * Create a second memory node to store the ranges covering
+         * reserved-memory regions.
+         */
+        if ( bootinfo.reserved_mem.nr_banks > 0 )
+        {
+            res = make_memory_node(d, kinfo->fdt, addrcells, sizecells,
+                                   &bootinfo.reserved_mem);
+            if ( res )
+                return res;
+        }
     }
 
     res = fdt_end_node(kinfo->fdt);
@@ -1473,8 +1602,9 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
     return res;
 }
 
-static int __init make_gicv2_domU_node(const struct domain *d, void *fdt)
+static int __init make_gicv2_domU_node(struct kernel_info *kinfo)
 {
+    void *fdt = kinfo->fdt;
     int res = 0;
     __be32 reg[(GUEST_ROOT_ADDRESS_CELLS + GUEST_ROOT_SIZE_CELLS) * 2];
     __be32 *cells;
@@ -1509,11 +1639,11 @@ static int __init make_gicv2_domU_node(const struct domain *d, void *fdt)
     if (res)
         return res;
 
-    res = fdt_property_cell(fdt, "linux,phandle", GUEST_PHANDLE_GIC);
+    res = fdt_property_cell(fdt, "linux,phandle", kinfo->phandle_gic);
     if (res)
         return res;
 
-    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_GIC);
+    res = fdt_property_cell(fdt, "phandle", kinfo->phandle_gic);
     if (res)
         return res;
 
@@ -1522,8 +1652,9 @@ static int __init make_gicv2_domU_node(const struct domain *d, void *fdt)
     return res;
 }
 
-static int __init make_gicv3_domU_node(const struct domain *d, void *fdt)
+static int __init make_gicv3_domU_node(struct kernel_info *kinfo)
 {
+    void *fdt = kinfo->fdt;
     int res = 0;
     __be32 reg[(GUEST_ROOT_ADDRESS_CELLS + GUEST_ROOT_SIZE_CELLS) * 2];
     __be32 *cells;
@@ -1558,11 +1689,11 @@ static int __init make_gicv3_domU_node(const struct domain *d, void *fdt)
     if (res)
         return res;
 
-    res = fdt_property_cell(fdt, "linux,phandle", GUEST_PHANDLE_GIC);
+    res = fdt_property_cell(fdt, "linux,phandle", kinfo->phandle_gic);
     if (res)
         return res;
 
-    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_GIC);
+    res = fdt_property_cell(fdt, "phandle", kinfo->phandle_gic);
     if (res)
         return res;
 
@@ -1571,62 +1702,23 @@ static int __init make_gicv3_domU_node(const struct domain *d, void *fdt)
     return res;
 }
 
-static int __init make_gic_domU_node(const struct domain *d, void *fdt)
+static int __init make_gic_domU_node(struct kernel_info *kinfo)
 {
-    switch ( d->arch.vgic.version )
+    switch ( kinfo->d->arch.vgic.version )
     {
     case GIC_V3:
-        return make_gicv3_domU_node(d, fdt);
+        return make_gicv3_domU_node(kinfo);
     case GIC_V2:
-        return make_gicv2_domU_node(d, fdt);
+        return make_gicv2_domU_node(kinfo);
     default:
         panic("Unsupported GIC version\n");
     }
 }
 
-static int __init make_timer_domU_node(const struct domain *d, void *fdt)
-{
-    int res;
-    gic_interrupt_t intrs[3];
-
-    res = fdt_begin_node(fdt, "timer");
-    if ( res )
-        return res;
-
-    if ( !is_64bit_domain(d) )
-    {
-        res = fdt_property_string(fdt, "compatible", "arm,armv7-timer");
-        if ( res )
-            return res;
-    }
-    else
-    {
-        res = fdt_property_string(fdt, "compatible", "arm,armv8-timer");
-        if ( res )
-            return res;
-    }
-
-    set_interrupt(intrs[0], GUEST_TIMER_PHYS_S_PPI, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-    set_interrupt(intrs[1], GUEST_TIMER_PHYS_NS_PPI, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-    set_interrupt(intrs[2], GUEST_TIMER_VIRT_PPI, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
-
-    res = fdt_property(fdt, "interrupts", intrs, sizeof (intrs[0]) * 3);
-    if ( res )
-        return res;
-
-    res = fdt_property_cell(fdt, "interrupt-parent",
-                            GUEST_PHANDLE_GIC);
-    if (res)
-        return res;
-
-    res = fdt_end_node(fdt);
-
-    return res;
-}
-
 #ifdef CONFIG_SBSA_VUART_CONSOLE
-static int __init make_vpl011_uart_node(const struct domain *d, void *fdt)
+static int __init make_vpl011_uart_node(struct kernel_info *kinfo)
 {
+    void *fdt = kinfo->fdt;
     int res;
     gic_interrupt_t intr;
     __be32 reg[GUEST_ROOT_ADDRESS_CELLS + GUEST_ROOT_SIZE_CELLS];
@@ -1644,8 +1736,7 @@ static int __init make_vpl011_uart_node(const struct domain *d, void *fdt)
     dt_child_set_range(&cells, GUEST_ROOT_ADDRESS_CELLS,
                        GUEST_ROOT_SIZE_CELLS, GUEST_PL011_BASE,
                        GUEST_PL011_SIZE);
-    if ( res )
-        return res;
+
     res = fdt_property(fdt, "reg", reg, sizeof(reg));
     if ( res )
         return res;
@@ -1657,7 +1748,7 @@ static int __init make_vpl011_uart_node(const struct domain *d, void *fdt)
         return res;
 
     res = fdt_property_cell(fdt, "interrupt-parent",
-                            GUEST_PHANDLE_GIC);
+                            kinfo->phandle_gic);
     if ( res )
         return res;
 
@@ -1673,6 +1764,293 @@ static int __init make_vpl011_uart_node(const struct domain *d, void *fdt)
 #endif
 
 /*
+ * Scan device tree properties for passthrough specific information.
+ * Returns < 0 on error
+ *         0 on success
+ */
+static int __init handle_passthrough_prop(struct kernel_info *kinfo,
+                                          const struct fdt_property *xen_reg,
+                                          const struct fdt_property *xen_path,
+                                          bool xen_force,
+                                          uint32_t address_cells, uint32_t size_cells)
+{
+    const __be32 *cell;
+    unsigned int i, len;
+    struct dt_device_node *node;
+    int res;
+    paddr_t mstart, size, gstart;
+
+    /* xen,reg specifies where to map the MMIO region */
+    cell = (const __be32 *)xen_reg->data;
+    len = fdt32_to_cpu(xen_reg->len) / ((address_cells * 2 + size_cells) *
+                                        sizeof(uint32_t));
+
+    for ( i = 0; i < len; i++ )
+    {
+        device_tree_get_reg(&cell, address_cells, size_cells,
+                            &mstart, &size);
+        gstart = dt_next_cell(address_cells, &cell);
+
+        if ( gstart & ~PAGE_MASK || mstart & ~PAGE_MASK || size & ~PAGE_MASK )
+        {
+            printk(XENLOG_ERR
+                    "DomU passthrough config has not page aligned addresses/sizes\n");
+            return -EINVAL;
+        }
+
+        res = map_regions_p2mt(kinfo->d,
+                               gaddr_to_gfn(gstart),
+                               PFN_DOWN(size),
+                               maddr_to_mfn(mstart),
+                               p2m_mmio_direct_dev);
+        if ( res < 0 )
+        {
+            printk(XENLOG_ERR
+                   "Failed to map %"PRIpaddr" to the guest at%"PRIpaddr"\n",
+                   mstart, gstart);
+            return -EFAULT;
+        }
+    }
+
+    /*
+     * If xen_force, we let the user assign a MMIO region with no
+     * associated path.
+     */
+    if ( xen_path == NULL )
+        return xen_force ? 0 : -EINVAL;
+
+    /*
+     * xen,path specifies the corresponding node in the host DT.
+     * Both interrupt mappings and IOMMU settings are based on it,
+     * as they are done based on the corresponding host DT node.
+     */
+    node = dt_find_node_by_path(xen_path->data);
+    if ( node == NULL )
+    {
+        printk(XENLOG_ERR "Couldn't find node %s in host_dt!\n",
+               (char *)xen_path->data);
+        return -EINVAL;
+    }
+
+    res = handle_device_interrupts(kinfo->d, node, true);
+    if ( res < 0 )
+        return res;
+
+    res = iommu_add_dt_device(node);
+    if ( res < 0 )
+        return res;
+
+    /* If xen_force, we allow assignment of devices without IOMMU protection. */
+    if ( xen_force && !dt_device_is_protected(node) )
+        return 0;
+
+    return iommu_assign_dt_device(kinfo->d, node);
+}
+
+static int __init handle_prop_pfdt(struct kernel_info *kinfo,
+                                   const void *pfdt, int nodeoff,
+                                   uint32_t address_cells, uint32_t size_cells,
+                                   bool scan_passthrough_prop)
+{
+    void *fdt = kinfo->fdt;
+    int propoff, nameoff, res;
+    const struct fdt_property *prop, *xen_reg = NULL, *xen_path = NULL;
+    const char *name;
+    bool found, xen_force = false;
+
+    for ( propoff = fdt_first_property_offset(pfdt, nodeoff);
+          propoff >= 0;
+          propoff = fdt_next_property_offset(pfdt, propoff) )
+    {
+        if ( !(prop = fdt_get_property_by_offset(pfdt, propoff, NULL)) )
+            return -FDT_ERR_INTERNAL;
+
+        found = false;
+        nameoff = fdt32_to_cpu(prop->nameoff);
+        name = fdt_string(pfdt, nameoff);
+
+        if ( scan_passthrough_prop )
+        {
+            if ( dt_prop_cmp("xen,reg", name) == 0 )
+            {
+                xen_reg = prop;
+                found = true;
+            }
+            else if ( dt_prop_cmp("xen,path", name) == 0 )
+            {
+                xen_path = prop;
+                found = true;
+            }
+            else if ( dt_prop_cmp("xen,force-assign-without-iommu",
+                                  name) == 0 )
+            {
+                xen_force = true;
+                found = true;
+            }
+        }
+
+        /*
+         * Copy properties other than the ones above: xen,reg, xen,path,
+         * and xen,force-assign-without-iommu.
+         */
+        if ( !found )
+        {
+            res = fdt_property(fdt, name, prop->data, fdt32_to_cpu(prop->len));
+            if ( res )
+                return res;
+        }
+    }
+
+    /*
+     * Only handle passthrough properties if both xen,reg and xen,path
+     * are present, or if xen,force-assign-without-iommu is specified.
+     */
+    if ( xen_reg != NULL && (xen_path != NULL || xen_force) )
+    {
+        res = handle_passthrough_prop(kinfo, xen_reg, xen_path, xen_force,
+                                      address_cells, size_cells);
+        if ( res < 0 )
+        {
+            printk(XENLOG_ERR "Failed to assign device to %pd\n", kinfo->d);
+            return res;
+        }
+    }
+    else if ( (xen_path && !xen_reg) || (xen_reg && !xen_path && !xen_force) )
+    {
+        printk(XENLOG_ERR "xen,reg or xen,path missing for %pd\n",
+               kinfo->d);
+        return -EINVAL;
+    }
+
+    /* FDT_ERR_NOTFOUND => There is no more properties for this node */
+    return ( propoff != -FDT_ERR_NOTFOUND ) ? propoff : 0;
+}
+
+static int __init scan_pfdt_node(struct kernel_info *kinfo, const void *pfdt,
+                                 int nodeoff,
+                                 uint32_t address_cells, uint32_t size_cells,
+                                 bool scan_passthrough_prop)
+{
+    int rc = 0;
+    void *fdt = kinfo->fdt;
+    int node_next;
+
+    rc = fdt_begin_node(fdt, fdt_get_name(pfdt, nodeoff, NULL));
+    if ( rc )
+        return rc;
+
+    rc = handle_prop_pfdt(kinfo, pfdt, nodeoff, address_cells, size_cells,
+                          scan_passthrough_prop);
+    if ( rc )
+        return rc;
+
+    address_cells = device_tree_get_u32(pfdt, nodeoff, "#address-cells",
+                                        DT_ROOT_NODE_ADDR_CELLS_DEFAULT);
+    size_cells = device_tree_get_u32(pfdt, nodeoff, "#size-cells",
+                                     DT_ROOT_NODE_SIZE_CELLS_DEFAULT);
+
+    node_next = fdt_first_subnode(pfdt, nodeoff);
+    while ( node_next > 0 )
+    {
+        scan_pfdt_node(kinfo, pfdt, node_next, address_cells, size_cells,
+                       scan_passthrough_prop);
+        node_next = fdt_next_subnode(pfdt, node_next);
+    }
+
+    return fdt_end_node(fdt);
+}
+
+static int __init check_partial_fdt(void *pfdt, size_t size)
+{
+    int res;
+
+    if ( fdt_magic(pfdt) != FDT_MAGIC )
+    {
+        dprintk(XENLOG_ERR, "Partial FDT is not a valid Flat Device Tree");
+        return -EINVAL;
+    }
+
+    res = fdt_check_header(pfdt);
+    if ( res )
+    {
+        dprintk(XENLOG_ERR, "Failed to check the partial FDT (%d)", res);
+        return -EINVAL;
+    }
+
+    if ( fdt_totalsize(pfdt) > size )
+    {
+        dprintk(XENLOG_ERR, "Partial FDT totalsize is too big");
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+static int __init domain_handle_dtb_bootmodule(struct domain *d,
+                                               struct kernel_info *kinfo)
+{
+    void *pfdt;
+    int res, node_next;
+
+    pfdt = ioremap_cache(kinfo->dtb_bootmodule->start,
+                         kinfo->dtb_bootmodule->size);
+    if ( pfdt == NULL )
+        return -EFAULT;
+
+    res = check_partial_fdt(pfdt, kinfo->dtb_bootmodule->size);
+    if ( res < 0 )
+        return res;
+
+    for ( node_next = fdt_first_subnode(pfdt, 0); 
+          node_next > 0;
+          node_next = fdt_next_subnode(pfdt, node_next) )
+    {
+        const char *name = fdt_get_name(pfdt, node_next, NULL);
+
+        if ( name == NULL )
+            continue;
+
+        /*
+         * Only scan /gic /aliases /passthrough, ignore the rest.
+         * They don't have to be parsed in order.
+         *
+         * Take the GIC phandle value from the special /gic node in the
+         * DTB fragment.
+         */
+        if ( dt_node_cmp(name, "gic") == 0 )
+        {
+            kinfo->phandle_gic = fdt_get_phandle(pfdt, node_next);
+            continue;
+        }
+
+        if ( dt_node_cmp(name, "aliases") == 0 )
+        {
+            res = scan_pfdt_node(kinfo, pfdt, node_next,
+                                 DT_ROOT_NODE_ADDR_CELLS_DEFAULT,
+                                 DT_ROOT_NODE_SIZE_CELLS_DEFAULT,
+                                 false);
+            if ( res )
+                return res;
+            continue;
+        }
+        if ( dt_node_cmp(name, "passthrough") == 0 )
+        {
+            res = scan_pfdt_node(kinfo, pfdt, node_next,
+                                 DT_ROOT_NODE_ADDR_CELLS_DEFAULT,
+                                 DT_ROOT_NODE_SIZE_CELLS_DEFAULT,
+                                 true);
+            if ( res )
+                return res;
+            continue;
+        }
+    }
+
+    iounmap(pfdt);
+
+    return res;
+}
+
+/*
  * The max size for DT is 2MB. However, the generated DT is small, 4KB
  * are enough for now, but we might have to increase it in the future.
  */
@@ -1681,6 +2059,8 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
 {
     int addrcells, sizecells;
     int ret;
+
+    kinfo->phandle_gic = GUEST_PHANDLE_GIC;
 
     addrcells = GUEST_ROOT_ADDRESS_CELLS;
     sizecells = GUEST_ROOT_SIZE_CELLS;
@@ -1697,7 +2077,7 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     if ( ret < 0 )
         goto err;
 
-    ret = fdt_begin_node(kinfo->fdt, "/");
+    ret = fdt_begin_node(kinfo->fdt, "");
     if ( ret < 0 )
         goto err;
 
@@ -1713,23 +2093,35 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     if ( ret )
         goto err;
 
-    ret = make_psci_node(kinfo->fdt, NULL);
+    ret = make_psci_node(kinfo->fdt);
     if ( ret )
         goto err;
 
-    ret = make_cpus_node(d, kinfo->fdt, NULL);
+    ret = make_cpus_node(d, kinfo->fdt);
     if ( ret )
         goto err;
 
-    ret = make_memory_node(d, kinfo->fdt, addrcells, sizecells, kinfo);
+    ret = make_memory_node(d, kinfo->fdt, addrcells, sizecells, &kinfo->mem);
     if ( ret )
         goto err;
 
-    ret = make_gic_domU_node(d, kinfo->fdt);
+    /*
+     * domain_handle_dtb_bootmodule has to be called before the rest of
+     * the device tree is generated because it depends on the value of
+     * the field phandle_gic.
+     */
+    if ( kinfo->dtb_bootmodule )
+    {
+        ret = domain_handle_dtb_bootmodule(d, kinfo);
+        if ( ret )
+            return ret;
+    }
+
+    ret = make_gic_domU_node(kinfo);
     if ( ret )
         goto err;
 
-    ret = make_timer_domU_node(d, kinfo->fdt);
+    ret = make_timer_node(kinfo);
     if ( ret )
         goto err;
 
@@ -1737,7 +2129,7 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     {
         ret = -EINVAL;
 #ifdef CONFIG_SBSA_VUART_CONSOLE
-        ret = make_vpl011_uart_node(d, kinfo->fdt);
+        ret = make_vpl011_uart_node(kinfo);
 #endif
         if ( ret )
             goto err;
@@ -1769,6 +2161,7 @@ static int __init prepare_dtb_hwdom(struct domain *d, struct kernel_info *kinfo)
 
     ASSERT(dt_host && (dt_host->sibling == NULL));
 
+    kinfo->phandle_gic = dt_interrupt_controller->phandle;
     fdt = device_tree_flattened;
 
     new_size = fdt_totalsize(fdt) + DOM0_FDT_EXTRA_SIZE;
@@ -1802,15 +2195,17 @@ static void __init dtb_load(struct kernel_info *kinfo)
 {
     unsigned long left;
 
-    printk("Loading dom0 DTB to 0x%"PRIpaddr"-0x%"PRIpaddr"\n",
-           kinfo->dtb_paddr, kinfo->dtb_paddr + fdt_totalsize(kinfo->fdt));
+    printk("Loading %pd DTB to 0x%"PRIpaddr"-0x%"PRIpaddr"\n",
+           kinfo->d, kinfo->dtb_paddr,
+           kinfo->dtb_paddr + fdt_totalsize(kinfo->fdt));
 
     left = copy_to_guest_phys_flush_dcache(kinfo->d, kinfo->dtb_paddr,
                                            kinfo->fdt,
                                            fdt_totalsize(kinfo->fdt));
 
     if ( left != 0 )
-        panic("Unable to copy the DTB to dom0 memory (left = %lu bytes)\n", left);
+        panic("Unable to copy the DTB to %pd memory (left = %lu bytes)\n",
+              kinfo->d, left);
     xfree(kinfo->fdt);
 }
 
@@ -1831,8 +2226,8 @@ static void __init initrd_load(struct kernel_info *kinfo)
     paddr = mod->start;
     len = mod->size;
 
-    printk("Loading dom0 initrd from %"PRIpaddr" to 0x%"PRIpaddr"-0x%"PRIpaddr"\n",
-           paddr, load_addr, load_addr + len);
+    printk("Loading %pd initrd from %"PRIpaddr" to 0x%"PRIpaddr"-0x%"PRIpaddr"\n",
+           kinfo->d, paddr, load_addr, load_addr + len);
 
     /* Fix up linux,initrd-start and linux,initrd-end in /chosen */
     node = fdt_path_offset(kinfo->fdt, "/chosen");
@@ -1923,7 +2318,7 @@ static void __init find_gnttab_region(struct domain *d,
 
 static int __init construct_domain(struct domain *d, struct kernel_info *kinfo)
 {
-    int i, cpu;
+    unsigned int i;
     struct vcpu *v = d->vcpu[0];
     struct cpu_user_regs *regs = &v->arch.cpu_info->guest_cpu_user_regs;
 
@@ -1986,12 +2381,11 @@ static int __init construct_domain(struct domain *d, struct kernel_info *kinfo)
     }
 #endif
 
-    for ( i = 1, cpu = 0; i < d->max_vcpus; i++ )
+    for ( i = 1; i < d->max_vcpus; i++ )
     {
-        cpu = cpumask_cycle(cpu, &cpu_online_map);
-        if ( vcpu_create(d, i, cpu) == NULL )
+        if ( vcpu_create(d, i) == NULL )
         {
-            printk("Failed to allocate dom0 vcpu %d on pcpu %d\n", i, cpu);
+            printk("Failed to allocate d%dv%d\n", d->domain_id, i);
             break;
         }
 
@@ -2026,7 +2420,7 @@ static int __init construct_domU(struct domain *d,
 
     kinfo.vpl011 = dt_property_read_bool(node, "vpl011");
 
-    if ( vcpu_create(d, 0, 0) == NULL )
+    if ( vcpu_create(d, 0) == NULL )
         return -ENOMEM;
     d->max_pages = ~0U;
 
@@ -2067,8 +2461,7 @@ void __init create_domUs(void)
         struct domain *d;
         struct xen_domctl_createdomain d_cfg = {
             .arch.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE,
-            .arch.nr_spis = 0,
-            .flags = XEN_DOMCTL_CDF_hvm_guest | XEN_DOMCTL_CDF_hap,
+            .flags = XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap,
             .max_evtchn_port = -1,
             .max_grant_frames = 64,
             .max_maptrack_frames = 1024,
@@ -2077,12 +2470,25 @@ void __init create_domUs(void)
         if ( !dt_device_is_compatible(node, "xen,domain") )
             continue;
 
-        if ( dt_property_read_bool(node, "vpl011") )
-            d_cfg.arch.nr_spis = GUEST_VPL011_SPI - 32 + 1;
-
         if ( !dt_property_read_u32(node, "cpus", &d_cfg.max_vcpus) )
             panic("Missing property 'cpus' for domain %s\n",
                   dt_node_name(node));
+
+        if ( dt_find_compatible_node(node, NULL, "multiboot,device-tree") )
+            d_cfg.flags |= XEN_DOMCTL_CDF_iommu;
+
+        if ( !dt_property_read_u32(node, "nr_spis", &d_cfg.arch.nr_spis) )
+        {
+            d_cfg.arch.nr_spis = gic_number_lines() - 32;
+
+            /*
+             * vpl011 uses one emulated SPI. If vpl011 is requested, make
+             * sure that we allocate enough SPIs for it.
+             */
+            if ( dt_property_read_bool(node, "vpl011") )
+                d_cfg.arch.nr_spis = MAX(d_cfg.arch.nr_spis,
+                                         GUEST_VPL011_SPI - 32 + 1);
+        }
 
         d = domain_create(++max_init_domid, &d_cfg, false);
         if ( IS_ERR(d) )

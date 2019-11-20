@@ -393,39 +393,70 @@ less utilized than a high CPU workload.  Consider yourself warned.
 
 =back
 
-=item B<mem-max> I<domain-id> I<mem>
-
-Specify the maximum amount of memory the domain is able to use, appending 't'
-for terabytes, 'g' for gigabytes, 'm' for megabytes, 'k' for kilobytes and 'b'
-for bytes.
-
-The mem-max value may not correspond to the actual memory used in the
-domain, as it may balloon down its memory to give more back to the OS.
-
-The value given just sets the memory amount the domain is allowed to allocate
-in the hypervisor. It can't be set lower than the current reservation, but
-it is allowed to be higher than the configured maximum memory size of the
-domain (B<maxmem> parameter in the domain's configuration). Using B<xl mem-max>
-to set the maximum memory above the initial B<maxmem> value will not allow the
-additional memory to be used via B<xl mem-set>. The initial B<maxmem> value is
-still used as an upper limit for B<xl mem-set>.
-
-The domain will not receive any signal regarding the changed memory limit.
-
 =item B<mem-set> I<domain-id> I<mem>
 
-Set the domain's used memory using the balloon driver; append 't' for
-terabytes, 'g' for gigabytes, 'm' for megabytes, 'k' for kilobytes and 'b' for
-bytes.
+Set the target for the domain's balloon driver.
 
-Because this operation requires cooperation from the domain operating
-system, there is no guarantee that it will succeed.  This command will
-definitely not work unless the domain has the required paravirt
-driver.
+The default unit is kiB.  Add 't' for TiB, 'g' for GiB, 'm' for
+MiB, 'k' for kiB, and 'b' for bytes (e.g., `2048m` for 2048 MiB).
+
+This must be less than the initial B<maxmem> parameter in the domain's
+configuration.
+
+Note that this operation requests the guest operating system's balloon
+driver to reach the target amount of memory.  The guest may fail to
+reach that amount of memory for any number of reasons, including:
+
+=over 4
+
+=item
+
+The guest doesn't have a balloon driver installed
+
+=item
+
+The guest's balloon driver is buggy
+
+=item
+
+The guest's balloon driver cannot create free guest memory due to
+guest memory pressure
+
+=item
+
+The guest's balloon driver cannot allocate memory from Xen because of
+hypervisor memory pressure
+
+=item
+
+The guest administrator has disabled the balloon driver
+
+=back
 
 B<Warning:> There is no good way to know in advance how small of a
 mem-set will make a domain unstable and cause it to crash.  Be very
 careful when using this command on running domains.
+
+=item B<mem-max> I<domain-id> I<mem>
+
+Specify the limit Xen will place on the amount of memory a guest may
+allocate.
+
+The default unit is kiB.  Add 't' for TiB, 'g' for GiB, 'm' for
+MiB, 'k' for kiB, and 'b' for bytes (e.g., `2048m` for 2048 MiB).
+
+NB that users normally shouldn't need this command; B<xl mem-set> will
+set this as appropriate automatically.
+
+I<mem> can't be set lower than the current memory target for
+I<domain-id>.  It is allowed to be higher than the configured maximum
+memory size of the domain (B<maxmem> parameter in the domain's
+configuration). Note however that the initial B<maxmem> value is still
+used as an upper limit for B<xl mem-set>.  Also note that calling B<xl
+mem-set> will reset this value.
+
+The domain will not receive any signal regarding the changed memory
+limit.
 
 =item B<migrate> [I<OPTIONS>] I<domain-id> I<host>
 
@@ -848,7 +879,7 @@ Clears Xen's message buffer.
 
 Print information about the Xen host in I<name : value> format.  When
 reporting a Xen bug, please provide this information as part of the
-bug report. See I<http://wiki.xen.org/xenwiki/ReportingBugs> on how to
+bug report. See I<https://wiki.xenproject.org/wiki/Reporting_Bugs_against_Xen_Project> on how to
 report Xen bugs.
 
 Sample output looks as follows:
@@ -1677,74 +1708,6 @@ Obtain information of USB devices connected as such via the device model
 
 =back
 
-=head1 TRANSCENDENT MEMORY (TMEM)
-
-=over 4
-
-=item B<tmem-list> I<[OPTIONS]> I<domain-id>
-
-List tmem pools.
-
-B<OPTIONS>
-
-=over 4
-
-=item B<-l>
-
-If this parameter is specified, also list tmem stats.
-
-=back
-
-=item B<tmem-freeze> I<domain-id>
-
-Freeze tmem pools.
-
-=item B<tmem-thaw> I<domain-id>
-
-Thaw tmem pools.
-
-=item B<tmem-set> I<domain-id> [I<OPTIONS>]
-
-Change tmem settings.
-
-B<OPTIONS>
-
-=over 4
-
-=item B<-w> I<WEIGHT>
-
-Weight (int)
-
-=item B<-p> I<COMPRESS>
-
-Compress (int)
-
-=back
-
-=item B<tmem-shared-auth> I<domain-id> [I<OPTIONS>]
-
-De/authenticate shared tmem pool.
-
-B<OPTIONS>
-
-=over 4
-
-=item B<-u> I<UUID>
-
-Specify uuid (abcdef01-2345-6789-1234-567890abcdef)
-
-=item B<-a> I<AUTH>
-
-0=auth,1=deauth
-
-=back
-
-=item B<tmem-freeable>
-
-Get information about how much freeable memory (MB) is in-use by tmem.
-
-=back
-
 =head1 FLASK
 
 B<FLASK> is a security framework that defines a mandatory access control policy
@@ -1758,7 +1721,7 @@ permitted. Some example of what you can do using XSM/FLASK:
    domains.
 
 You can find more details on how to use FLASK and an example security
-policy here: L<http://xenbits.xen.org/docs/unstable/misc/xsm-flask.txt>
+policy here: L<https://xenbits.xenproject.org/docs/unstable/misc/xsm-flask.txt>
 
 =over 4
 
@@ -1786,7 +1749,7 @@ Intel Haswell and later server platforms offer shared resource monitoring
 and control technologies. The availability of these technologies and the
 hardware capabilities can be shown with B<psr-hwinfo>.
 
-See L<http://xenbits.xen.org/docs/unstable/misc/xl-psr.html> for more
+See L<https://xenbits.xenproject.org/docs/unstable/misc/xl-psr.html> for more
 information.
 
 =over 4
@@ -1871,7 +1834,7 @@ and data) are mutually exclusive. There is no CDP support on L2 so far.
 =item B<psr-cat-set> [I<OPTIONS>] I<domain-id> I<cbm>
 
 Set cache capacity bitmasks(CBM) for a domain. For how to specify I<cbm>
-please refer to L<http://xenbits.xen.org/docs/unstable/misc/xl-psr.html>.
+please refer to L<https://xenbits.xenproject.org/docs/unstable/misc/xl-psr.html>.
 
 B<OPTIONS>
 
@@ -1927,7 +1890,7 @@ throttling value (THRTL) for the domain.
 =item B<psr-mba-set> [I<OPTIONS>] I<domain-id> I<thrtl>
 
 Set throttling value (THRTL) for a domain. For how to specify I<thrtl>
-please refer to L<http://xenbits.xen.org/docs/unstable/misc/xl-psr.html>.
+please refer to L<https://xenbits.xenproject.org/docs/unstable/misc/xl-psr.html>.
 
 B<OPTIONS>
 
@@ -1958,18 +1921,6 @@ ignored:
 
 =back
 
-=head1 TO BE DOCUMENTED
-
-We need better documentation for:
-
-=over 4
-
-=item B<tmem>
-
-Transcendent Memory.
-
-=back
-
 =head1 SEE ALSO
 
 The following man pages:
@@ -1977,16 +1928,16 @@ The following man pages:
 L<xl.cfg(5)>, L<xlcpupool.cfg(5)>, L<xentop(1)>, L<xl-disk-configuration(5)>
 L<xl-network-configuration(5)>
 
-And the following documents on the xen.org website:
+And the following documents on the xenproject.org website:
 
-L<http://xenbits.xen.org/docs/unstable/misc/xsm-flask.txt>
-L<http://xenbits.xen.org/docs/unstable/misc/xl-psr.html>
+L<https://xenbits.xenproject.org/docs/unstable/misc/xsm-flask.txt>
+L<https://xenbits.xenproject.org/docs/unstable/misc/xl-psr.html>
 
 For systems that don't automatically bring the CPU online:
 
-L<http://wiki.xen.org/wiki/Paravirt_Linux_CPU_Hotplug>
+L<https://wiki.xenproject.org/wiki/Paravirt_Linux_CPU_Hotplug>
 
 =head1 BUGS
 
-Send bugs to xen-devel@lists.xen.org, see
-http://wiki.xen.org/xenwiki/ReportingBugs on how to send bug reports.
+Send bugs to xen-devel@lists.xenproject.org, see
+https://wiki.xenproject.org/wiki/Reporting_Bugs_against_Xen_Project on how to send bug reports.

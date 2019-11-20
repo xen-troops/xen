@@ -53,6 +53,15 @@ DEFINE_XEN_GUEST_HANDLE(uint64_t);
 DEFINE_XEN_GUEST_HANDLE(xen_pfn_t);
 DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);
 
+/* Define a variable length array (depends on compiler). */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define XEN_FLEX_ARRAY_DIM
+#elif defined(__GNUC__)
+#define XEN_FLEX_ARRAY_DIM  0
+#else
+#define XEN_FLEX_ARRAY_DIM  1 /* variable size */
+#endif
+
 /* Turn a plain number into a C unsigned (long (long)) constant. */
 #define __xen_mk_uint(x)  x ## U
 #define __xen_mk_ulong(x) x ## UL
@@ -486,7 +495,28 @@ DEFINE_XEN_GUEST_HANDLE(mmuext_op_t);
 /* ` } */
 
 /*
- * Commands to HYPERVISOR_console_io().
+ * ` int
+ * ` HYPERVISOR_console_io(unsigned int cmd,
+ * `                       unsigned int count,
+ * `                       char buffer[]);
+ *
+ * @cmd: Command (see below)
+ * @count: Size of the buffer to read/write
+ * @buffer: Pointer in the guest memory
+ *
+ * List of commands:
+ *
+ *  * CONSOLEIO_write: Write the buffer to Xen console.
+ *      For the hardware domain, all the characters in the buffer will
+ *      be written. Characters will be printed directly to the console.
+ *      For all the other domains, only the printable characters will be
+ *      written. Characters may be buffered until a newline (i.e '\n') is
+ *      found.
+ *      @return 0 on success, otherwise return an error code.
+ *  * CONSOLEIO_read: Attempts to read up to @count characters from Xen
+ *      console. The maximum buffer size (i.e. @count) supported is 2GB.
+ *      @return the number of characters read on success, otherwise return
+ *      an error code.
  */
 #define CONSOLEIO_write         0
 #define CONSOLEIO_read          1
@@ -745,12 +775,17 @@ struct shared_info {
     xen_ulong_t evtchn_mask[sizeof(xen_ulong_t) * 8];
 
     /*
-     * Wallclock time: updated only by control software. Guests should base
-     * their gettimeofday() syscall on this wallclock-base value.
+     * Wallclock time: updated by control software or RTC emulation.
+     * Guests should base their gettimeofday() syscall on this
+     * wallclock-base value.
+     * The values of wc_sec and wc_nsec are offsets from the Unix epoch
+     * adjusted by the domain's 'time offset' (in seconds) as set either
+     * by XEN_DOMCTL_settimeoffset, or adjusted via a guest write to the
+     * emulated RTC.
      */
     uint32_t wc_version;      /* Version counter: see vcpu_time_info_t. */
-    uint32_t wc_sec;          /* Secs  00:00:00 UTC, Jan 1, 1970.  */
-    uint32_t wc_nsec;         /* Nsecs 00:00:00 UTC, Jan 1, 1970.  */
+    uint32_t wc_sec;
+    uint32_t wc_nsec;
 #if !defined(__i386__)
     uint32_t wc_sec_hi;
 # define xen_wc_sec_hi wc_sec_hi
@@ -922,6 +957,11 @@ typedef struct dom0_vga_console_info {
             uint32_t gbl_caps;
             /* Mode attributes (offset 0x0, VESA command 0x4f01). */
             uint16_t mode_attrs;
+            uint16_t pad;
+#endif
+#if __XEN_INTERFACE_VERSION__ >= 0x00040d00
+            /* high 32 bits of lfb_base */
+            uint32_t ext_lfb_base;
 #endif
         } vesa_lfb;
     } u;

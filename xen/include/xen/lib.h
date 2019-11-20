@@ -66,6 +66,10 @@
 
 #define ROUNDUP(x, a) (((x) + (a) - 1) & ~((a) - 1))
 
+#define count_args_(dot, a1, a2, a3, a4, a5, a6, a7, a8, x, ...) x
+#define count_args(args...) \
+    count_args_(., ## args, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
 struct domain;
 
 void cmdline_parse(const char *cmdline);
@@ -81,8 +85,8 @@ int parse_boolean(const char *name, const char *s, const char *e);
 
 /**
  * Very similar to strcmp(), but will declare a match if the NUL in 'name'
- * lines up with comma, colon or semicolon in 'frag'.  Designed for picking
- * exact string matches out of a delimited command line list.
+ * lines up with comma, colon, semicolon or equals in 'frag'.  Designed for
+ * picking exact string matches out of a delimited command line list.
  */
 int cmdline_strcmp(const char *frag, const char *name);
 
@@ -101,6 +105,17 @@ debugtrace_printk(const char *fmt, ...) {}
 #define _p(_x) ((void *)(unsigned long)(_x))
 extern void printk(const char *format, ...)
     __attribute__ ((format (printf, 1, 2)));
+
+#define printk_once(fmt, args...)               \
+({                                              \
+    static bool __read_mostly once_;            \
+    if ( unlikely(!once_) )                     \
+    {                                           \
+        once_ = true;                           \
+        printk(fmt, ## args);                   \
+    }                                           \
+})
+
 extern void guest_printk(const struct domain *d, const char *format, ...)
     __attribute__ ((format (printf, 2, 3)));
 extern void noreturn panic(const char *format, ...)

@@ -52,7 +52,7 @@ static void __init get_fam10h_pci_mmconf_base(void)
 
 		bus = pci_probes[i].bus;
 		slot = pci_probes[i].slot;
-		id = pci_conf_read32(0, bus, slot, 0, PCI_VENDOR_ID);
+		id = pci_conf_read32(PCI_SBDF(0, bus, slot, 0), PCI_VENDOR_ID);
 
 		vendor = id & 0xffff;
 		device = (id>>16) & 0xffff;
@@ -83,12 +83,14 @@ static void __init get_fam10h_pci_mmconf_base(void)
 	 * above 4G
 	 */
 	for (hi_mmio_num = i = 0; i < 8; i++) {
-		val = pci_conf_read32(0, bus, slot, 1, 0x80 + (i << 3));
+		val = pci_conf_read32(PCI_SBDF(0, bus, slot, 1),
+				      0x80 + (i << 3));
 		if (!(val & 3))
 			continue;
 
 		start = (val & 0xffffff00) << 8; /* 39:16 on 31:8*/
-		val = pci_conf_read32(0, bus, slot, 1, 0x84 + (i << 3));
+		val = pci_conf_read32(PCI_SBDF(0, bus, slot, 1),
+				      0x84 + (i << 3));
 		end = ((val & 0xffffff00) << 8) | 0xffff; /* 39:16 on 31:8*/
 
 		if (end < tom2)
@@ -183,15 +185,8 @@ void fam10h_check_enable_mmcfg(void)
 	wrmsrl(MSR_FAM10H_MMIO_CONF_BASE, val);
 }
 
-static int __init set_check_enable_amd_mmconf(struct dmi_system_id *d)
-{
-        pci_probe |= PCI_CHECK_ENABLE_AMD_MMCONF;
-        return 0;
-}
-
-static struct dmi_system_id __initdata mmconf_dmi_table[] = {
+static const struct dmi_system_id __initconstrel mmconf_dmi_table[] = {
 	{
-		.callback = set_check_enable_amd_mmconf,
 		.ident = "Sun Microsystems Machine",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Sun Microsystems"),
@@ -202,5 +197,6 @@ static struct dmi_system_id __initdata mmconf_dmi_table[] = {
 
 void __init check_enable_amd_mmconf_dmi(void)
 {
-	dmi_check_system(mmconf_dmi_table);
+	if (dmi_check_system(mmconf_dmi_table))
+		pci_probe |= PCI_CHECK_ENABLE_AMD_MMCONF;
 }

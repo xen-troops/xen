@@ -100,13 +100,19 @@ void default_dead_idle(void)
      */
     spec_ctrl_enter_idle(get_cpu_info());
     wbinvd();
-    for ( ; ; )
-        halt();
+    halt();
+    spec_ctrl_exit_idle(get_cpu_info());
 }
 
-static void play_dead(void)
+void play_dead(void)
 {
+    unsigned int cpu = smp_processor_id();
+
     local_irq_disable();
+
+    /* Change the NMI handler to a nop (see comment below). */
+    _set_gate_lower(&idt_tables[cpu][TRAP_nmi], SYS_DESC_irq_gate, 0,
+                    &trap_nop);
 
     /*
      * NOTE: After cpu_exit_clear, per-cpu variables may no longer accessible,
@@ -114,13 +120,14 @@ static void play_dead(void)
      * this case, heap corruption or #PF can occur (when heap debugging is
      * enabled). For example, even printk() can involve tasklet scheduling,
      * which touches per-cpu vars.
-     * 
+     *
      * Consider very carefully when adding code to *dead_idle. Most hypervisor
      * subsystems are unsafe to call.
      */
-    cpu_exit_clear(smp_processor_id());
+    cpu_exit_clear(cpu);
 
-    (*dead_idle)();
+    for ( ; ; )
+        dead_idle();
 }
 
 static void idle_loop(void)
@@ -152,6 +159,25 @@ static void idle_loop(void)
     }
 }
 
+/*
+ * Idle loop for siblings in active schedule units.
+ * We don't do any standard idle work like tasklets or livepatching.
+ */
+static void guest_idle_loop(void)
+{
+    unsigned int cpu = smp_processor_id();
+
+    for ( ; ; )
+    {
+        ASSERT(!cpu_is_offline(cpu));
+
+        if ( !softirq_pending(cpu) && !scrub_free_pages() &&
+             !softirq_pending(cpu))
+            sched_guest_idle(pm_idle, cpu);
+        do_softirq();
+    }
+}
+
 void startup_cpu_idle_loop(void)
 {
     struct vcpu *v = current;
@@ -165,7 +191,25 @@ void startup_cpu_idle_loop(void)
 
 static void noreturn continue_idle_domain(struct vcpu *v)
 {
+    /* Idle vcpus might be attached to non-idle units! */
+    if ( !is_idle_domain(v->sched_unit->domain) )
+        reset_stack_and_jump_nolp(guest_idle_loop);
+
     reset_stack_and_jump(idle_loop);
+}
+
+void init_hypercall_page(struct domain *d, void *ptr)
+{
+    memset(ptr, 0xcc, PAGE_SIZE);
+
+    if ( is_hvm_domain(d) )
+        hvm_init_hypercall_page(d, ptr);
+    else if ( is_pv_64bit_domain(d) )
+        pv_ring3_init_hypercall_page(ptr);
+    else if ( is_pv_32bit_domain(d) )
+        pv_ring1_init_hypercall_page(ptr);
+    else
+        ASSERT_UNREACHABLE();
 }
 
 void dump_pageframe_info(struct domain *d)
@@ -284,7 +328,7 @@ struct domain *alloc_domain_struct(void)
 #endif
 
 
-#ifndef CONFIG_LOCK_PROFILE
+#ifndef CONFIG_DEBUG_LOCK_PROFILE
     BUILD_BUG_ON(sizeof(*d) > PAGE_SIZE);
 #endif
     d = alloc_xenheap_pages(order, MEMF_bits(bits));
@@ -421,7 +465,7 @@ void arch_vcpu_destroy(struct vcpu *v)
 
 int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
 {
-    bool hvm = config->flags & XEN_DOMCTL_CDF_hvm_guest;
+    bool hvm = config->flags & XEN_DOMCTL_CDF_hvm;
     unsigned int max_vcpus;
 
     if ( hvm ? !hvm_enabled : !IS_ENABLED(CONFIG_PV) )
@@ -438,6 +482,26 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
                 config->max_vcpus, max_vcpus);
         return -EINVAL;
     }
+
+    if ( !IS_ENABLED(CONFIG_TBOOT) &&
+         (config->flags & XEN_DOMCTL_CDF_s3_integrity) )
+    {
+        dprintk(XENLOG_INFO, "S3 integrity check not valid without CONFIG_TBOOT\n");
+        return -EINVAL;
+    }
+
+    if ( (config->flags & XEN_DOMCTL_CDF_hap) && !hvm_hap_supported() )
+    {
+        dprintk(XENLOG_INFO, "HAP requested but not supported\n");
+        return -EINVAL;
+    }
+
+    if ( !(config->flags & XEN_DOMCTL_CDF_hvm) )
+        /*
+         * It is only meaningful for XEN_DOMCTL_CDF_oos_off to be clear
+         * for HVM guests.
+         */
+        config->flags |= XEN_DOMCTL_CDF_oos_off;
 
     return 0;
 }
@@ -475,7 +539,6 @@ int arch_domain_create(struct domain *d,
     uint32_t emflags;
     int rc;
 
-    INIT_LIST_HEAD(&d->arch.pdev_list);
     INIT_PAGE_LIST_HEAD(&d->arch.relmem_list);
 
     spin_lock_init(&d->arch.e820_lock);
@@ -518,8 +581,6 @@ int arch_domain_create(struct domain *d,
                d->domain_id);
     }
 
-    d->arch.s3_integrity = config->flags & XEN_DOMCTL_CDF_s3_integrity;
-
     emflags = config->arch.emulation_flags;
 
     if ( is_hardware_domain(d) && is_pv_domain(d) )
@@ -544,12 +605,7 @@ int arch_domain_create(struct domain *d,
     HYPERVISOR_COMPAT_VIRT_START(d) =
         is_pv_domain(d) ? __HYPERVISOR_COMPAT_VIRT_START : ~0u;
 
-    /* Need to determine if HAP is enabled before initialising paging */
-    if ( is_hvm_domain(d) )
-        d->arch.hvm.hap_enabled =
-            hvm_hap_supported() && (config->flags & XEN_DOMCTL_CDF_hap);
-
-    if ( (rc = paging_domain_init(d, config->flags)) != 0 )
+    if ( (rc = paging_domain_init(d)) != 0 )
         goto fail;
     paging_initialised = true;
 
@@ -578,7 +634,7 @@ int arch_domain_create(struct domain *d,
     if ( (rc = init_domain_irq_mapping(d)) != 0 )
         goto fail;
 
-    if ( (rc = iommu_domain_init(d)) != 0 )
+    if ( (rc = iommu_domain_init(d, config->iommu_opts)) != 0 )
         goto fail;
 
     psr_domain_init(d);
@@ -657,20 +713,20 @@ void arch_domain_destroy(struct domain *d)
 
 void arch_domain_shutdown(struct domain *d)
 {
-    if ( has_viridian_time_ref_count(d) )
-        viridian_time_ref_count_freeze(d);
+    if ( is_viridian_domain(d) )
+        viridian_time_domain_freeze(d);
 }
 
 void arch_domain_pause(struct domain *d)
 {
-    if ( has_viridian_time_ref_count(d) )
-        viridian_time_ref_count_freeze(d);
+    if ( is_viridian_domain(d) )
+        viridian_time_domain_freeze(d);
 }
 
 void arch_domain_unpause(struct domain *d)
 {
-    if ( has_viridian_time_ref_count(d) )
-        viridian_time_ref_count_thaw(d);
+    if ( is_viridian_domain(d) )
+        viridian_time_domain_thaw(d);
 }
 
 int arch_domain_soft_reset(struct domain *d)
@@ -679,15 +735,13 @@ int arch_domain_soft_reset(struct domain *d)
     int ret = 0;
     struct domain *owner;
     mfn_t mfn;
-    unsigned long gfn;
+    gfn_t gfn;
     p2m_type_t p2mt;
     unsigned int i;
 
     /* Soft reset is supported for HVM domains only. */
     if ( !is_hvm_domain(d) )
         return -EINVAL;
-
-    hvm_domain_soft_reset(d);
 
     spin_lock(&d->event_lock);
     for ( i = 0; i < d->nr_pirqs ; i++ )
@@ -713,19 +767,20 @@ int arch_domain_soft_reset(struct domain *d)
     ASSERT( owner == d );
 
     mfn = page_to_mfn(page);
-    gfn = mfn_to_gmfn(d, mfn_x(mfn));
+    gfn = mfn_to_gfn(d, mfn);
 
     /*
      * gfn == INVALID_GFN indicates that the shared_info page was never mapped
      * to the domain's address space and there is nothing to replace.
      */
-    if ( gfn == gfn_x(INVALID_GFN) )
+    if ( gfn_eq(gfn, INVALID_GFN) )
         goto exit_put_page;
 
-    if ( !mfn_eq(get_gfn_query(d, gfn, &p2mt), mfn) )
+    if ( !mfn_eq(get_gfn_query(d, gfn_x(gfn), &p2mt), mfn) )
     {
-        printk(XENLOG_G_ERR "Failed to get Dom%d's shared_info GFN (%lx)\n",
-               d->domain_id, gfn);
+        printk(XENLOG_G_ERR
+               "Failed to get %pd's shared_info GFN (%"PRI_gfn")\n",
+               d, gfn_x(gfn));
         ret = -EINVAL;
         goto exit_put_gfn;
     }
@@ -733,31 +788,34 @@ int arch_domain_soft_reset(struct domain *d)
     new_page = alloc_domheap_page(d, 0);
     if ( !new_page )
     {
-        printk(XENLOG_G_ERR "Failed to alloc a page to replace"
-               " Dom%d's shared_info frame %lx\n", d->domain_id, gfn);
+        printk(XENLOG_G_ERR
+               "Failed to alloc a page to replace %pd's shared_info GFN %"PRI_gfn"\n",
+               d, gfn_x(gfn));
         ret = -ENOMEM;
         goto exit_put_gfn;
     }
 
-    ret = guest_physmap_remove_page(d, _gfn(gfn), mfn, PAGE_ORDER_4K);
+    ret = guest_physmap_remove_page(d, gfn, mfn, PAGE_ORDER_4K);
     if ( ret )
     {
-        printk(XENLOG_G_ERR "Failed to remove Dom%d's shared_info frame %lx\n",
-               d->domain_id, gfn);
+        printk(XENLOG_G_ERR
+               "Failed to remove %pd's shared_info GFN %"PRI_gfn"\n",
+               d, gfn_x(gfn));
         free_domheap_page(new_page);
         goto exit_put_gfn;
     }
 
-    ret = guest_physmap_add_page(d, _gfn(gfn), page_to_mfn(new_page),
+    ret = guest_physmap_add_page(d, gfn, page_to_mfn(new_page),
                                  PAGE_ORDER_4K);
     if ( ret )
     {
-        printk(XENLOG_G_ERR "Failed to add a page to replace"
-               " Dom%d's shared_info frame %lx\n", d->domain_id, gfn);
+        printk(XENLOG_G_ERR
+               "Failed to add a page to replace %pd's shared_info frame %"PRI_gfn"\n",
+               d, gfn_x(gfn));
         free_domheap_page(new_page);
     }
  exit_put_gfn:
-    put_gfn(d, gfn);
+    put_gfn(d, gfn_x(gfn));
  exit_put_page:
     put_page(page);
 
@@ -783,8 +841,8 @@ int arch_set_info_guest(
     unsigned long flags;
     bool compat;
 #ifdef CONFIG_PV
-    unsigned long cr3_gfn;
-    struct page_info *cr3_page;
+    mfn_t cr3_mfn;
+    struct page_info *cr3_page = NULL;
     int rc = 0;
 #endif
 
@@ -843,9 +901,15 @@ int arch_set_info_guest(
             return -EINVAL;
     }
 
-    v->arch.flags &= ~TF_kernel_mode;
-    if ( (flags & VGCF_in_kernel) || is_hvm_domain(d)/*???*/ )
-        v->arch.flags |= TF_kernel_mode;
+    v->arch.flags |= TF_kernel_mode;
+    if ( unlikely(!(flags & VGCF_in_kernel)) &&
+         /*
+          * TF_kernel_mode is only allowed to be clear for 64-bit PV. See
+          * update_cr3(), sh_update_cr3(), sh_walk_guest_tables(), and
+          * shadow_one_bit_disable() for why that is.
+          */
+         !is_hvm_domain(d) && !is_pv_32bit_domain(d) )
+        v->arch.flags &= ~TF_kernel_mode;
 
     v->arch.vgc_flags = flags;
 
@@ -1044,10 +1108,10 @@ int arch_set_info_guest(
     set_bit(_VPF_in_reset, &v->pause_flags);
 
     if ( !compat )
-        cr3_gfn = xen_cr3_to_pfn(c.nat->ctrlreg[3]);
+        cr3_mfn = _mfn(xen_cr3_to_pfn(c.nat->ctrlreg[3]));
     else
-        cr3_gfn = compat_cr3_to_pfn(c.cmp->ctrlreg[3]);
-    cr3_page = get_page_from_gfn(d, cr3_gfn, NULL, P2M_ALLOC);
+        cr3_mfn = _mfn(compat_cr3_to_pfn(c.cmp->ctrlreg[3]));
+    cr3_page = get_page_from_mfn(cr3_mfn, d);
 
     if ( !cr3_page )
         rc = -EINVAL;
@@ -1075,7 +1139,7 @@ int arch_set_info_guest(
         case 0:
             if ( !compat && !VM_ASSIST(d, m2p_strict) &&
                  !paging_mode_refcounts(d) )
-                fill_ro_mpt(_mfn(cr3_gfn));
+                fill_ro_mpt(cr3_mfn);
             break;
         default:
             if ( cr3_page == current->arch.old_guest_table )
@@ -1090,8 +1154,8 @@ int arch_set_info_guest(
         v->arch.guest_table = pagetable_from_page(cr3_page);
         if ( c.nat->ctrlreg[1] )
         {
-            cr3_gfn = xen_cr3_to_pfn(c.nat->ctrlreg[1]);
-            cr3_page = get_page_from_gfn(d, cr3_gfn, NULL, P2M_ALLOC);
+            cr3_mfn = _mfn(xen_cr3_to_pfn(c.nat->ctrlreg[1]));
+            cr3_page = get_page_from_mfn(cr3_mfn, d);
 
             if ( !cr3_page )
                 rc = -EINVAL;
@@ -1104,9 +1168,15 @@ int arch_set_info_guest(
                     rc = -ERESTART;
                     /* Fallthrough */
                 case -ERESTART:
+                    /*
+                     * NB that we're putting the kernel-mode table
+                     * here, which we've already successfully
+                     * validated above; hence partial = false;
+                     */
                     v->arch.old_guest_ptpg = NULL;
                     v->arch.old_guest_table =
                         pagetable_get_page(v->arch.guest_table);
+                    v->arch.old_guest_table_partial = false;
                     v->arch.guest_table = pagetable_null();
                     break;
                 default:
@@ -1115,7 +1185,7 @@ int arch_set_info_guest(
                     break;
                 case 0:
                     if ( VM_ASSIST(d, m2p_strict) )
-                        zap_ro_mpt(_mfn(cr3_gfn));
+                        zap_ro_mpt(cr3_mfn);
                     break;
                 }
             }
@@ -1229,7 +1299,7 @@ arch_do_vcpu_op(
         struct vcpu_get_physid cpu_id;
 
         rc = -EINVAL;
-        if ( !is_pinned_vcpu(v) )
+        if ( !is_hwdom_pinned_vcpu(v) )
             break;
 
         cpu_id.phys_id =
@@ -1253,13 +1323,14 @@ arch_do_vcpu_op(
 }
 
 /*
- * Loading a nul selector does not clear bases and limits on AMD CPUs. Be on
- * the safe side and re-initialize both to flat segment values before loading
- * a nul selector.
+ * Loading a nul selector does not clear bases and limits on AMD or Hygon
+ * CPUs. Be on the safe side and re-initialize both to flat segment values
+ * before loading a nul selector.
  */
 #define preload_segment(seg, value) do {              \
     if ( !((value) & ~3) &&                           \
-         boot_cpu_data.x86_vendor == X86_VENDOR_AMD ) \
+         (boot_cpu_data.x86_vendor &                  \
+          (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )      \
         asm volatile ( "movl %k0, %%" #seg            \
                        :: "r" (FLAT_USER_DS32) );     \
 } while ( false )
@@ -1558,11 +1629,14 @@ bool update_runstate_area(struct vcpu *v)
     bool rc;
     struct guest_memory_policy policy = { .nested_guest_mode = false };
     void __user *guest_handle = NULL;
+    struct vcpu_runstate_info runstate;
 
     if ( guest_handle_is_null(runstate_guest(v)) )
         return true;
 
     update_guest_memory_policy(v, &policy);
+
+    memcpy(&runstate, &v->runstate, sizeof(runstate));
 
     if ( VM_ASSIST(v->domain, runstate_update_flag) )
     {
@@ -1570,9 +1644,9 @@ bool update_runstate_area(struct vcpu *v)
             ? &v->runstate_guest.compat.p->state_entry_time + 1
             : &v->runstate_guest.native.p->state_entry_time + 1;
         guest_handle--;
-        v->runstate.state_entry_time |= XEN_RUNSTATE_UPDATE;
+        runstate.state_entry_time |= XEN_RUNSTATE_UPDATE;
         __raw_copy_to_guest(guest_handle,
-                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+                            (void *)(&runstate.state_entry_time + 1) - 1, 1);
         smp_wmb();
     }
 
@@ -1580,20 +1654,20 @@ bool update_runstate_area(struct vcpu *v)
     {
         struct compat_vcpu_runstate_info info;
 
-        XLAT_vcpu_runstate_info(&info, &v->runstate);
+        XLAT_vcpu_runstate_info(&info, &runstate);
         __copy_to_guest(v->runstate_guest.compat, &info, 1);
         rc = true;
     }
     else
-        rc = __copy_to_guest(runstate_guest(v), &v->runstate, 1) !=
-             sizeof(v->runstate);
+        rc = __copy_to_guest(runstate_guest(v), &runstate, 1) !=
+             sizeof(runstate);
 
     if ( guest_handle )
     {
-        v->runstate.state_entry_time &= ~XEN_RUNSTATE_UPDATE;
+        runstate.state_entry_time &= ~XEN_RUNSTATE_UPDATE;
         smp_wmb();
         __raw_copy_to_guest(guest_handle,
-                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+                            (void *)(&runstate.state_entry_time + 1) - 1, 1);
     }
 
     update_guest_memory_policy(v, &policy);
@@ -1608,9 +1682,63 @@ static void _update_runstate_area(struct vcpu *v)
         v->arch.pv.need_update_runstate_area = 1;
 }
 
-static inline bool need_full_gdt(const struct domain *d)
+/*
+ * Overview of Xen's GDTs.
+ *
+ * Xen maintains per-CPU compat and regular GDTs which are both a single page
+ * in size.  Some content is specific to each CPU (the TSS, the per-CPU marker
+ * for #DF handling, and optionally the LDT).  The compat and regular GDTs
+ * differ by the layout and content of the guest accessible selectors.
+ *
+ * The Xen selectors live from 0xe000 (slot 14 of 16), and need to always
+ * appear in this position for interrupt/exception handling to work.
+ *
+ * A PV guest may specify GDT frames of their own (slots 0 to 13).  Room for a
+ * full GDT exists in the per-domain mappings.
+ *
+ * To schedule a PV vcpu, we point slot 14 of the guest's full GDT at the
+ * current CPU's compat or regular (as appropriate) GDT frame.  This is so
+ * that the per-CPU parts still work correctly after switching pagetables and
+ * loading the guests full GDT into GDTR.
+ *
+ * To schedule Idle or HVM vcpus, we load a GDT base address which causes the
+ * regular per-CPU GDT frame to appear with selectors at the appropriate
+ * offset.
+ */
+static always_inline bool need_full_gdt(const struct domain *d)
 {
     return is_pv_domain(d) && !is_idle_domain(d);
+}
+
+static void update_xen_slot_in_full_gdt(const struct vcpu *v, unsigned int cpu)
+{
+    l1e_write(pv_gdt_ptes(v) + FIRST_RESERVED_GDT_PAGE,
+              !is_pv_32bit_vcpu(v) ? per_cpu(gdt_l1e, cpu)
+                                   : per_cpu(compat_gdt_l1e, cpu));
+}
+
+static void load_full_gdt(const struct vcpu *v, unsigned int cpu)
+{
+    struct desc_ptr gdt_desc = {
+        .limit = LAST_RESERVED_GDT_BYTE,
+        .base = GDT_VIRT_START(v),
+    };
+
+    lgdt(&gdt_desc);
+
+    per_cpu(full_gdt_loaded, cpu) = true;
+}
+
+static void load_default_gdt(unsigned int cpu)
+{
+    struct desc_ptr gdt_desc = {
+        .limit = LAST_RESERVED_GDT_BYTE,
+        .base  = (unsigned long)(per_cpu(gdt, cpu) - FIRST_RESERVED_GDT_ENTRY),
+    };
+
+    lgdt(&gdt_desc);
+
+    per_cpu(full_gdt_loaded, cpu) = false;
 }
 
 static void __context_switch(void)
@@ -1620,8 +1748,6 @@ static void __context_switch(void)
     struct vcpu          *p = per_cpu(curr_vcpu, cpu);
     struct vcpu          *n = current;
     struct domain        *pd = p->domain, *nd = n->domain;
-    seg_desc_t           *gdt;
-    struct desc_ptr       gdt_desc;
 
     ASSERT(p != n);
     ASSERT(!vcpu_cpu_dirty(n));
@@ -1653,7 +1779,7 @@ static void __context_switch(void)
                 BUG();
 
             if ( cpu_has_xsaves && is_hvm_vcpu(n) )
-                set_msr_xss(n->arch.hvm.msr_xss);
+                set_msr_xss(n->arch.msrs->xss.raw);
         }
         vcpu_restore_fpu_nonlazy(n, false);
         nd->arch.ctxt_switch->to(n);
@@ -1661,27 +1787,12 @@ static void __context_switch(void)
 
     psr_ctxt_switch_to(nd);
 
-    gdt = !is_pv_32bit_domain(nd) ? per_cpu(gdt_table, cpu) :
-                                    per_cpu(compat_gdt_table, cpu);
     if ( need_full_gdt(nd) )
-    {
-        unsigned long mfn = virt_to_mfn(gdt);
-        l1_pgentry_t *pl1e = pv_gdt_ptes(n);
-        unsigned int i;
+        update_xen_slot_in_full_gdt(n, cpu);
 
-        for ( i = 0; i < NR_RESERVED_GDT_PAGES; i++ )
-            l1e_write(pl1e + FIRST_RESERVED_GDT_PAGE + i,
-                      l1e_from_pfn(mfn + i, __PAGE_HYPERVISOR_RW));
-    }
-
-    if ( need_full_gdt(pd) &&
+    if ( per_cpu(full_gdt_loaded, cpu) &&
          ((p->vcpu_id != n->vcpu_id) || !need_full_gdt(nd)) )
-    {
-        gdt_desc.limit = LAST_RESERVED_GDT_BYTE;
-        gdt_desc.base  = (unsigned long)(gdt - FIRST_RESERVED_GDT_ENTRY);
-
-        lgdt(&gdt_desc);
-    }
+        load_default_gdt(cpu);
 
     write_ptbase(n);
 
@@ -1692,14 +1803,8 @@ static void __context_switch(void)
         svm_load_segs(0, 0, 0, 0, 0, 0, 0);
 #endif
 
-    if ( need_full_gdt(nd) &&
-         ((p->vcpu_id != n->vcpu_id) || !need_full_gdt(pd)) )
-    {
-        gdt_desc.limit = LAST_RESERVED_GDT_BYTE;
-        gdt_desc.base = GDT_VIRT_START(n);
-
-        lgdt(&gdt_desc);
-    }
+    if ( need_full_gdt(nd) && !per_cpu(full_gdt_loaded, cpu) )
+        load_full_gdt(n, cpu);
 
     if ( pd != nd )
         cpumask_clear_cpu(cpu, pd->dirty_cpumask);
@@ -1708,13 +1813,13 @@ static void __context_switch(void)
     per_cpu(curr_vcpu, cpu) = n;
 }
 
-
 void context_switch(struct vcpu *prev, struct vcpu *next)
 {
     unsigned int cpu = smp_processor_id();
     const struct domain *prevd = prev->domain, *nextd = next->domain;
     unsigned int dirty_cpu = next->dirty_cpu;
 
+    ASSERT(prev != next);
     ASSERT(local_irq_is_enabled());
 
     get_cpu_info()->use_pv_cr3 = false;
@@ -1726,12 +1831,9 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
         flush_mask(cpumask_of(dirty_cpu), FLUSH_VCPU_STATE);
     }
 
-    if ( prev != next )
-    {
-        _update_runstate_area(prev);
-        vpmu_switch_from(prev);
-        np2m_schedule(NP2M_SCHEDLE_OUT);
-    }
+    _update_runstate_area(prev);
+    vpmu_switch_from(prev);
+    np2m_schedule(NP2M_SCHEDLE_OUT);
 
     if ( is_hvm_domain(prevd) && !list_empty(&prev->arch.hvm.tm_list) )
         pt_save_timer(prev);
@@ -1786,16 +1888,12 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
         }
     }
 
-    context_saved(prev);
+    sched_context_switched(prev, next);
 
-    if ( prev != next )
-    {
-        _update_runstate_area(next);
-
-        /* Must be done with interrupts enabled */
-        vpmu_switch_to(next);
-        np2m_schedule(NP2M_SCHEDLE_IN);
-    }
+    _update_runstate_area(next);
+    /* Must be done with interrupts enabled */
+    vpmu_switch_to(next);
+    np2m_schedule(NP2M_SCHEDLE_IN);
 
     /* Ensure that the vcpu has an up-to-date time base. */
     update_vcpu_system_time(next);
@@ -1880,17 +1978,41 @@ static int relinquish_memory(
             break;
         case -ERESTART:
         case -EINTR:
+            /*
+             * -EINTR means PGT_validated has been re-set; re-set
+             * PGT_pinned again so that it gets picked up next time
+             * around.
+             *
+             * -ERESTART, OTOH, means PGT_partial is set instead.  Put
+             * it back on the list, but don't set PGT_pinned; the
+             * section below will finish off de-validation.  But we do
+             * need to drop the general ref associated with
+             * PGT_pinned, since put_page_and_type_preemptible()
+             * didn't do it.
+             *
+             * NB we can do an ASSERT for PGT_validated, since we
+             * "own" the type ref; but theoretically, the PGT_partial
+             * could be cleared by someone else.
+             */
+            if ( ret == -EINTR )
+            {
+                ASSERT(page->u.inuse.type_info & PGT_validated);
+                set_bit(_PGT_pinned, &page->u.inuse.type_info);
+            }
+            else
+                put_page(page);
+
             ret = -ERESTART;
+
+            /* Put the page back on the list and drop the ref we grabbed above */
             page_list_add(page, list);
-            set_bit(_PGT_pinned, &page->u.inuse.type_info);
             put_page(page);
             goto out;
         default:
             BUG();
         }
 
-        if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
-            put_page(page);
+        put_page_alloc_ref(page);
 
         /*
          * Forcibly invalidate top-most, still valid page tables at this point
@@ -2046,6 +2168,7 @@ int domain_relinquish_resources(struct domain *d)
             d->arch.auto_unmask = 0;
         }
 
+#ifdef CONFIG_MEM_SHARING
     PROGRESS(shared):
 
         if ( is_hvm_domain(d) )
@@ -2056,6 +2179,7 @@ int domain_relinquish_resources(struct domain *d)
             if ( ret )
                 return ret;
         }
+#endif
 
         spin_lock(&d->page_alloc_lock);
         page_list_splice(&d->arch.relmem_list, &d->page_list);
@@ -2132,7 +2256,7 @@ void vcpu_kick(struct vcpu *v)
      * pending flag. These values may fluctuate (after all, we hold no
      * locks) but the key insight is that each change will cause
      * evtchn_upcall_pending to be polled.
-     * 
+     *
      * NB2. We save the running flag across the unblock to avoid a needless
      * IPI for domains that we IPI'd to unblock.
      */

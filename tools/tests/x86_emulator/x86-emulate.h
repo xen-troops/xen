@@ -59,6 +59,9 @@
     (type *)((char *)mptr__ - offsetof(type, member)); \
 })
 
+#define hweight32 __builtin_popcount
+#define hweight64 __builtin_popcountll
+
 #define is_canonical_address(x) (((int64_t)(x) >> 47) == ((int64_t)(x) >> 63))
 
 extern uint32_t mxcsr_mask;
@@ -122,10 +125,13 @@ static inline bool xcr0_mask(uint64_t mask)
 #define cpu_has_sse        cp.basic.sse
 #define cpu_has_sse2       cp.basic.sse2
 #define cpu_has_sse3       cp.basic.sse3
+#define cpu_has_pclmulqdq  cp.basic.pclmulqdq
+#define cpu_has_ssse3      cp.basic.ssse3
 #define cpu_has_fma       (cp.basic.fma && xcr0_mask(6))
 #define cpu_has_sse4_1     cp.basic.sse4_1
 #define cpu_has_sse4_2     cp.basic.sse4_2
 #define cpu_has_popcnt     cp.basic.popcnt
+#define cpu_has_aesni      cp.basic.aesni
 #define cpu_has_avx       (cp.basic.avx  && xcr0_mask(6))
 #define cpu_has_f16c      (cp.basic.f16c && xcr0_mask(6))
 
@@ -134,8 +140,22 @@ static inline bool xcr0_mask(uint64_t mask)
 #define cpu_has_bmi2       cp.feat.bmi2
 #define cpu_has_avx512f   (cp.feat.avx512f  && xcr0_mask(0xe6))
 #define cpu_has_avx512dq  (cp.feat.avx512dq && xcr0_mask(0xe6))
+#define cpu_has_avx512_ifma (cp.feat.avx512_ifma && xcr0_mask(0xe6))
+#define cpu_has_avx512er  (cp.feat.avx512er && xcr0_mask(0xe6))
+#define cpu_has_avx512cd  (cp.feat.avx512cd && xcr0_mask(0xe6))
+#define cpu_has_sha        cp.feat.sha
 #define cpu_has_avx512bw  (cp.feat.avx512bw && xcr0_mask(0xe6))
 #define cpu_has_avx512vl  (cp.feat.avx512vl && xcr0_mask(0xe6))
+#define cpu_has_avx512_vbmi (cp.feat.avx512_vbmi && xcr0_mask(0xe6))
+#define cpu_has_avx512_vbmi2 (cp.feat.avx512_vbmi2 && xcr0_mask(0xe6))
+#define cpu_has_gfni       cp.feat.gfni
+#define cpu_has_vaes      (cp.feat.vaes && xcr0_mask(6))
+#define cpu_has_vpclmulqdq (cp.feat.vpclmulqdq && xcr0_mask(6))
+#define cpu_has_avx512_vnni (cp.feat.avx512_vnni && xcr0_mask(0xe6))
+#define cpu_has_avx512_bitalg (cp.feat.avx512_bitalg && xcr0_mask(0xe6))
+#define cpu_has_avx512_vpopcntdq (cp.feat.avx512_vpopcntdq && xcr0_mask(0xe6))
+#define cpu_has_avx512_4vnniw (cp.feat.avx512_4vnniw && xcr0_mask(0xe6))
+#define cpu_has_avx512_4fmaps (cp.feat.avx512_4fmaps && xcr0_mask(0xe6))
 
 #define cpu_has_xgetbv1   (cpu_has_xsave && cp.xstate.xgetbv1)
 

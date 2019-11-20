@@ -39,7 +39,7 @@ int compat_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) ar
     struct vcpu *v;
     int rc = 0;
 
-    if ( vcpuid >= d->max_vcpus || (v = d->vcpu[vcpuid]) == NULL )
+    if ( (v = domain_vcpu(d, vcpuid)) == NULL )
         return -ENOENT;
 
     switch ( cmd )
@@ -81,7 +81,7 @@ int compat_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) ar
         }
 
         if ( rc == -ERESTART )
-            rc = hypercall_create_continuation(__HYPERVISOR_vcpu_op, "iuh",
+            rc = hypercall_create_continuation(__HYPERVISOR_vcpu_op, "iih",
                                                cmd, vcpuid, arg);
 
         break;

@@ -36,10 +36,7 @@ struct p2m_domain {
     /* Current Translation Table Base Register for the p2m */
     uint64_t vttbr;
 
-    /*
-     * Highest guest frame that's ever been mapped in the p2m
-     * Only takes into account ram and foreign mapping
-     */
+    /* Highest guest frame that's ever been mapped in the p2m */
     gfn_t max_mapped_gfn;
 
     /*
@@ -158,6 +155,15 @@ void p2m_altp2m_check(struct vcpu *v, uint16_t idx)
 {
     /* Not supported on ARM. */
 }
+
+/*
+ * Helper to restrict "p2m_ipa_bits" according the external entity
+ * (e.g. IOMMU) requirements.
+ *
+ * Each corresponding driver should report the maximum IPA bits
+ * (Stage-2 input size) it can support.
+ */
+void p2m_restrict_ipa_bits(unsigned int ipa_bits);
 
 /* Second stage paging setup, to be called on all CPUs */
 void setup_virt_paging(void);
@@ -391,10 +397,12 @@ static inline int set_foreign_p2m_entry(struct domain *d, unsigned long gfn,
  */
 static inline bool vcpu_has_cache_enabled(struct vcpu *v)
 {
+    const register_t mask = SCTLR_Axx_ELx_C | SCTLR_Axx_ELx_M;
+
     /* Only works with the current vCPU */
     ASSERT(current == v);
 
-    return (READ_SYSREG32(SCTLR_EL1) & (SCTLR_C|SCTLR_M)) == (SCTLR_C|SCTLR_M);
+    return (READ_SYSREG(SCTLR_EL1) & mask) == mask;
 }
 
 #endif /* _XEN_P2M_H */

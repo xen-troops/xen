@@ -3,16 +3,33 @@
 
 #include <xen/percpu.h>
 
+enum microcode_match_result {
+    OLD_UCODE, /* signature matched, but revision id is older or equal */
+    NEW_UCODE, /* signature matched, but revision id is newer */
+    MIS_UCODE, /* signature mismatched */
+};
+
 struct cpu_signature;
-struct ucode_cpu_info;
+
+struct microcode_patch {
+    union {
+        struct microcode_intel *mc_intel;
+        struct microcode_amd *mc_amd;
+        void *mc;
+    };
+};
 
 struct microcode_ops {
-    int (*microcode_resume_match)(unsigned int cpu, const void *mc);
-    int (*cpu_request_microcode)(unsigned int cpu, const void *buf,
-                                 size_t size);
-    int (*collect_cpu_info)(unsigned int cpu, struct cpu_signature *csig);
-    int (*apply_microcode)(unsigned int cpu);
+    struct microcode_patch *(*cpu_request_microcode)(const void *buf,
+                                                     size_t size);
+    int (*collect_cpu_info)(struct cpu_signature *csig);
+    int (*apply_microcode)(const struct microcode_patch *patch);
     int (*start_update)(void);
+    void (*end_update_percpu)(void);
+    void (*free_patch)(void *mc);
+    bool (*match_cpu)(const struct microcode_patch *patch);
+    enum microcode_match_result (*compare_patch)(
+        const struct microcode_patch *new, const struct microcode_patch *old);
 };
 
 struct cpu_signature {
@@ -21,16 +38,9 @@ struct cpu_signature {
     unsigned int rev;
 };
 
-struct ucode_cpu_info {
-    struct cpu_signature cpu_sig;
-    union {
-        struct microcode_intel *mc_intel;
-        struct microcode_amd *mc_amd;
-        void *mc_valid;
-    } mc;
-};
-
-DECLARE_PER_CPU(struct ucode_cpu_info, ucode_cpu_info);
+DECLARE_PER_CPU(struct cpu_signature, cpu_sig);
 extern const struct microcode_ops *microcode_ops;
+
+void microcode_free_patch(struct microcode_patch *patch);
 
 #endif /* ASM_X86__MICROCODE_H */

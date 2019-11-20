@@ -19,7 +19,9 @@ $(call as-option-add,CFLAGS,CC,"crc32 %eax$$(comma)%eax",-DHAVE_AS_SSE4_2)
 $(call as-option-add,CFLAGS,CC,"invept (%rax)$$(comma)%rax",-DHAVE_AS_EPT)
 $(call as-option-add,CFLAGS,CC,"rdrand %eax",-DHAVE_AS_RDRAND)
 $(call as-option-add,CFLAGS,CC,"rdfsbase %rax",-DHAVE_AS_FSGSBASE)
+$(call as-option-add,CFLAGS,CC,"xsaveopt (%rax)",-DHAVE_AS_XSAVEOPT)
 $(call as-option-add,CFLAGS,CC,"rdseed %eax",-DHAVE_AS_RDSEED)
+$(call as-option-add,CFLAGS,CC,"clwb (%rax)",-DHAVE_AS_CLWB)
 $(call as-option-add,CFLAGS,CC,".equ \"x\"$$(comma)1", \
                      -U__OBJECT_LABEL__ -DHAVE_AS_QUOTED_SYM \
                      '-D__OBJECT_LABEL__=$(subst $(BASEDIR)/,,$(CURDIR))/$$@')
@@ -50,6 +52,19 @@ CFLAGS += -mindirect-branch=thunk-extern -mindirect-branch-register
 CFLAGS += -DCONFIG_INDIRECT_THUNK
 CFLAGS += -fno-jump-tables
 export CONFIG_INDIRECT_THUNK=y
+endif
+
+# If supported by the compiler, reduce stack alignment to 8 bytes. But allow
+# this to be overridden elsewhere.
+$(call cc-option-add,CFLAGS-stack-boundary,CC,-mpreferred-stack-boundary=3)
+CFLAGS += $(CFLAGS-stack-boundary)
+
+ifeq ($(CONFIG_UBSAN),y)
+# Don't enable alignment sanitisation.  x86 has efficient unaligned accesses,
+# and various things (ACPI tables, hypercall pages, stubs, etc) are wont-fix.
+# It also causes an as-yet-unidentified crash on native boot before the
+# console starts.
+$(call cc-option-add,CFLAGS_UBSAN,CC,-fno-sanitize=alignment)
 endif
 
 # Set up the assembler include path properly for older toolchains.

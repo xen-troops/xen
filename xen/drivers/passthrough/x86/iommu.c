@@ -21,21 +21,90 @@
 #include <xsm/xsm.h>
 
 #include <asm/hvm/io.h>
+#include <asm/io_apic.h>
 #include <asm/setup.h>
 
-struct iommu_ops iommu_ops;
+const struct iommu_init_ops *__initdata iommu_init_ops;
+struct iommu_ops __read_mostly iommu_ops;
+
+int __init iommu_hardware_setup(void)
+{
+    struct IO_APIC_route_entry **ioapic_entries = NULL;
+    int rc;
+
+    if ( !iommu_init_ops )
+        return -ENODEV;
+
+    rc = scan_pci_devices();
+    if ( rc )
+        return rc;
+
+    if ( !iommu_ops.init )
+        iommu_ops = *iommu_init_ops->ops;
+    else
+        /* x2apic setup may have previously initialised the struct. */
+        ASSERT(iommu_ops.init == iommu_init_ops->ops->init);
+
+    if ( !x2apic_enabled && iommu_intremap )
+    {
+        /*
+         * If x2APIC is enabled interrupt remapping is already enabled, so
+         * there's no need to mess with the IO-APIC because the remapping
+         * entries are already correctly setup by x2apic_bsp_setup.
+         */
+        ioapic_entries = alloc_ioapic_entries();
+        if ( !ioapic_entries )
+            return -ENOMEM;
+        rc = save_IO_APIC_setup(ioapic_entries);
+        if ( rc )
+        {
+            free_ioapic_entries(ioapic_entries);
+            return rc;
+        }
+
+        mask_8259A();
+        mask_IO_APIC_setup(ioapic_entries);
+    }
+
+    rc = iommu_init_ops->setup();
+
+    if ( ioapic_entries )
+    {
+        restore_IO_APIC_setup(ioapic_entries, rc);
+        unmask_8259A();
+        free_ioapic_entries(ioapic_entries);
+    }
+
+    return rc;
+}
+
+int iommu_enable_x2apic(void)
+{
+    if ( system_state < SYS_STATE_active )
+    {
+        if ( !iommu_supports_x2apic() )
+            return -EOPNOTSUPP;
+
+        iommu_ops = *iommu_init_ops->ops;
+    }
+    else if ( !x2apic_enabled )
+        return -EOPNOTSUPP;
+
+    if ( !iommu_ops.enable_x2apic )
+        return -EOPNOTSUPP;
+
+    return iommu_ops.enable_x2apic();
+}
 
 void iommu_update_ire_from_apic(
     unsigned int apic, unsigned int reg, unsigned int value)
 {
-    const struct iommu_ops *ops = iommu_get_ops();
-    ops->update_ire_from_apic(apic, reg, value);
+    iommu_vcall(&iommu_ops, update_ire_from_apic, apic, reg, value);
 }
 
 unsigned int iommu_read_apic_from_ire(unsigned int apic, unsigned int reg)
 {
-    const struct iommu_ops *ops = iommu_get_ops();
-    return ops->read_apic_from_ire(apic, reg);
+    return iommu_call(&iommu_ops, read_apic_from_ire, apic, reg);
 }
 
 int __init iommu_setup_hpet_msi(struct msi_desc *msi)
@@ -44,105 +113,13 @@ int __init iommu_setup_hpet_msi(struct msi_desc *msi)
     return ops->setup_hpet_msi ? ops->setup_hpet_msi(msi) : -ENODEV;
 }
 
-int arch_iommu_populate_page_table(struct domain *d)
-{
-    struct page_info *page;
-    int rc = 0, n = 0;
-
-    spin_lock(&d->page_alloc_lock);
-
-    if ( unlikely(d->is_dying) )
-        rc = -ESRCH;
-
-    while ( !rc && (page = page_list_remove_head(&d->page_list)) )
-    {
-        if ( is_hvm_domain(d) ||
-            (page->u.inuse.type_info & PGT_type_mask) == PGT_writable_page )
-        {
-            unsigned long mfn = mfn_x(page_to_mfn(page));
-            unsigned long gfn = mfn_to_gmfn(d, mfn);
-            unsigned int flush_flags = 0;
-
-            if ( gfn != gfn_x(INVALID_GFN) )
-            {
-                ASSERT(!(gfn >> DEFAULT_DOMAIN_ADDRESS_WIDTH));
-                BUG_ON(SHARED_M2P(gfn));
-                rc = iommu_map(d, _dfn(gfn), _mfn(mfn), PAGE_ORDER_4K,
-                               IOMMUF_readable | IOMMUF_writable,
-                               &flush_flags);
-
-                /*
-                 * We may be working behind the back of a running guest, which
-                 * may change the type of a page at any time.  We can't prevent
-                 * this (for instance, by bumping the type count while mapping
-                 * the page) without causing legitimate guest type-change
-                 * operations to fail.  So after adding the page to the IOMMU,
-                 * check again to make sure this is still valid.  NB that the
-                 * writable entry in the iommu is harmless until later, when
-                 * the actual device gets assigned.
-                 */
-                if ( !rc && !is_hvm_domain(d) &&
-                     ((page->u.inuse.type_info & PGT_type_mask) !=
-                      PGT_writable_page) )
-                {
-                    rc = iommu_unmap(d, _dfn(gfn), PAGE_ORDER_4K, &flush_flags);
-                    /* If the type changed yet again, simply force a retry. */
-                    if ( !rc && ((page->u.inuse.type_info & PGT_type_mask) ==
-                                 PGT_writable_page) )
-                        rc = -ERESTART;
-                }
-            }
-            if ( rc )
-            {
-                page_list_add(page, &d->page_list);
-                break;
-            }
-        }
-        page_list_add_tail(page, &d->arch.relmem_list);
-        if ( !(++n & 0xff) && !page_list_empty(&d->page_list) &&
-             hypercall_preempt_check() )
-            rc = -ERESTART;
-    }
-
-    if ( !rc )
-    {
-        /*
-         * The expectation here is that generally there are many normal pages
-         * on relmem_list (the ones we put there) and only few being in an
-         * offline/broken state. The latter ones are always at the head of the
-         * list. Hence we first move the whole list, and then move back the
-         * first few entries.
-         */
-        page_list_move(&d->page_list, &d->arch.relmem_list);
-        while ( !page_list_empty(&d->page_list) &&
-                (page = page_list_first(&d->page_list),
-                 (page->count_info & (PGC_state|PGC_broken))) )
-        {
-            page_list_del(page, &d->page_list);
-            page_list_add_tail(page, &d->arch.relmem_list);
-        }
-    }
-
-    spin_unlock(&d->page_alloc_lock);
-
-    if ( !rc )
-        /*
-         * flush_flags are not tracked across hypercall pre-emption so
-         * assume a full flush is necessary.
-         */
-        rc = iommu_iotlb_flush_all(
-            d, IOMMU_FLUSHF_added | IOMMU_FLUSHF_modified);
-
-    if ( rc && rc != -ERESTART )
-        iommu_teardown(d);
-
-    return rc;
-}
-
 void __hwdom_init arch_iommu_check_autotranslated_hwdom(struct domain *d)
 {
-    if ( !iommu_enabled )
+    if ( !is_iommu_enabled(d) )
         panic("Presently, iommu must be enabled for PVH hardware domain\n");
+
+    if ( !iommu_hwdom_strict )
+        panic("PVH hardware domain iommu must be set in 'strict' mode\n");
 }
 
 int arch_iommu_domain_init(struct domain *d)
@@ -195,19 +172,9 @@ static bool __hwdom_init hwdom_iommu_map(const struct domain *d,
             return false;
     }
 
-    /*
-     * Check that it doesn't overlap with the LAPIC
-     * TODO: if the guest relocates the MMIO area of the LAPIC Xen should make
-     * sure there's nothing in the new address that would prevent trapping.
-     */
-    if ( has_vlapic(d) )
-    {
-        const struct vcpu *v;
-
-        for_each_vcpu(d, v)
-            if ( pfn == PFN_DOWN(vlapic_base_address(vcpu_vlapic(v))) )
-                return false;
-    }
+    /* Check that it doesn't overlap with the Interrupt Address Range. */
+    if ( pfn >= 0xfee00 && pfn <= 0xfeeff )
+        return false;
     /* ... or the IO-APIC */
     for ( i = 0; has_vioapic(d) && i < d->arch.hvm.nr_vioapics; i++ )
         if ( pfn == PFN_DOWN(domain_vioapic(d, i)->base_address) )
@@ -268,8 +235,8 @@ void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
                            IOMMUF_readable | IOMMUF_writable, &flush_flags);
 
         if ( rc )
-            printk(XENLOG_WARNING " d%d: IOMMU mapping failed: %d\n",
-                   d->domain_id, rc);
+            printk(XENLOG_WARNING "%pd: identity %smapping of %lx failed: %d\n",
+                   d, !paging_mode_translate(d) ? "IOMMU " : "", pfn, rc);
 
         if (!(i & 0xfffff))
             process_pending_softirqs();

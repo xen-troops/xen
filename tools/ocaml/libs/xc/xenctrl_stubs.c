@@ -32,6 +32,7 @@
 
 #define XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenctrl.h>
+#include <xen-tools/libs.h>
 
 #include "mmap_stubs.h"
 
@@ -119,6 +120,67 @@ static void domain_handle_of_uuid_string(xen_domain_handle_t h,
 #undef X
 }
 
+/*
+ * Various fields which are a bitmap in the C ABI are converted to lists of
+ * integers in the Ocaml ABI for more idiomatic handling.
+ */
+static value c_bitmap_to_ocaml_list
+             /* ! */
+             /*
+	      * All calls to this function must be in a form suitable
+	      * for xenctrl_abi_check.  The parsing there is ad-hoc.
+	      */
+             (unsigned int bitmap)
+{
+	CAMLparam0();
+	CAMLlocal2(list, tmp);
+
+#if defined(__i386__) || defined(__x86_64__)
+/*
+ * This check file contains a mixture of stuff, because it is
+ * generated from the whole of this xenctrl_stubs.c file (without
+ * regard to arch ifdefs) and the whole of xenctrl.ml (which does not
+ * have any arch ifdeffery).  Currently, there is only x86 and
+ * arch-independent stuff, and there is no facility in the abi-check
+ * script for arch conditionals.  So for now we make the checks
+ * effective on x86 only; this will suffice to defend even ARM
+ * because breaking changes to common code will break the build
+ * on x86 and not make it to master.  This is a bit of a bodge.
+ */
+#include "xenctrl_abi_check.h"
+#endif
+
+	list = tmp = Val_emptylist;
+
+	for ( unsigned int i = 0; bitmap; i++, bitmap >>= 1 )
+	{
+		if ( !(bitmap & 1) )
+			continue;
+
+		tmp = caml_alloc_small(2, Tag_cons);
+		Field(tmp, 0) = Val_int(i);
+		Field(tmp, 1) = list;
+		list = tmp;
+	}
+
+	CAMLreturn(list);
+}
+
+static unsigned int ocaml_list_to_c_bitmap(value l)
+             /* ! */
+             /*
+	      * All calls to this function must be in a form suitable
+	      * for xenctrl_abi_check.  The parsing there is ad-hoc.
+	      */
+{
+	unsigned int val = 0;
+
+	for ( ; l != Val_none; l = Field(l, 1) )
+		val |= 1u << Int_val(Field(l, 0));
+
+	return val;
+}
+
 CAMLprim value stub_xc_domain_create(value xch, value config)
 {
 	CAMLparam2(xch, config);
@@ -128,11 +190,12 @@ CAMLprim value stub_xc_domain_create(value xch, value config)
 #define VAL_SSIDREF             Field(config, 0)
 #define VAL_HANDLE              Field(config, 1)
 #define VAL_FLAGS               Field(config, 2)
-#define VAL_MAX_VCPUS           Field(config, 3)
-#define VAL_MAX_EVTCHN_PORT     Field(config, 4)
-#define VAL_MAX_GRANT_FRAMES    Field(config, 5)
-#define VAL_MAX_MAPTRACK_FRAMES Field(config, 6)
-#define VAL_ARCH                Field(config, 7)
+#define VAL_IOMMU_OPTS          Field(config, 3)
+#define VAL_MAX_VCPUS           Field(config, 4)
+#define VAL_MAX_EVTCHN_PORT     Field(config, 5)
+#define VAL_MAX_GRANT_FRAMES    Field(config, 6)
+#define VAL_MAX_MAPTRACK_FRAMES Field(config, 7)
+#define VAL_ARCH                Field(config, 8)
 
 	uint32_t domid = 0;
 	int result;
@@ -146,8 +209,15 @@ CAMLprim value stub_xc_domain_create(value xch, value config)
 
 	domain_handle_of_uuid_string(cfg.handle, String_val(VAL_HANDLE));
 
-	for ( l = VAL_FLAGS; l != Val_none; l = Field(l, 1) )
-		cfg.flags |= 1u << Int_val(Field(l, 0));
+	cfg.flags = ocaml_list_to_c_bitmap
+		/* ! domain_create_flag CDF_ lc */
+		/* ! XEN_DOMCTL_CDF_ XEN_DOMCTL_CDF_MAX max */
+		(VAL_FLAGS);
+
+	cfg.iommu_opts = ocaml_list_to_c_bitmap
+		/* ! domain_create_iommu_opts IOMMU_ lc */
+		/* ! XEN_DOMCTL_IOMMU_ XEN_DOMCTL_IOMMU_MAX max */
+		(VAL_IOMMU_OPTS);
 
 	arch_domconfig = Field(VAL_ARCH, 0);
 	switch ( Tag_val(VAL_ARCH) )
@@ -162,8 +232,10 @@ CAMLprim value stub_xc_domain_create(value xch, value config)
         /* Mnemonics for the named fields inside xen_x86_arch_domainconfig */
 #define VAL_EMUL_FLAGS          Field(arch_domconfig, 0)
 
-		for ( l = VAL_EMUL_FLAGS; l != Val_none; l = Field(l, 1) )
-			cfg.arch.emulation_flags |= 1u << Int_val(Field(l, 0));
+		cfg.arch.emulation_flags = ocaml_list_to_c_bitmap
+			/* ! x86_arch_emulation_flags X86_EMU_ none */
+			/* ! XEN_X86_EMU_ XEN_X86_EMU_ALL all */
+			(VAL_EMUL_FLAGS);
 
 #undef VAL_EMUL_FLAGS
 
@@ -181,6 +253,7 @@ CAMLprim value stub_xc_domain_create(value xch, value config)
 #undef VAL_MAX_GRANT_FRAMES
 #undef VAL_MAX_EVTCHN_PORT
 #undef VAL_MAX_VCPUS
+#undef VAL_IOMMU_OPTS
 #undef VAL_FLAGS
 #undef VAL_HANDLE
 #undef VAL_SSIDREF
@@ -315,16 +388,12 @@ static value alloc_domaininfo(xc_domaininfo_t * info)
 	Store_field(result, 15, tmp);
 
 #if defined(__i386__) || defined(__x86_64__)
-	/* emulation_flags: x86_arch_emulation_flags list; */
-	tmp = emul_list = Val_emptylist;
-	for (i = 0; i < 10; i++) {
-		if ((info->arch_config.emulation_flags >> i) & 1) {
-			tmp = caml_alloc_small(2, Tag_cons);
-			Field(tmp, 0) = Val_int(i);
-			Field(tmp, 1) = emul_list;
-			emul_list = tmp;
-		}
-	}
+	/*
+	 * emulation_flags: x86_arch_emulation_flags list;
+	 */
+	emul_list = c_bitmap_to_ocaml_list
+		/* ! x86_arch_emulation_flags */
+		(info->arch_config.emulation_flags);
 
 	/* xen_x86_arch_domainconfig */
 	x86_arch_config = caml_alloc_tuple(1);
@@ -635,7 +704,7 @@ CAMLprim value stub_xc_send_debug_keys(value xch, value keys)
 CAMLprim value stub_xc_physinfo(value xch)
 {
 	CAMLparam1(xch);
-	CAMLlocal3(physinfo, cap_list, tmp);
+	CAMLlocal2(physinfo, cap_list);
 	xc_physinfo_t c_physinfo;
 	int r;
 
@@ -646,15 +715,13 @@ CAMLprim value stub_xc_physinfo(value xch)
 	if (r)
 		failwith_xc(_H(xch));
 
-	tmp = cap_list = Val_emptylist;
-	for (r = 0; r < 2; r++) {
-		if ((c_physinfo.capabilities >> r) & 1) {
-			tmp = caml_alloc_small(2, Tag_cons);
-			Field(tmp, 0) = Val_int(r);
-			Field(tmp, 1) = cap_list;
-			cap_list = tmp;
-		}
-	}
+	/*
+	 * capabilities: physinfo_cap_flag list;
+	 */
+	cap_list = c_bitmap_to_ocaml_list
+		/* ! physinfo_cap_flag CAP_ lc */
+		/* ! XEN_SYSCTL_PHYSCAP_ XEN_SYSCTL_PHYSCAP_MAX max */
+		(c_physinfo.capabilities);
 
 	physinfo = caml_alloc_tuple(10);
 	Store_field(physinfo, 0, Val_int(c_physinfo.threads_per_core));
@@ -757,32 +824,6 @@ CAMLprim value stub_xc_domain_memory_increase_reservation(value xch,
 	if (retval)
 		failwith_xc(_H(xch));
 	CAMLreturn(Val_unit);
-}
-
-CAMLprim value stub_xc_domain_set_machine_address_size(value xch,
-						       value domid,
-						       value width)
-{
-	CAMLparam3(xch, domid, width);
-	uint32_t c_domid = _D(domid);
-	int c_width = Int_val(width);
-
-	int retval = xc_domain_set_machine_address_size(_H(xch), c_domid, c_width);
-	if (retval)
-		failwith_xc(_H(xch));
-	CAMLreturn(Val_unit);
-}
-
-CAMLprim value stub_xc_domain_get_machine_address_size(value xch,
-                                                       value domid)
-{
-	CAMLparam2(xch, domid);
-	int retval;
-
-	retval = xc_domain_get_machine_address_size(_H(xch), _D(domid));
-	if (retval < 0)
-		failwith_xc(_H(xch));
-	CAMLreturn(Val_int(retval));
 }
 
 CAMLprim value stub_xc_domain_cpuid_set(value xch, value domid,

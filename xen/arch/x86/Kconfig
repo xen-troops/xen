@@ -12,16 +12,17 @@ config X86
 	select HAS_CPUFREQ
 	select HAS_EHCI
 	select HAS_EX_TABLE
+	select HAS_FAST_MULTIPLY
 	select HAS_GDBSX
 	select HAS_IOPORTS
 	select HAS_KEXEC
 	select MEM_ACCESS_ALWAYS_ON
 	select HAS_MEM_PAGING
-	select HAS_MEM_SHARING
 	select HAS_NS16550
 	select HAS_PASSTHROUGH
 	select HAS_PCI
 	select HAS_PDX
+	select HAS_SCHED_GRANULARITY
 	select HAS_UBSAN
 	select HAS_VPCI if !PV_SHIM_EXCLUSIVE && HVM
 	select NEEDS_LIBELF
@@ -130,13 +131,35 @@ config HVM_FEP
 config TBOOT
 	def_bool y
 	prompt "Xen tboot support" if EXPERT = "y"
-	depends on X86
 	select CRYPTO
 	---help---
 	  Allows support for Trusted Boot using the Intel(R) Trusted Execution
 	  Technology (TXT)
 
 	  If unsure, say Y.
+
+choice
+	prompt "Alignment of Xen image"
+	default XEN_ALIGN_2M if PV_SHIM_EXCLUSIVE
+	default XEN_ALIGN_DEFAULT
+	---help---
+	  Specify alignment for Xen image.
+
+	  If unsure, choose "default".
+
+config XEN_ALIGN_DEFAULT
+	bool "Default alignment"
+	---help---
+	  Pick alignment according to build variants.
+
+	  For EFI build the default alignment is 2M. For ELF build
+	  the default alignment is 4K due to syslinux failing to handle
+	  the increment of image size induced by 2M alignment.
+
+config XEN_ALIGN_2M
+	bool "2M alignment"
+
+endchoice
 
 config XEN_GUEST
 	def_bool n
@@ -147,16 +170,16 @@ config XEN_GUEST
 	  If unsure, say N.
 
 config PVH_GUEST
-	def_bool n
+	def_bool y
 	prompt "PVH Guest"
 	depends on XEN_GUEST
 	---help---
 	  Support booting using the PVH ABI.
 
-	  If unsure, say N.
+	  If unsure, say Y.
 
 config PV_SHIM
-	def_bool n
+	def_bool y
 	prompt "PV Shim"
 	depends on PV && XEN_GUEST
 	---help---
@@ -164,7 +187,7 @@ config PV_SHIM
 	  in an HVM/PVH container. This mode can only be enabled with command
 	  line option.
 
-	  If unsure, say N.
+	  If unsure, say Y.
 
 config PV_SHIM_EXCLUSIVE
 	def_bool n
@@ -176,6 +199,11 @@ config PV_SHIM_EXCLUSIVE
 	  firmware, and will not function correctly in other scenarios.
 
 	  If unsure, say N.
+
+config MEM_SHARING
+	bool "Xen memory sharing support" if EXPERT = "y"
+	depends on HVM
+
 endmenu
 
 source "common/Kconfig"

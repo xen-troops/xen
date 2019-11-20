@@ -285,7 +285,7 @@ int __init dom0_construct_pv(struct domain *d,
                              module_t *initrd,
                              char *cmdline)
 {
-    int i, cpu, rc, compatible, order, machine;
+    int i, rc, compatible, order, machine;
     struct cpu_user_regs *regs;
     unsigned long pfn, mfn;
     unsigned long nr_pages;
@@ -345,9 +345,10 @@ int __init dom0_construct_pv(struct domain *d,
 
     if ( (rc = elf_init(&elf, image_start, image_len)) != 0 )
         return rc;
-#ifdef CONFIG_VERBOSE_DEBUG
-    elf_set_verbose(&elf);
-#endif
+
+    if ( opt_dom0_verbose )
+        elf_set_verbose(&elf);
+
     elf_parse_binary(&elf);
     if ( (rc = elf_xen_parse(&elf, &parms)) != 0 )
         goto out;
@@ -693,16 +694,8 @@ int __init dom0_construct_pv(struct domain *d,
 
     printk("Dom%u has maximum %u VCPUs\n", d->domain_id, d->max_vcpus);
 
-    cpu = v->processor;
-    for ( i = 1; i < d->max_vcpus; i++ )
-    {
-        const struct vcpu *p = dom0_setup_vcpu(d, i, cpu);
+    sched_setup_dom0_vcpus(d);
 
-        if ( p )
-            cpu = p->processor;
-    }
-
-    domain_update_node_affinity(d);
     d->arch.paging.mode = 0;
 
     /* Set up CR3 value for write_ptbase */
@@ -735,11 +728,10 @@ int __init dom0_construct_pv(struct domain *d,
             mapcache_override_current(NULL);
             switch_cr3_cr4(current->arch.cr3, read_cr4());
             printk("Invalid HYPERCALL_PAGE field in ELF notes.\n");
-            rc = -1;
+            rc = -EINVAL;
             goto out;
         }
-        hypercall_page_initialise(
-            d, (void *)(unsigned long)parms.virt_hypercall);
+        init_hypercall_page(d, _p(parms.virt_hypercall));
     }
 
     /* Free temporary buffers. */
@@ -903,21 +895,24 @@ int __init dom0_construct_pv(struct domain *d,
     rc = dom0_setup_permissions(d);
     BUG_ON(rc != 0);
 
-    if ( elf_check_broken(&elf) )
-        printk(" Xen warning: dom0 kernel broken ELF: %s\n",
-               elf_check_broken(&elf));
-
     if ( d->domain_id == hardware_domid )
         iommu_hwdom_init(d);
+
+    /* Activate shadow mode, if requested.  Reuse the pv_l1tf tasklet. */
+#ifdef CONFIG_SHADOW_PAGING
+    if ( opt_dom0_shadow )
+    {
+        printk("Switching dom0 to using shadow paging\n");
+        tasklet_schedule(&d->arch.paging.shadow.pv_l1tf_tasklet);
+    }
+#endif
 
     v->is_initialised = 1;
     clear_bit(_VPF_down, &v->pause_flags);
 
-    return 0;
-
 out:
     if ( elf_check_broken(&elf) )
-        printk(" Xen dom0 kernel broken ELF: %s\n",
+        printk(XENLOG_WARNING "Dom0 kernel broken ELF: %s\n",
                elf_check_broken(&elf));
 
     return rc;

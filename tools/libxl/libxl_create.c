@@ -28,7 +28,8 @@
 #include <xen-xsm/flask/flask.h>
 
 int libxl__domain_create_info_setdefault(libxl__gc *gc,
-                                         libxl_domain_create_info *c_info)
+                                         libxl_domain_create_info *c_info,
+                                         const libxl_physinfo *info)
 {
     if (!c_info->type) {
         LOG(ERROR, "domain type unspecified");
@@ -38,7 +39,15 @@ int libxl__domain_create_info_setdefault(libxl__gc *gc,
     libxl__arch_domain_create_info_setdefault(gc, c_info);
 
     if (c_info->type != LIBXL_DOMAIN_TYPE_PV) {
-        libxl_defbool_setdefault(&c_info->hap, true);
+        if (info->cap_hap) {
+            libxl_defbool_setdefault(&c_info->hap, true);
+        } else if (info->cap_shadow) {
+            libxl_defbool_setdefault(&c_info->hap, false);
+        } else {
+            LOG(ERROR, "neither hap nor shadow paging available");
+            return ERROR_INVAL;
+        }
+
         libxl_defbool_setdefault(&c_info->oos, true);
     }
 
@@ -220,9 +229,14 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
     libxl__arch_domain_build_info_setdefault(gc, b_info);
     libxl_defbool_setdefault(&b_info->dm_restrict, false);
 
+    if (b_info->iommu_memkb == LIBXL_MEMKB_DEFAULT)
+        /* Normally defaulted in libxl__domain_create_info_setdefault */
+        b_info->iommu_memkb = 0;
+
     switch (b_info->type) {
     case LIBXL_DOMAIN_TYPE_HVM:
         if (b_info->shadow_memkb == LIBXL_MEMKB_DEFAULT)
+            /* Normally defaulted in libxl__domain_create_info_setdefault */
             b_info->shadow_memkb = 0;
         if (b_info->u.hvm.mmio_hole_memkb == LIBXL_MEMKB_DEFAULT)
             b_info->u.hvm.mmio_hole_memkb = 0;
@@ -310,6 +324,7 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         libxl_defbool_setdefault(&b_info->u.hvm.vpt_align,          true);
         libxl_defbool_setdefault(&b_info->u.hvm.altp2m,             false);
         libxl_defbool_setdefault(&b_info->u.hvm.usb,                false);
+        libxl_defbool_setdefault(&b_info->u.hvm.vkb_device,         true);
         libxl_defbool_setdefault(&b_info->u.hvm.xen_platform_pci,   true);
 
         libxl_defbool_setdefault(&b_info->u.hvm.spice.enable, false);
@@ -367,6 +382,7 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         if (b_info->video_memkb == LIBXL_MEMKB_DEFAULT)
             b_info->video_memkb = 0;
         if (b_info->shadow_memkb == LIBXL_MEMKB_DEFAULT)
+            /* Normally defaulted in libxl__domain_create_info_setdefault */
             b_info->shadow_memkb = 0;
         if (b_info->u.pv.slack_memkb == LIBXL_MEMKB_DEFAULT)
             b_info->u.pv.slack_memkb = 0;
@@ -556,12 +572,22 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
         };
 
         if (info->type != LIBXL_DOMAIN_TYPE_PV) {
-            create.flags |= XEN_DOMCTL_CDF_hvm_guest;
+            create.flags |= XEN_DOMCTL_CDF_hvm;
             create.flags |=
                 libxl_defbool_val(info->hap) ? XEN_DOMCTL_CDF_hap : 0;
             create.flags |=
                 libxl_defbool_val(info->oos) ? 0 : XEN_DOMCTL_CDF_oos_off;
         }
+
+        assert(info->passthrough != LIBXL_PASSTHROUGH_DEFAULT);
+        LOG(DETAIL, "passthrough: %s",
+            libxl_passthrough_to_string(info->passthrough));
+
+        if (info->passthrough != LIBXL_PASSTHROUGH_DISABLED)
+            create.flags |= XEN_DOMCTL_CDF_iommu;
+
+        if (info->passthrough == LIBXL_PASSTHROUGH_SYNC_PT)
+            create.iommu_opts |= XEN_DOMCTL_IOMMU_no_sharept;
 
         /* Ultimately, handle is an array of 16 uint8_t, same as uuid */
         libxl_uuid_copy(ctx, (libxl_uuid *)&create.handle, &info->uuid);
@@ -824,21 +850,57 @@ static void domcreate_destruction_cb(libxl__egc *egc,
                                      libxl__domain_destroy_state *dds,
                                      int rc);
 
-static void initiate_domain_create(libxl__egc *egc,
-                                   libxl__domain_create_state *dcs)
+static bool ok_to_default_memkb_in_create(libxl__gc *gc)
 {
-    STATE_AO_GC(dcs->ao);
+    /*
+     * This is a fudge.  We are trying to find whether the caller
+     * calls the old version of libxl_domain_need_memory.  If they do
+     * then, because it only gets the b_info, and because it can't
+     * update the b_info (because it's const), it will base its
+     * calculations on defaulting shadow_memkb and iommu_memkb to 0
+     * In that case we probably shouldn't default them differently
+     * during libxl_domain_create.
+     *
+     * The result is that the behaviour with old callers is the same
+     * as in 4.13: no additional memory is allocated for shadow and
+     * iommu (unless the caller set shadow_memkb, eg from a call to
+     * libxl_get_required_shadow_memory).
+     */
+    return !CTX->libxl_domain_need_memory_0x041200_called ||
+            CTX->libxl_domain_need_memory_called;
+    /*
+     * Treat mixed callers as new callers.  Presumably they know what
+     * they are doing.
+     */
+}
+
+static unsigned long libxl__get_required_iommu_memory(unsigned long maxmem_kb)
+{
+    unsigned long iommu_pages = 0, mem_pages = maxmem_kb / 4;
+    unsigned int level;
+
+    /* Assume a 4 level page table with 512 entries per level */
+    for (level = 0; level < 4; level++)
+    {
+        mem_pages = DIV_ROUNDUP(mem_pages, 512);
+        iommu_pages += mem_pages;
+    }
+
+    return iommu_pages * 4;
+}
+
+int libxl__domain_config_setdefault(libxl__gc *gc,
+                                    libxl_domain_config *d_config,
+                                    uint32_t domid /* for logging, only */)
+{
     libxl_ctx *ctx = libxl__gc_owner(gc);
-    uint32_t domid;
-    int i, ret;
+    int ret;
     bool pod_enabled = false;
+    libxl_domain_create_info *c_info = &d_config->c_info;
 
-    /* convenience aliases */
-    libxl_domain_config *const d_config = dcs->guest_config;
-    const int restore_fd = dcs->restore_fd;
-
-    domid = dcs->domid_soft_reset;
-    libxl__domain_build_state_init(&dcs->build_state);
+    libxl_physinfo physinfo;
+    ret = libxl_get_physinfo(CTX, &physinfo);
+    if (ret) goto error_out;
 
     if (d_config->c_info.ssid_label) {
         char *s = d_config->c_info.ssid_label;
@@ -899,6 +961,41 @@ static void initiate_domain_create(libxl__egc *egc,
         goto error_out;
     }
 
+    ret = libxl__domain_create_info_setdefault(gc, &d_config->c_info,
+                                               &physinfo);
+    if (ret) {
+        LOGD(ERROR, domid, "Unable to set domain create info defaults");
+        goto error_out;
+    }
+
+    bool need_pt = d_config->num_pcidevs || d_config->num_dtdevs;
+    if (c_info->passthrough == LIBXL_PASSTHROUGH_DEFAULT) {
+        c_info->passthrough = need_pt
+            ? LIBXL_PASSTHROUGH_ENABLED : LIBXL_PASSTHROUGH_DISABLED;
+    }
+
+    bool iommu_enabled = physinfo.cap_hvm_directio;
+    if (c_info->passthrough != LIBXL_PASSTHROUGH_DISABLED && !iommu_enabled) {
+        LOGD(ERROR, domid,
+             "passthrough not supported on this platform\n");
+        ret = ERROR_INVAL;
+        goto error_out;
+    }
+
+    if (c_info->passthrough == LIBXL_PASSTHROUGH_DISABLED && need_pt) {
+        LOGD(ERROR, domid,
+             "passthrough disabled but devices are specified");
+        ret = ERROR_INVAL;
+        goto error_out;
+    }
+
+    ret = libxl__arch_passthrough_mode_setdefault(gc,domid,d_config,&physinfo);
+    if (ret) goto error_out;
+
+    /* An explicit setting should now have been chosen */
+    assert(c_info->passthrough != LIBXL_PASSTHROUGH_DEFAULT);
+    assert(c_info->passthrough != LIBXL_PASSTHROUGH_ENABLED);
+
     /* If target_memkb is smaller than max_memkb, the subsequent call
      * to libxc when building HVM domain will enable PoD mode.
      */
@@ -938,11 +1035,19 @@ static void initiate_domain_create(libxl__egc *egc,
         goto error_out;
     }
 
-    ret = libxl__domain_create_info_setdefault(gc, &d_config->c_info);
-    if (ret) {
-        LOGD(ERROR, domid, "Unable to set domain create info defaults");
-        goto error_out;
-    }
+    if (d_config->b_info.shadow_memkb == LIBXL_MEMKB_DEFAULT
+        && ok_to_default_memkb_in_create(gc))
+        d_config->b_info.shadow_memkb =
+            libxl_get_required_shadow_memory(d_config->b_info.max_memkb,
+                                             d_config->b_info.max_vcpus);
+
+    /* No IOMMU reservation is needed if passthrough mode is not 'sync_pt' */
+    if (d_config->b_info.iommu_memkb == LIBXL_MEMKB_DEFAULT
+        && ok_to_default_memkb_in_create(gc))
+        d_config->b_info.iommu_memkb =
+            (d_config->c_info.passthrough == LIBXL_PASSTHROUGH_SYNC_PT)
+            ? libxl__get_required_iommu_memory(d_config->b_info.max_memkb)
+            : 0;
 
     ret = libxl__domain_build_info_setdefault(gc, &d_config->b_info);
     if (ret) {
@@ -970,6 +1075,28 @@ static void initiate_domain_create(libxl__egc *egc,
         goto error_out;
     }
 
+    ret = 0;
+ error_out:
+    return ret;
+}
+
+static void initiate_domain_create(libxl__egc *egc,
+                                   libxl__domain_create_state *dcs)
+{
+    STATE_AO_GC(dcs->ao);
+    uint32_t domid;
+    int i, ret;
+
+    /* convenience aliases */
+    libxl_domain_config *const d_config = dcs->guest_config;
+    const int restore_fd = dcs->restore_fd;
+
+    domid = dcs->domid_soft_reset;
+    libxl__domain_build_state_init(&dcs->build_state);
+
+    ret = libxl__domain_config_setdefault(gc,d_config,domid);
+    if (ret) goto error_out;
+
     ret = libxl__domain_make(gc, d_config, &dcs->build_state, &domid);
     if (ret) {
         LOGD(ERROR, domid, "cannot make domain: %d", ret);
@@ -980,6 +1107,9 @@ static void initiate_domain_create(libxl__egc *egc,
 
     dcs->guest_domid = domid;
     dcs->sdss.dm.guest_domid = 0; /* means we haven't spawned */
+
+    /* post-4.13 todo: move these next bits of defaulting to
+     * libxl__domain_config_setdefault */
 
     /*
      * Set the dm version quite early so that libxl doesn't have to pass the
@@ -1416,9 +1546,11 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         libxl__device_console_add(gc, domid, &console, state, &device);
         libxl__device_console_dispose(&console);
 
-        libxl_device_vkb_init(&vkb);
-        libxl__device_add(gc, domid, &libxl__vkb_devtype, &vkb);
-        libxl_device_vkb_dispose(&vkb);
+        if (libxl_defbool_val(d_config->b_info.u.hvm.vkb_device)) {
+            libxl_device_vkb_init(&vkb);
+            libxl__device_add(gc, domid, &libxl__vkb_devtype, &vkb);
+            libxl_device_vkb_dispose(&vkb);
+        }
 
         dcs->sdss.dm.guest_domid = domid;
         if (libxl_defbool_val(d_config->b_info.device_model_stubdomain))
@@ -1519,7 +1651,7 @@ out:
 #define libxl__device_dtdev_update_devid NULL
 static DEFINE_DEVICE_TYPE_STRUCT(dtdev, NONE);
 
-const struct libxl_device_type *device_type_tbl[] = {
+const libxl__device_type *device_type_tbl[] = {
     &libxl__disk_devtype,
     &libxl__nic_devtype,
     &libxl__vtpm_devtype,
@@ -1540,19 +1672,9 @@ static void domcreate_devmodel_started(libxl__egc *egc,
     STATE_AO_GC(dmss->spawn.ao);
     int domid = dcs->guest_domid;
 
-    /* convenience aliases */
-    libxl_domain_config *const d_config = dcs->guest_config;
-
     if (ret) {
         LOGD(ERROR, domid, "device model did not start: %d", ret);
         goto error_out;
-    }
-
-    if (dcs->sdss.dm.guest_domid) {
-        if (d_config->b_info.device_model_version
-            == LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN) {
-            libxl__qmp_initializations(gc, domid, d_config);
-        }
     }
 
     dcs->device_type_idx = -1;
@@ -1572,7 +1694,7 @@ static void domcreate_attach_devices(libxl__egc *egc,
     STATE_AO_GC(dcs->ao);
     int domid = dcs->guest_domid;
     libxl_domain_config *const d_config = dcs->guest_config;
-    const struct libxl_device_type *dt;
+    const libxl__device_type *dt;
 
     if (ret) {
         LOGD(ERROR, domid, "unable to add %s devices",

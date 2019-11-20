@@ -35,6 +35,18 @@
 #define xzalloc_array(_type, _num) \
     ((_type *)_xzalloc_array(sizeof(_type), __alignof__(_type), _num))
 
+/* Allocate space for a structure with a flexible array of typed objects. */
+#define xzalloc_flex_struct(type, field, nr) \
+    ((type *)_xzalloc(offsetof(type, field[nr]), __alignof__(type)))
+
+#define xmalloc_flex_struct(type, field, nr) \
+    ((type *)_xmalloc(offsetof(type, field[nr]), __alignof__(type)))
+
+/* Re-allocate space for a structure with a flexible array of typed objects. */
+#define xrealloc_flex_struct(ptr, field, nr)                           \
+    ((typeof(ptr))_xrealloc(ptr, offsetof(typeof(*(ptr)), field[nr]),  \
+                            __alignof__(typeof(*(ptr)))))
+
 /* Allocate untyped storage. */
 #define xmalloc_bytes(_bytes) _xmalloc(_bytes, SMP_CACHE_BYTES)
 #define xzalloc_bytes(_bytes) _xzalloc(_bytes, SMP_CACHE_BYTES)
@@ -51,6 +63,7 @@ extern void xfree(void *);
 /* Underlying functions */
 extern void *_xmalloc(unsigned long size, unsigned long align);
 extern void *_xzalloc(unsigned long size, unsigned long align);
+extern void *_xrealloc(void *ptr, unsigned long size, unsigned long align);
 
 static inline void *_xmalloc_array(
     unsigned long size, unsigned long align, unsigned long num)
@@ -84,7 +97,6 @@ typedef void (xmem_pool_put_memory)(void *ptr);
  * @name: name of the pool
  * @get_mem: callback function used to expand pool
  * @put_mem: callback function used to shrink pool
- * @init_size: inital pool size (in bytes)
  * @max_size: maximum pool size (in bytes) - set this as 0 for no limit
  * @grow_size: amount of memory (in bytes) added to pool whenever required
  *
@@ -94,7 +106,6 @@ struct xmem_pool *xmem_pool_create(
     const char *name,
     xmem_pool_get_memory get_mem,
     xmem_pool_put_memory put_mem,
-    unsigned long init_size,
     unsigned long max_size,
     unsigned long grow_size);
 

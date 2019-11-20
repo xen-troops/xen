@@ -29,9 +29,6 @@
 #undef __ASSEMBLY__
 #endif
 
-/* Using SetVirtualAddressMap() is incompatible with kexec: */
-#undef USE_SET_VIRTUAL_ADDRESS_MAP
-
 #define EFI_REVISION(major, minor) (((major) << 16) | (minor))
 
 #define SMBIOS3_TABLE_GUID \
@@ -1049,8 +1046,12 @@ static void __init efi_set_gop_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop, UINTN gop
     EFI_STATUS status;
     UINTN info_size;
 
-    /* Set graphics mode. */
-    if ( gop_mode < gop->Mode->MaxMode && gop_mode != gop->Mode->Mode )
+    /*
+     * Set graphics mode to a selected one and reset it if we didn't come
+     * directly from EFI loader as video settings might have been already modified.
+     */
+    if ( gop_mode < gop->Mode->MaxMode &&
+         (gop_mode != gop->Mode->Mode || !efi_enabled(EFI_LOADER)) )
         gop->SetMode(gop, gop_mode);
 
     /* Get graphics and frame buffer info. */
@@ -1059,11 +1060,17 @@ static void __init efi_set_gop_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop, UINTN gop
         efi_arch_video_init(gop, info_size, mode_info);
 }
 
+#define INVALID_VIRTUAL_ADDRESS (0xBAAADUL << \
+                                 (EFI_PAGE_SHIFT + BITS_PER_LONG - 32))
+
 static void __init efi_exit_boot(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS status;
     UINTN info_size = 0, map_key;
     bool retry;
+#ifdef CONFIG_EFI_SET_VIRTUAL_ADDRESS_MAP
+    unsigned int i;
+#endif
 
     efi_bs->GetMemoryMap(&info_size, NULL, &map_key,
                          &efi_mdesc_size, &mdesc_ver);
@@ -1097,11 +1104,29 @@ static void __init efi_exit_boot(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *Syste
     if ( EFI_ERROR(status) )
         PrintErrMesg(L"Cannot exit boot services", status);
 
+#ifdef CONFIG_EFI_SET_VIRTUAL_ADDRESS_MAP
+    for ( i = 0; i < efi_memmap_size; i += efi_mdesc_size )
+    {
+        EFI_MEMORY_DESCRIPTOR *desc = efi_memmap + i;
+
+        if ( desc->Attribute & EFI_MEMORY_RUNTIME )
+            desc->VirtualStart = desc->PhysicalStart;
+        else
+            desc->VirtualStart = INVALID_VIRTUAL_ADDRESS;
+    }
+    status = efi_rs->SetVirtualAddressMap(efi_memmap_size, efi_mdesc_size,
+                                          mdesc_ver, efi_memmap);
+    if ( status != EFI_SUCCESS )
+    {
+        printk(XENLOG_ERR "EFI: SetVirtualAddressMap() failed (%#lx), disabling runtime services\n",
+               status);
+        __clear_bit(EFI_RS, &efi_flags);
+    }
+#endif
+
     /* Adjust pointers into EFI. */
     efi_ct = (void *)efi_ct + DIRECTMAP_VIRT_START;
-#ifdef USE_SET_VIRTUAL_ADDRESS_MAP
     efi_rs = (void *)efi_rs + DIRECTMAP_VIRT_START;
-#endif
     efi_memmap = (void *)efi_memmap + DIRECTMAP_VIRT_START;
     efi_fw_vendor = (void *)efi_fw_vendor + DIRECTMAP_VIRT_START;
 }
@@ -1114,7 +1139,7 @@ static int __init __maybe_unused set_color(u32 mask, int bpp, u8 *pos, u8 *sz)
        return -EINVAL;
    for ( *pos = 0; !(mask & 1); ++*pos )
        mask >>= 1;
-   for ( *sz = 0; mask & 1; ++sz)
+   for ( *sz = 0; mask & 1; ++*sz)
        mask >>= 1;
    if ( mask )
        return -EINVAL;
@@ -1422,7 +1447,6 @@ static int __init parse_efi_param(const char *s)
 }
 custom_param("efi", parse_efi_param);
 
-#ifndef USE_SET_VIRTUAL_ADDRESS_MAP
 static __init void copy_mapping(unsigned long mfn, unsigned long end,
                                 bool (*is_valid)(unsigned long smfn,
                                                  unsigned long emfn))
@@ -1466,21 +1490,16 @@ static bool __init rt_range_valid(unsigned long smfn, unsigned long emfn)
 {
     return true;
 }
-#endif
 
-#define INVALID_VIRTUAL_ADDRESS (0xBAAADUL << \
-                                 (EFI_PAGE_SHIFT + BITS_PER_LONG - 32))
 
 void __init efi_init_memory(void)
 {
     unsigned int i;
-#ifndef USE_SET_VIRTUAL_ADDRESS_MAP
     struct rt_extra {
         struct rt_extra *next;
         unsigned long smfn, emfn;
         unsigned int prot;
     } *extra, *extra_head = NULL;
-#endif
 
     free_ebmalloc_unused_mem();
 
@@ -1563,7 +1582,6 @@ void __init efi_init_memory(void)
                 printk(XENLOG_ERR "Could not map MFNs %#lx-%#lx\n",
                        smfn, emfn - 1);
         }
-#ifndef USE_SET_VIRTUAL_ADDRESS_MAP
         else if ( !((desc->PhysicalStart + len - 1) >> (VADDR_BITS - 1)) &&
                   (extra = xmalloc(struct rt_extra)) != NULL )
         {
@@ -1574,12 +1592,8 @@ void __init efi_init_memory(void)
             extra_head = extra;
             desc->VirtualStart = desc->PhysicalStart;
         }
-#endif
         else
         {
-#ifdef USE_SET_VIRTUAL_ADDRESS_MAP
-            /* XXX allocate e.g. down from FIXADDR_START */
-#endif
             printk(XENLOG_ERR "No mapping for MFNs %#lx-%#lx\n",
                    smfn, emfn - 1);
         }
@@ -1591,11 +1605,10 @@ void __init efi_init_memory(void)
         return;
     }
 
-#ifdef USE_SET_VIRTUAL_ADDRESS_MAP
-    efi_rs->SetVirtualAddressMap(efi_memmap_size, efi_mdesc_size,
-                                 mdesc_ver, efi_memmap);
-#else
-    /* Set up 1:1 page tables to do runtime calls in "physical" mode. */
+    /*
+     * Set up 1:1 page tables for runtime calls. See SetVirtualAddressMap() in
+     * efi_exit_boot().
+     */
     efi_l4_pgtable = alloc_xen_pagetable();
     BUG_ON(!efi_l4_pgtable);
     clear_page(efi_l4_pgtable);
@@ -1680,6 +1693,5 @@ void __init efi_init_memory(void)
     for ( i = l4_table_offset(HYPERVISOR_VIRT_START);
           i < l4_table_offset(DIRECTMAP_VIRT_END); ++i )
         efi_l4_pgtable[i] = idle_pg_table[i];
-#endif
 }
 #endif

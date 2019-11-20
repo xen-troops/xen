@@ -76,6 +76,8 @@
  *
  * [0:2] Memory Attribute Index
  * [3:4] Permission flags
+ * [5]   Page present
+ * [6]   Only populate page tables
  */
 #define PAGE_AI_MASK(x) ((x) & 0x7U)
 
@@ -86,12 +88,15 @@
 #define PAGE_XN_MASK(x) (((x) >> _PAGE_XN_BIT) & 0x1U)
 #define PAGE_RO_MASK(x) (((x) >> _PAGE_RO_BIT) & 0x1U)
 
+#define _PAGE_PRESENT    (1U << 5)
+#define _PAGE_POPULATE   (1U << 6)
+
 /*
  * _PAGE_DEVICE and _PAGE_NORMAL are convenience defines. They are not
  * meant to be used outside of this header.
  */
-#define _PAGE_DEVICE    _PAGE_XN
-#define _PAGE_NORMAL    MT_NORMAL
+#define _PAGE_DEVICE    (_PAGE_XN|_PAGE_PRESENT)
+#define _PAGE_NORMAL    (MT_NORMAL|_PAGE_PRESENT)
 
 #define PAGE_HYPERVISOR_RO      (_PAGE_NORMAL|_PAGE_RO|_PAGE_XN)
 #define PAGE_HYPERVISOR_RX      (_PAGE_NORMAL|_PAGE_RO)
@@ -232,44 +237,6 @@ static inline int clean_and_invalidate_dcache_va_range
             "dsb sy;"   /* Finish flush before continuing */            \
             : : "r" (_p), "m" (*_p));                                   \
 } while (0)
-
-/*
- * Flush a range of VA's hypervisor mappings from the data TLB of the
- * local processor. This is not sufficient when changing code mappings
- * or for self modifying code.
- */
-static inline void flush_xen_data_tlb_range_va_local(unsigned long va,
-                                                     unsigned long size)
-{
-    unsigned long end = va + size;
-    dsb(sy); /* Ensure preceding are visible */
-    while ( va < end )
-    {
-        __flush_xen_data_tlb_one_local(va);
-        va += PAGE_SIZE;
-    }
-    dsb(sy); /* Ensure completion of the TLB flush */
-    isb();
-}
-
-/*
- * Flush a range of VA's hypervisor mappings from the data TLB of all
- * processors in the inner-shareable domain. This is not sufficient
- * when changing code mappings or for self modifying code.
- */
-static inline void flush_xen_data_tlb_range_va(unsigned long va,
-                                               unsigned long size)
-{
-    unsigned long end = va + size;
-    dsb(sy); /* Ensure preceding are visible */
-    while ( va < end )
-    {
-        __flush_xen_data_tlb_one(va);
-        va += PAGE_SIZE;
-    }
-    dsb(sy); /* Ensure completion of the TLB flush */
-    isb();
-}
 
 /* Flush the dcache for an entire page. */
 void flush_page_to_ram(unsigned long mfn, bool sync_icache);

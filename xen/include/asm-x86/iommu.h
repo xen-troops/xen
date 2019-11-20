@@ -17,6 +17,7 @@
 #include <xen/errno.h>
 #include <xen/list.h>
 #include <xen/spinlock.h>
+#include <asm/apicdef.h>
 #include <asm/processor.h>
 #include <asm/hvm/vmx/vmcs.h>
 
@@ -56,10 +57,20 @@ struct arch_iommu
     struct guest_iommu *g_iommu;
 };
 
-int intel_vtd_setup(void);
-int amd_iov_detect(void);
-
 extern struct iommu_ops iommu_ops;
+
+#ifdef NDEBUG
+# include <asm/alternative.h>
+# define iommu_call(ops, fn, args...) ({      \
+    (void)(ops);                              \
+    alternative_call(iommu_ops.fn, ## args);  \
+})
+
+# define iommu_vcall(ops, fn, args...) ({     \
+    (void)(ops);                              \
+    alternative_vcall(iommu_ops.fn, ## args); \
+})
+#endif
 
 static inline const struct iommu_ops *iommu_get_ops(void)
 {
@@ -67,34 +78,43 @@ static inline const struct iommu_ops *iommu_get_ops(void)
     return &iommu_ops;
 }
 
-static inline int iommu_hardware_setup(void)
-{
-    switch ( boot_cpu_data.x86_vendor )
-    {
-    case X86_VENDOR_INTEL:
-        return intel_vtd_setup();
-    case X86_VENDOR_AMD:
-        return amd_iov_detect();
-    }
+struct iommu_init_ops {
+    const struct iommu_ops *ops;
+    int (*setup)(void);
+    bool (*supports_x2apic)(void);
+};
 
-    return -ENODEV;
-}
-
-/* Are we using the domain P2M table as its IOMMU pagetable? */
-#define iommu_use_hap_pt(d) \
-    (hap_enabled(d) && has_iommu_pt(d) && iommu_hap_pt_share)
+extern const struct iommu_init_ops *iommu_init_ops;
 
 void iommu_update_ire_from_apic(unsigned int apic, unsigned int reg, unsigned int value);
 unsigned int iommu_read_apic_from_ire(unsigned int apic, unsigned int reg);
 int iommu_setup_hpet_msi(struct msi_desc *);
 
+static inline int iommu_adjust_irq_affinities(void)
+{
+    return iommu_ops.adjust_irq_affinities
+           ? iommu_ops.adjust_irq_affinities()
+           : 0;
+}
+
 /* While VT-d specific, this must get declared in a generic header. */
-int adjust_vtd_irq_affinities(void);
 int __must_check iommu_pte_flush(struct domain *d, u64 gfn, u64 *pte,
                                  int order, int present);
-bool_t iommu_supports_eim(void);
-int iommu_enable_x2apic_IR(void);
-void iommu_disable_x2apic_IR(void);
+
+static inline bool iommu_supports_x2apic(void)
+{
+    return iommu_init_ops && iommu_init_ops->supports_x2apic
+           ? iommu_init_ops->supports_x2apic()
+           : false;
+}
+
+int iommu_enable_x2apic(void);
+
+static inline void iommu_disable_x2apic(void)
+{
+    if ( x2apic_enabled && iommu_ops.disable_x2apic )
+        iommu_ops.disable_x2apic();
+}
 
 extern bool untrusted_msi;
 

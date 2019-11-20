@@ -96,8 +96,10 @@ string_param("nmi", opt_nmi);
 DEFINE_PER_CPU(uint64_t, efer);
 static DEFINE_PER_CPU(unsigned long, last_extable_addr);
 
-DEFINE_PER_CPU_READ_MOSTLY(seg_desc_t *, gdt_table);
-DEFINE_PER_CPU_READ_MOSTLY(seg_desc_t *, compat_gdt_table);
+DEFINE_PER_CPU_READ_MOSTLY(seg_desc_t *, gdt);
+DEFINE_PER_CPU_READ_MOSTLY(l1_pgentry_t, gdt_l1e);
+DEFINE_PER_CPU_READ_MOSTLY(seg_desc_t *, compat_gdt);
+DEFINE_PER_CPU_READ_MOSTLY(l1_pgentry_t, compat_gdt_l1e);
 
 /* Master table, used by CPU0. */
 idt_entry_t __section(".bss.page_aligned") __aligned(PAGE_SIZE)
@@ -105,6 +107,12 @@ idt_entry_t __section(".bss.page_aligned") __aligned(PAGE_SIZE)
 
 /* Pointer to the IDT of every CPU. */
 idt_entry_t *idt_tables[NR_CPUS] __read_mostly;
+
+/*
+ * The TSS is smaller than a page, but we give it a full page to avoid
+ * adjacent per-cpu data leaking via Meltdown when XPTI is in use.
+ */
+DEFINE_PER_CPU_PAGE_ALIGNED(struct tss_page, tss_page);
 
 bool (*ioemul_handle_quirk)(
     u8 opcode, char *io_emul_stub, struct cpu_user_regs *regs);
@@ -117,6 +125,8 @@ boolean_param("ler", opt_ler);
 
 /* LastExceptionFromIP on this hardware.  Zero if LER is not in use. */
 unsigned int __read_mostly ler_msr;
+
+const unsigned int nmi_cpu;
 
 #define stack_words_per_line 4
 #define ESP_BEFORE_EXCEPTION(regs) ((unsigned long *)regs->rsp)
@@ -431,7 +441,7 @@ static void _show_trace(unsigned long sp, unsigned long __maybe_unused bp)
     {
         addr = *stack++;
         if ( is_active_kernel_text(addr) )
-            printk("   [<%p>] %pS\n", _p(addr), _p(addr));
+            printk("   [<%p>] S %pS\n", _p(addr), _p(addr));
     }
 }
 
@@ -474,7 +484,7 @@ static void _show_trace(unsigned long sp, unsigned long bp)
             addr  = frame[1];
         }
 
-        printk("   [<%p>] %pS\n", _p(addr), _p(addr));
+        printk("   [<%p>] F %pS\n", _p(addr), _p(addr));
 
         low = (unsigned long)&frame[2];
     }
@@ -484,26 +494,45 @@ static void _show_trace(unsigned long sp, unsigned long bp)
 
 static void show_trace(const struct cpu_user_regs *regs)
 {
-    unsigned long *sp = ESP_BEFORE_EXCEPTION(regs);
+    unsigned long *sp = ESP_BEFORE_EXCEPTION(regs), tos = 0;
+    bool fault = false;
 
     printk("Xen call trace:\n");
+
+    /* Guarded read of the stack top. */
+    asm ( "1: mov %[data], %[tos]; 2:\n"
+          ".pushsection .fixup,\"ax\"\n"
+          "3: movb $1, %[fault]; jmp 2b\n"
+          ".popsection\n"
+          _ASM_EXTABLE(1b, 3b)
+          : [tos] "+r" (tos), [fault] "+qm" (fault) : [data] "m" (*sp) );
 
     /*
      * If RIP looks sensible, or the top of the stack doesn't, print RIP at
      * the top of the stack trace.
      */
     if ( is_active_kernel_text(regs->rip) ||
-         !is_active_kernel_text(*sp) )
-        printk("   [<%p>] %pS\n", _p(regs->rip), _p(regs->rip));
+         !is_active_kernel_text(tos) )
+        printk("   [<%p>] R %pS\n", _p(regs->rip), _p(regs->rip));
+
+    if ( fault )
+    {
+        printk("   [Fault on access]\n");
+        return;
+    }
+
     /*
-     * Else RIP looks bad but the top of the stack looks good.  Perhaps we
-     * followed a wild function pointer? Lets assume the top of the stack is a
+     * If RIP looks bad or the top of the stack looks good, log the top of
+     * stack as well.  Perhaps we followed a wild function pointer, or we're
+     * in a function without frame pointer, or in a function prologue before
+     * the frame pointer gets set up?  Let's assume the top of the stack is a
      * return address; print it and skip past so _show_trace() doesn't print
      * it again.
      */
-    else
+    if ( !is_active_kernel_text(regs->rip) ||
+         is_active_kernel_text(tos) )
     {
-        printk("   [<%p>] %pS\n", _p(*sp), _p(*sp));
+        printk("   [<%p>] S %pS\n", _p(tos), _p(tos));
         sp++;
     }
 
@@ -557,7 +586,7 @@ void show_stack_overflow(unsigned int cpu, const struct cpu_user_regs *regs)
 
     printk("Valid stack range: %p-%p, sp=%p, tss.rsp0=%p\n",
            (void *)esp_top, (void *)esp_bottom, (void *)esp,
-           (void *)per_cpu(init_tss, cpu).rsp0);
+           (void *)per_cpu(tss_page, cpu).tss.rsp0);
 
     /*
      * Trigger overflow trace if %esp is anywhere within the guard page, or
@@ -828,7 +857,7 @@ int guest_wrmsr_xen(struct vcpu *v, uint32_t idx, uint64_t val)
         }
 
         hypercall_page = __map_domain_page(page);
-        hypercall_page_initialise(d, hypercall_page);
+        init_hypercall_page(d, hypercall_page);
         unmap_domain_page(hypercall_page);
 
         put_page_and_type(page);
@@ -1394,7 +1423,6 @@ void do_page_fault(struct cpu_user_regs *regs)
 {
     unsigned long addr, fixup;
     unsigned int error_code;
-    enum pf_type pf_type;
 
     addr = read_cr2();
 
@@ -1411,7 +1439,8 @@ void do_page_fault(struct cpu_user_regs *regs)
 
     if ( unlikely(!guest_mode(regs)) )
     {
-        pf_type = spurious_page_fault(addr, regs);
+        enum pf_type pf_type = spurious_page_fault(addr, regs);
+
         if ( (pf_type == smep_fault) || (pf_type == smap_fault) )
         {
             console_start_sync();
@@ -1442,20 +1471,6 @@ void do_page_fault(struct cpu_user_regs *regs)
               "[error_code=%04x]\n"
               "Faulting linear address: %p\n",
               error_code, _p(addr));
-    }
-
-    if ( unlikely(current->domain->arch.suppress_spurious_page_faults) )
-    {
-        pf_type = spurious_page_fault(addr, regs);
-        if ( (pf_type == smep_fault) || (pf_type == smap_fault))
-        {
-            printk(XENLOG_G_ERR "%pv fatal SM%cP violation\n",
-                   current, (pf_type == smep_fault) ? 'E' : 'A');
-
-            domain_crash(current->domain);
-        }
-        if ( pf_type != real_fault )
-            return;
     }
 
     if ( unlikely(regs->error_code & PFEC_reserved_bit) )
@@ -1591,38 +1606,6 @@ static void pci_serr_softirq(void)
     outb(inb(0x61) & 0x0b, 0x61); /* re-enable the PCI SERR error line. */
 }
 
-void async_exception_cleanup(struct vcpu *curr)
-{
-    int trap;
-
-    if ( !curr->async_exception_mask )
-        return;
-
-    /* Restore affinity.  */
-    if ( !cpumask_empty(curr->cpu_hard_affinity_tmp) &&
-         !cpumask_equal(curr->cpu_hard_affinity_tmp, curr->cpu_hard_affinity) )
-    {
-        vcpu_set_hard_affinity(curr, curr->cpu_hard_affinity_tmp);
-        cpumask_clear(curr->cpu_hard_affinity_tmp);
-    }
-
-    if ( !(curr->async_exception_mask & (curr->async_exception_mask - 1)) )
-        trap = __scanbit(curr->async_exception_mask, VCPU_TRAP_NONE);
-    else
-        for ( trap = VCPU_TRAP_NONE + 1; trap <= VCPU_TRAP_LAST; ++trap )
-            if ( (curr->async_exception_mask ^
-                  curr->async_exception_state(trap).old_mask) == (1 << trap) )
-                break;
-    if ( unlikely(trap > VCPU_TRAP_LAST) )
-    {
-        ASSERT_UNREACHABLE();
-        return;
-    }
-
-    /* Restore previous asynchronous exception mask. */
-    curr->async_exception_mask = curr->async_exception_state(trap).old_mask;
-}
-
 static void nmi_hwdom_report(unsigned int reason_idx)
 {
     struct domain *d = hardware_domain;
@@ -1632,7 +1615,7 @@ static void nmi_hwdom_report(unsigned int reason_idx)
 
     set_bit(reason_idx, nmi_reason(d));
 
-    pv_raise_interrupt(d->vcpu[0], TRAP_nmi);
+    pv_raise_nmi(d->vcpu[0]);
 }
 
 static void pci_serr_error(const struct cpu_user_regs *regs)
@@ -1717,7 +1700,7 @@ void do_nmi(const struct cpu_user_regs *regs)
      * this port before we re-arm the NMI watchdog, we reduce the chance
      * of having an NMI watchdog expire while in the SMI handler.
      */
-    if ( cpu == 0 )
+    if ( cpu == nmi_cpu )
         reason = inb(0x61);
 
     if ( (nmi_watchdog == NMI_NONE) ||
@@ -1725,7 +1708,7 @@ void do_nmi(const struct cpu_user_regs *regs)
         handle_unknown = true;
 
     /* Only the BSP gets external NMIs from the system. */
-    if ( cpu == 0 )
+    if ( cpu == nmi_cpu )
     {
         if ( reason & 0x80 )
             pci_serr_error(regs);
@@ -1925,31 +1908,6 @@ static void __init set_intr_gate(unsigned int n, void *addr)
     __set_intr_gate(n, 0, addr);
 }
 
-void load_TR(void)
-{
-    struct tss_struct *tss = &this_cpu(init_tss);
-    struct desc_ptr old_gdt, tss_gdt = {
-        .base = (long)(this_cpu(gdt_table) - FIRST_RESERVED_GDT_ENTRY),
-        .limit = LAST_RESERVED_GDT_BYTE
-    };
-
-    _set_tssldt_desc(
-        this_cpu(gdt_table) + TSS_ENTRY - FIRST_RESERVED_GDT_ENTRY,
-        (unsigned long)tss,
-        offsetof(struct tss_struct, __cacheline_filler) - 1,
-        SYS_DESC_tss_avail);
-    _set_tssldt_desc(
-        this_cpu(compat_gdt_table) + TSS_ENTRY - FIRST_RESERVED_GDT_ENTRY,
-        (unsigned long)tss,
-        offsetof(struct tss_struct, __cacheline_filler) - 1,
-        SYS_DESC_tss_busy);
-
-    /* Switch to non-compat GDT (which has B bit clear) to execute LTR. */
-    asm volatile (
-        "sgdt %0; lgdt %2; ltr %w1; lgdt %0"
-        : "=m" (old_gdt) : "rm" (TSS_ENTRY << 3), "m" (tss_gdt) : "memory" );
-}
-
 static unsigned int calc_ler_msr(void)
 {
     switch ( boot_cpu_data.x86_vendor )
@@ -1973,6 +1931,9 @@ static unsigned int calc_ler_msr(void)
             return MSR_IA32_LASTINTFROMIP;
         }
         break;
+
+    case X86_VENDOR_HYGON:
+        return MSR_IA32_LASTINTFROMIP;
     }
 
     return 0;
@@ -2027,8 +1988,8 @@ void __init init_idt_traps(void)
     /* CPU0 uses the master IDT. */
     idt_tables[0] = idt_table;
 
-    this_cpu(gdt_table) = boot_cpu_gdt_table;
-    this_cpu(compat_gdt_table) = boot_cpu_compat_gdt_table;
+    this_cpu(gdt) = boot_gdt;
+    this_cpu(compat_gdt) = boot_compat_gdt;
 }
 
 extern void (*const autogen_entrypoints[NR_VECTORS])(void);
@@ -2055,6 +2016,12 @@ void __init trap_init(void)
             ASSERT(idt_table[vector].b != 0);
         }
     }
+
+    /* Cache {,compat_}gdt_l1e now that physically relocation is done. */
+    this_cpu(gdt_l1e) =
+        l1e_from_pfn(virt_to_mfn(boot_gdt), __PAGE_HYPERVISOR_RW);
+    this_cpu(compat_gdt_l1e) =
+        l1e_from_pfn(virt_to_mfn(boot_compat_gdt), __PAGE_HYPERVISOR_RW);
 
     percpu_traps_init();
 

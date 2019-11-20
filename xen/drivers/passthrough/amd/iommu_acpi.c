@@ -53,7 +53,8 @@ union acpi_ivhd_device {
 };
 
 static void __init add_ivrs_mapping_entry(
-    u16 bdf, u16 alias_id, u8 flags, struct amd_iommu *iommu)
+    uint16_t bdf, uint16_t alias_id, uint8_t flags, bool alloc_irt,
+    struct amd_iommu *iommu)
 {
     struct ivrs_mappings *ivrs_mappings = get_ivrs_mappings(iommu->seg);
 
@@ -65,23 +66,41 @@ static void __init add_ivrs_mapping_entry(
     /* override flags for range of devices */
     ivrs_mappings[bdf].device_flags = flags;
 
-    if (ivrs_mappings[alias_id].intremap_table == NULL )
+    /* Don't map an IOMMU by itself. */
+    if ( iommu->bdf == bdf )
+        return;
+
+    /* Allocate interrupt remapping table if needed. */
+    if ( iommu_intremap && !ivrs_mappings[alias_id].intremap_table )
     {
-         /* allocate per-device interrupt remapping table */
-         if ( amd_iommu_perdev_intremap )
-             ivrs_mappings[alias_id].intremap_table =
+        if ( !amd_iommu_perdev_intremap )
+        {
+            if ( !shared_intremap_table )
+                shared_intremap_table = amd_iommu_alloc_intremap_table(
+                    iommu, &shared_intremap_inuse, 0);
+
+            if ( !shared_intremap_table )
+                panic("No memory for shared IRT\n");
+
+            ivrs_mappings[alias_id].intremap_table = shared_intremap_table;
+            ivrs_mappings[alias_id].intremap_inuse = shared_intremap_inuse;
+        }
+        else if ( alloc_irt )
+        {
+            ivrs_mappings[alias_id].intremap_table =
                 amd_iommu_alloc_intremap_table(
-                    &ivrs_mappings[alias_id].intremap_inuse);
-         else
-         {
-             if ( shared_intremap_table == NULL  )
-                 shared_intremap_table = amd_iommu_alloc_intremap_table(
-                     &shared_intremap_inuse);
-             ivrs_mappings[alias_id].intremap_table = shared_intremap_table;
-             ivrs_mappings[alias_id].intremap_inuse = shared_intremap_inuse;
-         }
+                    iommu, &ivrs_mappings[alias_id].intremap_inuse, 0);
+
+            if ( !ivrs_mappings[alias_id].intremap_table )
+                panic("No memory for %04x:%02x:%02x.%u's IRT\n",
+                      iommu->seg, PCI_BUS(alias_id), PCI_SLOT(alias_id),
+                      PCI_FUNC(alias_id));
+        }
     }
-    /* assgin iommu hardware */
+
+    ivrs_mappings[alias_id].valid = true;
+
+    /* Assign IOMMU hardware. */
     ivrs_mappings[bdf].iommu = iommu;
 }
 
@@ -146,7 +165,7 @@ static void __init reserve_unity_map_for_device(
     /* extend r/w permissioms and keep aggregate */
     ivrs_mappings[bdf].write_permission = iw;
     ivrs_mappings[bdf].read_permission = ir;
-    ivrs_mappings[bdf].unity_map_enable = IOMMU_CONTROL_ENABLED;
+    ivrs_mappings[bdf].unity_map_enable = true;
     ivrs_mappings[bdf].addr_range_start = base;
     ivrs_mappings[bdf].addr_range_length = length;
 }
@@ -223,8 +242,8 @@ static int __init register_exclusion_range_for_device(
     if ( limit >= iommu_top  )
     {
         reserve_iommu_exclusion_range(iommu, base, limit);
-        ivrs_mappings[bdf].dte_allow_exclusion = IOMMU_CONTROL_ENABLED;
-        ivrs_mappings[req].dte_allow_exclusion = IOMMU_CONTROL_ENABLED;
+        ivrs_mappings[bdf].dte_allow_exclusion = true;
+        ivrs_mappings[req].dte_allow_exclusion = true;
     }
 
     return 0;
@@ -420,7 +439,8 @@ static u16 __init parse_ivhd_device_select(
         return 0;
     }
 
-    add_ivrs_mapping_entry(bdf, bdf, select->header.data_setting, iommu);
+    add_ivrs_mapping_entry(bdf, bdf, select->header.data_setting, false,
+                           iommu);
 
     return sizeof(*select);
 }
@@ -466,7 +486,7 @@ static u16 __init parse_ivhd_device_range(
 
     for ( bdf = first_bdf; bdf <= last_bdf; bdf++ )
         add_ivrs_mapping_entry(bdf, bdf, range->start.header.data_setting,
-                               iommu);
+                               false, iommu);
 
     return dev_length;
 }
@@ -500,7 +520,8 @@ static u16 __init parse_ivhd_device_alias(
 
     AMD_IOMMU_DEBUG(" Dev_Id Alias: %#x\n", alias_id);
 
-    add_ivrs_mapping_entry(bdf, alias_id, alias->header.data_setting, iommu);
+    add_ivrs_mapping_entry(bdf, alias_id, alias->header.data_setting, true,
+                           iommu);
 
     return dev_length;
 }
@@ -555,7 +576,7 @@ static u16 __init parse_ivhd_device_alias_range(
 
     for ( bdf = first_bdf; bdf <= last_bdf; bdf++ )
         add_ivrs_mapping_entry(bdf, alias_id, range->alias.header.data_setting,
-                               iommu);
+                               true, iommu);
 
     return dev_length;
 }
@@ -580,7 +601,7 @@ static u16 __init parse_ivhd_device_extended(
         return 0;
     }
 
-    add_ivrs_mapping_entry(bdf, bdf, ext->header.data_setting, iommu);
+    add_ivrs_mapping_entry(bdf, bdf, ext->header.data_setting, false, iommu);
 
     return dev_length;
 }
@@ -627,7 +648,7 @@ static u16 __init parse_ivhd_device_extended_range(
 
     for ( bdf = first_bdf; bdf <= last_bdf; bdf++ )
         add_ivrs_mapping_entry(bdf, bdf, range->extended.header.data_setting,
-                               iommu);
+                               false, iommu);
 
     return dev_length;
 }
@@ -720,7 +741,8 @@ static u16 __init parse_ivhd_device_special(
     AMD_IOMMU_DEBUG("IVHD Special: %04x:%02x:%02x.%u variety %#x handle %#x\n",
                     seg, PCI_BUS(bdf), PCI_SLOT(bdf), PCI_FUNC(bdf),
                     special->variety, special->handle);
-    add_ivrs_mapping_entry(bdf, bdf, special->header.data_setting, iommu);
+    add_ivrs_mapping_entry(bdf, bdf, special->header.data_setting, true,
+                           iommu);
 
     switch ( special->variety )
     {

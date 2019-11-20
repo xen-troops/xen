@@ -14,6 +14,7 @@
 #define FEATURESET_e7d    7 /* 0x80000007.edx      */
 #define FEATURESET_e8b    8 /* 0x80000008.ebx      */
 #define FEATURESET_7d0    9 /* 0x00000007:0.edx    */
+#define FEATURESET_7a1   10 /* 0x00000007:1.eax    */
 
 struct cpuid_leaf
 {
@@ -65,9 +66,21 @@ static inline void cpuid_count_leaf(
 #undef BX_CON
 #undef XCHG
 
+/**
+ * Given the vendor id from CPUID leaf 0, look up Xen's internal integer
+ * vendor ID.  Returns X86_VENDOR_UNKNOWN for any unknown vendor.
+ */
+unsigned int x86_cpuid_lookup_vendor(uint32_t ebx, uint32_t ecx, uint32_t edx);
+
+/**
+ * Given Xen's internal vendor ID, return a string suitable for printing.
+ * Returns "Unknown" for any unrecognised ID.
+ */
+const char *x86_cpuid_vendor_to_str(unsigned int vendor);
+
 #define CPUID_GUEST_NR_BASIC      (0xdu + 1)
 #define CPUID_GUEST_NR_CACHE      (5u + 1)
-#define CPUID_GUEST_NR_FEAT       (0u + 1)
+#define CPUID_GUEST_NR_FEAT       (1u + 1)
 #define CPUID_GUEST_NR_TOPO       (1u + 1)
 #define CPUID_GUEST_NR_XSTATE     (62u + 1)
 #define CPUID_GUEST_NR_EXTD_INTEL (0x8u + 1)
@@ -141,8 +154,12 @@ struct cpuid_policy
     union {
         struct cpuid_leaf raw[CPUID_GUEST_NR_CACHE];
         struct cpuid_cache_leaf {
-            uint32_t type:5,
-                :27, :32, :32, :32;
+            uint32_t /* a */ type:5, level:3;
+            bool self_init:1, fully_assoc:1;
+            uint32_t :4, threads_per_cache:12, cores_per_package:6;
+            uint32_t /* b */ line_size:12, partitions:10, ways:10;
+            uint32_t /* c */ sets;
+            bool /* d */ wbinvd:1, inclusive:1, complex:1;
         } subleaf[CPUID_GUEST_NR_CACHE];
     } cache;
 
@@ -163,6 +180,13 @@ struct cpuid_policy
             union {
                 uint32_t _7d0;
                 struct { DECL_BITFIELD(7d0); };
+            };
+        };
+        struct {
+            /* Subleaf 1. */
+            union {
+                uint32_t _7a1;
+                struct { DECL_BITFIELD(7a1); };
             };
         };
     } feat;
@@ -239,7 +263,8 @@ struct cpuid_policy
                 uint32_t e8b;
                 struct { DECL_BITFIELD(e8b); };
             };
-            uint32_t /* c */:32, /* d */:32;
+            uint32_t nc:8, :4, apic_id_size:4, :16;
+            uint32_t /* d */:32;
         };
     } extd;
 
@@ -268,6 +293,7 @@ static inline void cpuid_policy_to_featureset(
     fs[FEATURESET_e7d] = p->extd.e7d;
     fs[FEATURESET_e8b] = p->extd.e8b;
     fs[FEATURESET_7d0] = p->feat._7d0;
+    fs[FEATURESET_7a1] = p->feat._7a1;
 }
 
 /* Fill in a CPUID policy from a featureset bitmap. */
@@ -284,17 +310,47 @@ static inline void cpuid_featureset_to_policy(
     p->extd.e7d   = fs[FEATURESET_e7d];
     p->extd.e8b   = fs[FEATURESET_e8b];
     p->feat._7d0  = fs[FEATURESET_7d0];
+    p->feat._7a1  = fs[FEATURESET_7a1];
+}
+
+static inline uint64_t cpuid_policy_xcr0_max(const struct cpuid_policy *p)
+{
+    return ((uint64_t)p->xstate.xcr0_high << 32) | p->xstate.xcr0_low;
+}
+
+static inline uint64_t cpuid_policy_xstates(const struct cpuid_policy *p)
+{
+    uint64_t val = p->xstate.xcr0_high | p->xstate.xss_high;
+
+    return (val << 32) | p->xstate.xcr0_low | p->xstate.xss_low;
 }
 
 const uint32_t *x86_cpuid_lookup_deep_deps(uint32_t feature);
 
 /**
+ * Recalculate the content in a CPUID policy which is derived from raw data.
+ */
+void x86_cpuid_policy_recalc_synth(struct cpuid_policy *p);
+
+/**
  * Fill a CPUID policy using the native CPUID instruction.
  *
- * No sanitisation is performed.  Values may be influenced by a hypervisor or
- * from masking/faulting configuration.
+ * No sanitisation is performed, but synthesised values are calculated.
+ * Values may be influenced by a hypervisor or from masking/faulting
+ * configuration.
  */
 void x86_cpuid_policy_fill_native(struct cpuid_policy *p);
+
+/**
+ * Clear leaf data beyond the policies max leaf/subleaf settings.
+ *
+ * Policy serialisation purposefully omits out-of-range leaves, because there
+ * are a large number of them due to vendor differences.  However, when
+ * constructing new policies (e.g. levelling down), it is possible to end up
+ * with out-of-range leaves with stale content in them.  This helper clears
+ * them.
+ */
+void x86_cpuid_policy_clear_out_of_range_leaves(struct cpuid_policy *p);
 
 #ifdef __XEN__
 #include <public/arch-x86/xen.h>
@@ -325,15 +381,16 @@ int x86_cpuid_copy_to_buffer(const struct cpuid_policy *policy,
  * @param policy      The cpuid_policy to unserialise into.
  * @param leaves      The array of leaves to unserialise from.
  * @param nr_entries  The number of entries in 'leaves'.
- * @param err_leaf    Optional hint filled on error.
- * @param err_subleaf Optional hint filled on error.
+ * @param err_leaf    Optional hint for error diagnostics.
+ * @param err_subleaf Optional hint for error diagnostics.
  * @returns -errno
  *
  * Reads at most CPUID_MAX_SERIALISED_LEAVES.  May return -ERANGE if an
  * incoming leaf is out of range of cpuid_policy, in which case the optional
- * err_* pointers are filled to aid diagnostics.
+ * err_* pointers will identify the out-of-range indicies.
  *
- * No content validation of in-range leaves is performed.
+ * No content validation of in-range leaves is performed.  Synthesised data is
+ * recalculated.
  */
 int x86_cpuid_copy_from_buffer(struct cpuid_policy *policy,
                                const cpuid_leaf_buffer_t leaves,

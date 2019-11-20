@@ -446,30 +446,24 @@ int libxl_get_memory_target_0x040700(
     return libxl__memkb_64to32(ctx, rc, my_out_target, out_target);
 }
 
-int libxl_domain_need_memory(libxl_ctx *ctx,
-                             const libxl_domain_build_info *b_info_in,
-                             uint64_t *need_memkb)
+int libxl__domain_need_memory_calculate(libxl__gc *gc,
+                              libxl_domain_build_info *b_info,
+                              uint64_t *need_memkb)
 {
-    GC_INIT(ctx);
-    libxl_domain_build_info b_info[1];
     int rc;
 
-    libxl_domain_build_info_init(b_info);
-    libxl_domain_build_info_copy(ctx, b_info, b_info_in);
-
-    rc = libxl__domain_build_info_setdefault(gc, b_info);
-    if (rc) goto out;
-
     *need_memkb = b_info->target_memkb;
+    *need_memkb += b_info->shadow_memkb + b_info->iommu_memkb;
+
     switch (b_info->type) {
     case LIBXL_DOMAIN_TYPE_PVH:
     case LIBXL_DOMAIN_TYPE_HVM:
-        *need_memkb += b_info->shadow_memkb + LIBXL_HVM_EXTRA_MEMORY;
+        *need_memkb += LIBXL_HVM_EXTRA_MEMORY;
         if (libxl_defbool_val(b_info->device_model_stubdomain))
             *need_memkb += 32 * 1024;
         break;
     case LIBXL_DOMAIN_TYPE_PV:
-        *need_memkb += b_info->shadow_memkb + LIBXL_PV_EXTRA_MEMORY;
+        *need_memkb += LIBXL_PV_EXTRA_MEMORY;
         break;
     default:
         rc = ERROR_INVAL;
@@ -479,10 +473,61 @@ int libxl_domain_need_memory(libxl_ctx *ctx,
         *need_memkb += (2 * 1024) - (*need_memkb % (2 * 1024));
     rc = 0;
 out:
-    GC_FREE;
-    libxl_domain_build_info_dispose(b_info);
     return rc;
+}
 
+int libxl_domain_need_memory(libxl_ctx *ctx,
+                             libxl_domain_config *d_config,
+                             uint32_t domid_for_logging,
+                             uint64_t *need_memkb)
+{
+    GC_INIT(ctx);
+    int rc;
+
+    ctx->libxl_domain_need_memory_called = 1;
+
+    rc = libxl__domain_config_setdefault(gc,
+                                         d_config,
+                                         domid_for_logging);
+    if (rc) goto out;
+
+    rc = libxl__domain_need_memory_calculate(gc,
+                                   &d_config->b_info,
+                                   need_memkb);
+    if (rc) goto out;
+
+    rc = 0;
+ out:
+    GC_FREE;
+    return rc;
+}
+
+int libxl_domain_need_memory_0x041200(libxl_ctx *ctx,
+                                      const libxl_domain_build_info *b_info_in,
+                                      uint64_t *need_memkb)
+{
+    GC_INIT(ctx);
+    int rc;
+
+    ctx->libxl_domain_need_memory_0x041200_called = 1;
+
+    libxl_domain_build_info b_info[1];
+    libxl_domain_build_info_init(b_info);
+    libxl_domain_build_info_copy(ctx, b_info, b_info_in);
+
+    rc = libxl__domain_build_info_setdefault(gc, b_info);
+    if (rc) goto out;
+
+    rc = libxl__domain_need_memory_calculate(gc,
+                                   b_info,
+                                   need_memkb);
+    if (rc) goto out;
+
+    rc = 0;
+ out:
+    libxl_domain_build_info_dispose(b_info);
+    GC_FREE;
+    return rc;
 }
 
 int libxl_domain_need_memory_0x040700(libxl_ctx *ctx,
@@ -492,7 +537,7 @@ int libxl_domain_need_memory_0x040700(libxl_ctx *ctx,
     uint64_t my_need_memkb;
     int rc;
 
-    rc = libxl_domain_need_memory(ctx, b_info_in, &my_need_memkb);
+    rc = libxl_domain_need_memory_0x041200(ctx, b_info_in, &my_need_memkb);
     return libxl__memkb_64to32(ctx, rc, my_need_memkb, need_memkb);
 }
 

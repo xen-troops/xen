@@ -92,6 +92,7 @@ extern int __setup_msi_irq(struct irq_desc *, struct msi_desc *,
 extern void teardown_msi_irq(int irq);
 extern int msi_free_vector(struct msi_desc *entry);
 extern int pci_restore_msi_state(struct pci_dev *pdev);
+extern int pci_reset_msix_state(struct pci_dev *pdev);
 
 struct msi_desc {
 	struct msi_attrib {
@@ -171,7 +172,6 @@ int msi_free_irq(struct msi_desc *entry);
 #define msix_enable(control)	 	control |= PCI_MSIX_FLAGS_ENABLE
 #define msix_disable(control)	 	control &= ~PCI_MSIX_FLAGS_ENABLE
 #define msix_table_size(control) 	((control & PCI_MSIX_FLAGS_QSIZE)+1)
-#define multi_msix_capable		msix_table_size
 #define msix_unmask(address)	 	(address & ~PCI_MSIX_VECTOR_BITMASK)
 #define msix_mask(address)		(address | PCI_MSIX_VECTOR_BITMASK)
 

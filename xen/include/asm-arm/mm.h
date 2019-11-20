@@ -135,24 +135,25 @@ extern mfn_t xenheap_mfn_start, xenheap_mfn_end;
 extern vaddr_t xenheap_virt_end;
 #ifdef CONFIG_ARM_64
 extern vaddr_t xenheap_virt_start;
+extern unsigned long xenheap_base_pdx;
 #endif
 
 #ifdef CONFIG_ARM_32
-#define is_xen_heap_page(page) is_xen_heap_mfn(mfn_x(page_to_mfn(page)))
+#define is_xen_heap_page(page) is_xen_heap_mfn(page_to_mfn(page))
 #define is_xen_heap_mfn(mfn) ({                                 \
-    unsigned long mfn_ = (mfn);                                 \
+    unsigned long mfn_ = mfn_x(mfn);                            \
     (mfn_ >= mfn_x(xenheap_mfn_start) &&                        \
      mfn_ < mfn_x(xenheap_mfn_end));                            \
 })
 #else
 #define is_xen_heap_page(page) ((page)->count_info & PGC_xen_heap)
 #define is_xen_heap_mfn(mfn) \
-    (mfn_valid(_mfn(mfn)) && is_xen_heap_page(mfn_to_page(_mfn(mfn))))
+    (mfn_valid(mfn) && is_xen_heap_page(mfn_to_page(mfn)))
 #endif
 
 #define is_xen_fixed_mfn(mfn)                                   \
-    ((pfn_to_paddr(mfn) >= virt_to_maddr(&_start)) &&       \
-     (pfn_to_paddr(mfn) <= virt_to_maddr(&_end)))
+    ((mfn_to_maddr(mfn) >= virt_to_maddr(&_start)) &&           \
+     (mfn_to_maddr(mfn) <= virt_to_maddr((vaddr_t)_end - 1)))
 
 #define page_get_owner(_p)    (_p)->v.inuse.domain
 #define page_set_owner(_p,_d) ((_p)->v.inuse.domain = (_d))
@@ -225,7 +226,7 @@ static inline void __iomem *ioremap_wc(paddr_t start, size_t len)
 /* Convert between frame number and address formats.  */
 #define pfn_to_paddr(pfn) ((paddr_t)(pfn) << PAGE_SHIFT)
 #define paddr_to_pfn(pa)  ((unsigned long)((pa) >> PAGE_SHIFT))
-#define paddr_to_pdx(pa)    pfn_to_pdx(paddr_to_pfn(pa))
+#define paddr_to_pdx(pa)    mfn_to_pdx(maddr_to_mfn(pa))
 #define gfn_to_gaddr(gfn)   pfn_to_paddr(gfn_x(gfn))
 #define gaddr_to_gfn(ga)    _gfn(paddr_to_pfn(ga))
 #define mfn_to_maddr(mfn)   pfn_to_paddr(mfn_x(mfn))
@@ -246,16 +247,17 @@ static inline paddr_t __virt_to_maddr(vaddr_t va)
 #ifdef CONFIG_ARM_32
 static inline void *maddr_to_virt(paddr_t ma)
 {
-    ASSERT(is_xen_heap_mfn(ma >> PAGE_SHIFT));
+    ASSERT(is_xen_heap_mfn(maddr_to_mfn(ma)));
     ma -= mfn_to_maddr(xenheap_mfn_start);
     return (void *)(unsigned long) ma + XENHEAP_VIRT_START;
 }
 #else
 static inline void *maddr_to_virt(paddr_t ma)
 {
-    ASSERT(pfn_to_pdx(ma >> PAGE_SHIFT) < (DIRECTMAP_SIZE >> PAGE_SHIFT));
+    ASSERT((mfn_to_pdx(maddr_to_mfn(ma)) - xenheap_base_pdx) <
+           (DIRECTMAP_SIZE >> PAGE_SHIFT));
     return (void *)(XENHEAP_VIRT_START -
-                    mfn_to_maddr(xenheap_mfn_start) +
+                    (xenheap_base_pdx << PAGE_SHIFT) +
                     ((ma & ma_va_bottom_mask) |
                      ((ma & ma_top_mask) >> pfn_pdx_hole_shift)));
 }
@@ -301,7 +303,7 @@ static inline struct page_info *virt_to_page(const void *v)
     ASSERT(va < xenheap_virt_end);
 
     pdx = (va - XENHEAP_VIRT_START) >> PAGE_SHIFT;
-    pdx += pfn_to_pdx(mfn_x(xenheap_mfn_start));
+    pdx += mfn_to_pdx(xenheap_mfn_start);
     return frame_table + pdx - frametable_base_pdx;
 }
 
@@ -334,8 +336,6 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg);
 
 unsigned long domain_get_maximum_gpfn(struct domain *d);
 
-extern struct domain *dom_xen, *dom_io, *dom_cow;
-
 #define memguard_guard_stack(_p)       ((void)0)
 #define memguard_guard_range(_p,_l)    ((void)0)
 #define memguard_unguard_range(_p,_l)  ((void)0)
@@ -358,7 +358,7 @@ void clear_and_clean_page(struct page_info *page);
 static inline
 int arch_acquire_resource(struct domain *d, unsigned int type, unsigned int id,
                           unsigned long frame, unsigned int nr_frames,
-                          xen_pfn_t mfn_list[], unsigned int *flags)
+                          xen_pfn_t mfn_list[])
 {
     return -EOPNOTSUPP;
 }

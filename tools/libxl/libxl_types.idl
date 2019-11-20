@@ -235,6 +235,9 @@ libxl_viridian_enlightenment = Enumeration("viridian_enlightenment", [
     (4, "hcall_remote_tlb_flush"),
     (5, "apic_assist"),
     (6, "crash_ctl"),
+    (7, "synic"),
+    (8, "stimer"),
+    (9, "hcall_ipi"),
     ])
 
 libxl_hdtype = Enumeration("hdtype", [
@@ -258,6 +261,14 @@ libxl_vkb_backend = Enumeration("vkb_backend", [
     (0, "UNKNOWN"),
     (1, "QEMU"),
     (2, "LINUX")
+    ])
+
+libxl_passthrough = Enumeration("passthrough", [
+    (0, "default"),
+    (1, "disabled"),
+    (2, "enabled"), # becomes {sync,share}_pt once defaults are evaluated
+    (3, "sync_pt"),
+    (4, "share_pt"),
     ])
 
 #
@@ -405,6 +416,7 @@ libxl_domain_create_info = Struct("domain_create_info",[
     ("pool_name",    string),
     ("run_hotplug_scripts",libxl_defbool),
     ("driver_domain",libxl_defbool),
+    ("passthrough",  libxl_passthrough),
     ], dir=DIR_IN)
 
 libxl_domain_restore_params = Struct("domain_restore_params", [
@@ -457,6 +469,11 @@ libxl_gic_version = Enumeration("gic_version", [
     (0x30, "v3")
     ], init_val = "LIBXL_GIC_VERSION_DEFAULT")
 
+libxl_tee_type = Enumeration("tee_type", [
+    (0, "none"),
+    (1, "optee")
+    ], init_val = "LIBXL_TEE_TYPE_NONE")
+
 libxl_rdm_reserve = Struct("rdm_reserve", [
     ("strategy",    libxl_rdm_reserve_strategy),
     ("policy",      libxl_rdm_reserve_policy),
@@ -483,6 +500,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
     ("target_memkb",    MemKB),
     ("video_memkb",     MemKB),
     ("shadow_memkb",    MemKB),
+    ("iommu_memkb",     MemKB),
     ("rtc_timeoffset",  uint32),
     ("exec_ssidref",    uint32),
     ("exec_ssid_label", string),
@@ -534,6 +552,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
     ("nested_hvm",       libxl_defbool),
     ("apic",             libxl_defbool),
     ("dm_restrict",      libxl_defbool),
+    ("tee",              libxl_tee_type),
     ("u", KeyedUnion(None, libxl_domain_type, "type",
                 [("hvm", Struct(None, [("firmware",         string),
                                        ("bios",             libxl_bios_type),
@@ -583,6 +602,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
                                        # - "tablet" for absolute mouse,
                                        # - "mouse" for PS/2 protocol relative mouse
                                        ("usbdevice",        string),
+                                       ("vkb_device",       libxl_defbool),
                                        ("soundhw",          string),
                                        ("xen_platform_pci", libxl_defbool),
                                        ("usbdevice_list",   libxl_string_list),
@@ -1021,6 +1041,9 @@ libxl_physinfo = Struct("physinfo", [
     ("cap_hvm", bool),
     ("cap_pv", bool),
     ("cap_hvm_directio", bool), # No longer HVM specific
+    ("cap_hap", bool),
+    ("cap_shadow", bool),
+    ("cap_iommu_hap_pt_share", bool),
     ], dir=DIR_OUT)
 
 libxl_connectorinfo = Struct("connectorinfo", [

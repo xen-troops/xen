@@ -89,6 +89,19 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         return ERROR_FAIL;
     }
 
+    switch (d_config->b_info.tee) {
+    case LIBXL_TEE_TYPE_NONE:
+        config->arch.tee_type = XEN_DOMCTL_CONFIG_TEE_NONE;
+        break;
+    case LIBXL_TEE_TYPE_OPTEE:
+        config->arch.tee_type = XEN_DOMCTL_CONFIG_TEE_OPTEE;
+        break;
+    default:
+        LOG(ERROR, "Unknown TEE type %d",
+            d_config->b_info.tee);
+        return ERROR_FAIL;
+    }
+
     return 0;
 }
 
@@ -399,6 +412,32 @@ static int make_psci_node(libxl__gc *gc, void *fdt)
     if (res) return res;
 
     res = fdt_property_cell(fdt, "cpu_on", PSCI_cpu_on);
+    if (res) return res;
+
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    return 0;
+}
+
+static int make_optee_node(libxl__gc *gc, void *fdt)
+{
+    int res;
+    LOG(DEBUG, "Creating OP-TEE node in dtb");
+
+    res = fdt_begin_node(fdt, "firmware");
+    if (res) return res;
+
+    res = fdt_begin_node(fdt, "optee");
+    if (res) return res;
+
+    res = fdt_property_compat(gc, fdt, 1, "linaro,optee-tz");
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "method", "hvc");
+    if (res) return res;
+
+    res = fdt_end_node(fdt);
     if (res) return res;
 
     res = fdt_end_node(fdt);
@@ -920,6 +959,9 @@ next_resize:
         if (info->arch_arm.vuart == LIBXL_VUART_TYPE_SBSA_UART)
             FDT( make_vpl011_uart_node(gc, fdt, ainfo, dom) );
 
+        if (info->tee == LIBXL_TEE_TYPE_OPTEE)
+            FDT( make_optee_node(gc, fdt) );
+
         if (pfdt)
             FDT( copy_partial_fdt(gc, fdt, pfdt) );
 
@@ -1147,6 +1189,36 @@ void libxl__arch_domain_build_info_setdefault(libxl__gc *gc,
     memset(&b_info->u, '\0', sizeof(b_info->u));
     b_info->type = LIBXL_DOMAIN_TYPE_INVALID;
     libxl_domain_build_info_init_type(b_info, LIBXL_DOMAIN_TYPE_PVH);
+}
+
+int libxl__arch_passthrough_mode_setdefault(libxl__gc *gc,
+                                            uint32_t domid,
+                                            libxl_domain_config *d_config,
+                                            const libxl_physinfo *physinfo)
+{
+    int rc;
+    libxl_domain_create_info *const c_info = &d_config->c_info;
+
+    if (c_info->passthrough == LIBXL_PASSTHROUGH_ENABLED) {
+        c_info->passthrough = LIBXL_PASSTHROUGH_SHARE_PT;
+    }
+
+    switch (c_info->passthrough) {
+    case LIBXL_PASSTHROUGH_DISABLED:
+    case LIBXL_PASSTHROUGH_SHARE_PT:
+        break;
+
+    default:
+        LOGD(ERROR, domid,
+             "passthrough=\"%s\" not supported on ARM\n",
+             libxl_passthrough_to_string(c_info->passthrough));
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    rc = 0;
+ out:
+    return rc;
 }
 
 /*

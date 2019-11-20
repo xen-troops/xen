@@ -20,7 +20,7 @@ LIBUUID_LIBS += -luuid
 endif
 
 LIBXL_LIBS =
-LIBXL_LIBS = $(LDLIBS_libxentoollog) $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(LDLIBS_libblktapctl) $(LDLIBS_libxentoolcore) $(PTYFUNCS_LIBS) $(LIBUUID_LIBS)
+LIBXL_LIBS = $(LDLIBS_libxentoollog) $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(LDLIBS_libxentoolcore) $(PTYFUNCS_LIBS) $(LIBUUID_LIBS)
 ifeq ($(CONFIG_LIBNL),y)
 LIBXL_LIBS += $(LIBNL3_LIBS)
 endif
@@ -31,11 +31,13 @@ CFLAGS_LIBXL += $(CFLAGS_libxenevtchn)
 CFLAGS_LIBXL += $(CFLAGS_libxenctrl)
 CFLAGS_LIBXL += $(CFLAGS_libxenguest)
 CFLAGS_LIBXL += $(CFLAGS_libxenstore)
-CFLAGS_LIBXL += $(CFLAGS_libblktapctl) 
 ifeq ($(CONFIG_LIBNL),y)
 CFLAGS_LIBXL += $(LIBNL3_CFLAGS)
 endif
 CFLAGS_LIBXL += -Wshadow
+ifeq ($(debug),y)
+CFLAGS_LIBXL += -DCONFIG_DEBUG
+endif
 
 LIBXL_LIBS-$(CONFIG_ARM) += -lfdt
 
@@ -47,11 +49,6 @@ LIBXL_LIBS += $(LIBXL_LIBS-y)
 LIBXLU_LIBS = $(LDLIBS_libxenlight)
 
 LIBXL_OBJS-y = osdeps.o libxl_paths.o libxl_bootloader.o flexarray.o
-ifeq ($(CONFIG_BLKTAP2),y)
-LIBXL_OBJS-y += libxl_blktap2.o
-else
-LIBXL_OBJS-y += libxl_noblktap2.o
-endif
 
 ifeq ($(CONFIG_LIBNL),y)
 LIBXL_OBJS-y += libxl_netbuffer.o

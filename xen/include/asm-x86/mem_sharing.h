@@ -24,8 +24,14 @@
 #include <public/domctl.h>
 #include <public/memory.h>
 
+#ifdef CONFIG_MEM_SHARING
+
 /* Auditing of memory sharing code? */
+#ifndef NDEBUG
 #define MEM_SHARING_AUDIT 1
+#else
+#define MEM_SHARING_AUDIT 0
+#endif
 
 typedef uint64_t shr_handle_t; 
 
@@ -88,12 +94,37 @@ int mem_sharing_notify_enomem(struct domain *d, unsigned long gfn,
 int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg);
 int mem_sharing_domctl(struct domain *d, 
                        struct xen_domctl_mem_sharing_op *mec);
-void mem_sharing_init(void);
 
 /* Scans the p2m and relinquishes any shared pages, destroying 
  * those for which this domain holds the final reference.
  * Preemptible.
  */
 int relinquish_shared_pages(struct domain *d);
+
+#else
+
+static inline unsigned int mem_sharing_get_nr_saved_mfns(void)
+{
+    return 0;
+}
+static inline unsigned int mem_sharing_get_nr_shared_mfns(void)
+{
+    return 0;
+}
+static inline int mem_sharing_unshare_page(struct domain *d,
+                                           unsigned long gfn,
+                                           uint16_t flags)
+{
+    ASSERT_UNREACHABLE();
+    return -EOPNOTSUPP;
+}
+static inline int mem_sharing_notify_enomem(struct domain *d, unsigned long gfn,
+                              bool allow_sleep)
+{
+    ASSERT_UNREACHABLE();
+    return -EOPNOTSUPP;
+}
+
+#endif
 
 #endif /* __MEM_SHARING_H__ */

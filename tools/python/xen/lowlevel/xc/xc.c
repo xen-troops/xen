@@ -17,7 +17,6 @@
 #include <arpa/inet.h>
 
 #include <xen/elfnote.h>
-#include <xen/tmem.h>
 #include "xc_dom.h"
 #include <xen/hvm/hvm_info_table.h>
 #include <xen/hvm/params.h>
@@ -118,7 +117,8 @@ static PyObject *pyxc_domain_create(XcObject *self,
                                     PyObject *kwds)
 {
     uint32_t dom = 0, target = 0;
-    int      ret, i;
+    int      ret;
+    size_t   i;
     PyObject *pyhandle = NULL;
     struct xen_domctl_createdomain config = {
         .handle = {
@@ -155,7 +155,7 @@ static PyObject *pyxc_domain_create(XcObject *self,
     }
 
 #if defined (__i386) || defined(__x86_64__)
-    if ( config.flags & XEN_DOMCTL_CDF_hvm_guest )
+    if ( config.flags & XEN_DOMCTL_CDF_hvm )
         config.arch.emulation_flags = (XEN_X86_EMU_ALL & ~XEN_X86_EMU_VPCI);
 #elif defined (__arm__) || defined(__aarch64__)
     config.arch.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
@@ -296,7 +296,7 @@ static PyObject *pyxc_vcpu_setaffinity(XcObject *self,
 
 static PyObject *pyxc_domain_sethandle(XcObject *self, PyObject *args)
 {
-    int i;
+    size_t i;
     uint32_t dom;
     PyObject *pyhandle;
     xen_domain_handle_t handle;
@@ -337,7 +337,8 @@ static PyObject *pyxc_domain_getinfo(XcObject *self,
     PyObject *list, *info_dict, *pyhandle;
 
     uint32_t first_dom = 0;
-    int max_doms = 1024, nr_doms, i, j;
+    int max_doms = 1024, nr_doms, i;
+    size_t j;
     xc_dominfo_t *info;
 
     static char *kwd_list[] = { "first_dom", "max_doms", NULL };
@@ -632,7 +633,8 @@ static PyObject *pyxc_get_device_group(XcObject *self,
 {
     uint32_t sbdf;
     uint32_t max_sdevs, num_sdevs;
-    int domid, seg, bus, dev, func, rc, i;
+    int domid, seg, bus, dev, func, rc;
+    size_t i;
     PyObject *Pystr;
     char *group_str;
     char dev_str[9];
@@ -767,38 +769,6 @@ static PyObject *pyxc_dom_set_cpuid(XcObject *self,
         return pyxc_error_to_exception(self->xc_handle);
 
     return pyxc_create_cpuid_dict(regs_transform);
-}
-
-static PyObject *pyxc_dom_set_machine_address_size(XcObject *self,
-						   PyObject *args,
-						   PyObject *kwds)
-{
-    uint32_t dom, width;
-
-    if (!PyArg_ParseTuple(args, "ii", &dom, &width))
-	return NULL;
-
-    if (xc_domain_set_machine_address_size(self->xc_handle, dom, width) != 0)
-	return pyxc_error_to_exception(self->xc_handle);
-
-    Py_INCREF(zero);
-    return zero;
-}
-
-static PyObject *pyxc_dom_suppress_spurious_page_faults(XcObject *self,
-						      PyObject *args,
-						      PyObject *kwds)
-{
-    uint32_t dom;
-
-    if (!PyArg_ParseTuple(args, "i", &dom))
-	return NULL;
-
-    if (xc_domain_suppress_spurious_page_faults(self->xc_handle, dom) != 0)
-	return pyxc_error_to_exception(self->xc_handle);
-
-    Py_INCREF(zero);
-    return zero;
 }
 #endif /* __i386__ || __x86_64__ */
 
@@ -972,12 +942,18 @@ static PyObject *pyxc_physinfo(XcObject *self)
 {
     xc_physinfo_t pinfo;
     char cpu_cap[128], virt_caps[128], *p;
-    int i;
-    const char *virtcap_names[] = { "hvm", "hvm_directio" };
+    size_t i;
+    const char *virtcap_names[] = { "hvm", "pv" };
+    const unsigned virtcaps_bits[] = { XEN_SYSCTL_PHYSCAP_hvm,
+                                       XEN_SYSCTL_PHYSCAP_pv };
 
     if ( xc_physinfo(self->xc_handle, &pinfo) != 0 )
         return pyxc_error_to_exception(self->xc_handle);
 
+    /*
+     * Keep in sync with tools/xl/xl_info.c:output_xeninfo
+     * and struct xen_sysctl_physinfo (especially bit fields).
+     */
     p = cpu_cap;
     *p = '\0';
     for ( i = 0; i < sizeof(pinfo.hw_cap)/4; i++ )
@@ -986,9 +962,13 @@ static PyObject *pyxc_physinfo(XcObject *self)
 
     p = virt_caps;
     *p = '\0';
-    for ( i = 0; i < 2; i++ )
-        if ( (pinfo.capabilities >> i) & 1 )
+    for ( i = 0; i < ARRAY_SIZE(virtcaps_bits); i++ )
+        if ( pinfo.capabilities & virtcaps_bits[i] )
           p += sprintf(p, "%s ", virtcap_names[i]);
+    if ( pinfo.capabilities & XEN_SYSCTL_PHYSCAP_directio )
+        for ( i = 0; i < ARRAY_SIZE(virtcaps_bits); i++ )
+            if ( pinfo.capabilities & virtcaps_bits[i] )
+              p += sprintf(p, "%s_directio ", virtcap_names[i]);
     if ( p != virt_caps )
       *(p-1) = '\0';
 
@@ -1200,6 +1180,26 @@ out:
     free(meminfo);
     free(distance);
     return ret_obj ? ret_obj : pyxc_error_to_exception(self->xc_handle);
+}
+
+static PyObject *pyxc_xenbuildid(XcObject *self)
+{
+    xen_build_id_t *buildid;
+    int i, r;
+    char *str;
+
+    buildid = alloca(XC_PAGE_SIZE);
+    buildid->len = XC_PAGE_SIZE - sizeof(*buildid);
+
+    r = xc_version(self->xc_handle, XENVER_build_id, buildid);
+    if ( r <= 0 )
+        return pyxc_error_to_exception(self->xc_handle);
+
+    str = alloca((r * 2) + 1);
+    for ( i = 0; i < r; i++ )
+        snprintf(&str[i * 2], 3, "%02hhx", buildid->buf[i]);
+
+    return Py_BuildValue("s", str);
 }
 
 static PyObject *pyxc_xeninfo(XcObject *self)
@@ -1609,71 +1609,6 @@ static PyObject *dom_op(XcObject *self, PyObject *args,
 
     if (fn(self->xc_handle, dom) != 0)
         return pyxc_error_to_exception(self->xc_handle);
-
-    Py_INCREF(zero);
-    return zero;
-}
-
-static PyObject *pyxc_tmem_control(XcObject *self,
-                                   PyObject *args,
-                                   PyObject *kwds)
-{
-    int32_t pool_id;
-    uint32_t subop;
-    uint32_t cli_id;
-    uint32_t len;
-    uint32_t arg;
-    char *buf;
-    char _buffer[32768], *buffer = _buffer;
-    int rc;
-
-    static char *kwd_list[] = { "pool_id", "subop", "cli_id", "arg1", "arg2", "buf", NULL };
-
-    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "iiiiis", kwd_list,
-                        &pool_id, &subop, &cli_id, &len, &arg, &buf) )
-        return NULL;
-
-    if ( (subop == XEN_SYSCTL_TMEM_OP_LIST) && (len > 32768) )
-        len = 32768;
-
-    if ( (rc = xc_tmem_control(self->xc_handle, pool_id, subop, cli_id, len, arg, buffer)) < 0 )
-        return Py_BuildValue("i", rc);
-
-    switch (subop) {
-        case XEN_SYSCTL_TMEM_OP_LIST:
-            return Py_BuildValue("s", buffer);
-        case XEN_SYSCTL_TMEM_OP_FLUSH:
-            return Py_BuildValue("i", rc);
-        case XEN_SYSCTL_TMEM_OP_QUERY_FREEABLE_MB:
-            return Py_BuildValue("i", rc);
-        case XEN_SYSCTL_TMEM_OP_THAW:
-        case XEN_SYSCTL_TMEM_OP_FREEZE:
-        case XEN_SYSCTL_TMEM_OP_DESTROY:
-        default:
-            break;
-    }
-
-    Py_INCREF(zero);
-    return zero;
-}
-
-static PyObject *pyxc_tmem_shared_auth(XcObject *self,
-                                   PyObject *args,
-                                   PyObject *kwds)
-{
-    uint32_t cli_id;
-    uint32_t arg1;
-    char *uuid_str;
-    int rc;
-
-    static char *kwd_list[] = { "cli_id", "uuid_str", "arg1", NULL };
-
-    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "isi", kwd_list,
-                                   &cli_id, &uuid_str, &arg1) )
-        return NULL;
-
-    if ( (rc = xc_tmem_auth(self->xc_handle, cli_id, uuid_str, arg1)) < 0 )
-        return Py_BuildValue("i", rc);
 
     Py_INCREF(zero);
     return zero;
@@ -2350,6 +2285,13 @@ static PyMethodDef pyxc_methods[] = {
       "Returns [dict]: information about Xen"
       "        [None]: on failure.\n" },
 
+    { "buildid",
+      (PyCFunction)pyxc_xenbuildid,
+      METH_NOARGS, "\n"
+      "Get Xen buildid\n"
+      "Returns [str]: Xen buildid"
+      "        [None]: on failure.\n" },
+
     { "shadow_control", 
       (PyCFunction)pyxc_shadow_control, 
       METH_VARARGS | METH_KEYWORDS, "\n"
@@ -2482,41 +2424,7 @@ static PyMethodDef pyxc_methods[] = {
       "Set the default cpuid policy for a domain.\n"
       " dom [int]: Identifier of domain.\n\n"
       "Returns: [int] 0 on success; exception on error.\n" },
-
-    { "domain_set_machine_address_size",
-      (PyCFunction)pyxc_dom_set_machine_address_size,
-      METH_VARARGS, "\n"
-      "Set maximum machine address size for this domain.\n"
-      " dom [int]: Identifier of domain.\n"
-      " width [int]: Maximum machine address width.\n" },
-
-    { "domain_suppress_spurious_page_faults",
-      (PyCFunction)pyxc_dom_suppress_spurious_page_faults,
-      METH_VARARGS, "\n"
-      "Do not propagate spurious page faults to this guest.\n"
-      " dom [int]: Identifier of domain.\n" },
 #endif
-
-    { "tmem_control",
-      (PyCFunction)pyxc_tmem_control,
-      METH_VARARGS | METH_KEYWORDS, "\n"
-      "Do various control on a tmem pool.\n"
-      " pool_id [int]: Identifier of the tmem pool (-1 == all).\n"
-      " subop [int]: Supplementary Operation.\n"
-      " cli_id [int]: Client identifier (-1 == all).\n"
-      " len [int]: Length of 'buf'.\n"
-      " arg [int]: Argument.\n"
-      " buf [str]: Buffer.\n\n"
-      "Returns: [int] 0 or [str] tmem info on success; exception on error.\n" },
-
-    { "tmem_shared_auth",
-      (PyCFunction)pyxc_tmem_shared_auth,
-      METH_VARARGS | METH_KEYWORDS, "\n"
-      "De/authenticate a shared tmem pool.\n"
-      " cli_id [int]: Client identifier (-1 == all).\n"
-      " uuid_str [str]: uuid.\n"
-      " auth [int]: 0|1 .\n"
-      "Returns: [int] 0 on success; exception on error.\n" },
 
     { "dom_set_memshr", 
       (PyCFunction)pyxc_dom_set_memshr,

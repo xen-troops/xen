@@ -75,7 +75,7 @@ static bool copy_hyp_vect_bpi(unsigned int slot, const char *hyp_vec_start,
     clean_dcache_va_range(dst_remapped, VECTOR_TABLE_SIZE);
     invalidate_icache();
 
-    vunmap(dst_remapped);
+    vunmap((void *)((vaddr_t)dst_remapped & PAGE_MASK));
 
     return true;
 }
@@ -336,18 +336,11 @@ static bool has_ssbd_mitigation(const struct arm_cpu_capabilities *entry)
     switch ( ssbd_state )
     {
     case ARM_SSBD_FORCE_DISABLE:
-    {
-        static bool once = true;
-
-        if ( once )
-            printk("%s disabled from command-line\n", entry->desc);
-        once = false;
+        printk_once("%s disabled from command-line\n", entry->desc);
 
         arm_smccc_1_1_smc(ARM_SMCCC_ARCH_WORKAROUND_2_FID, 0, NULL);
         required = false;
-
         break;
-    }
 
     case ARM_SSBD_RUNTIME:
         if ( required )
@@ -359,18 +352,11 @@ static bool has_ssbd_mitigation(const struct arm_cpu_capabilities *entry)
         break;
 
     case ARM_SSBD_FORCE_ENABLE:
-    {
-        static bool once = true;
-
-        if ( once )
-            printk("%s forced from command-line\n", entry->desc);
-        once = false;
+        printk_once("%s forced from command-line\n", entry->desc);
 
         arm_smccc_1_1_smc(ARM_SMCCC_ARCH_WORKAROUND_2_FID, 1, NULL);
         required = true;
-
         break;
-    }
 
     default:
         ASSERT_UNREACHABLE();
@@ -494,6 +480,16 @@ static const struct arm_cpu_capabilities arm_errata[] = {
         .desc = "ARM erratum 116522",
         .capability = ARM64_WORKAROUND_AT_SPECULATE,
         MIDR_RANGE(MIDR_CORTEX_A76, 0, 2 << MIDR_VARIANT_SHIFT),
+    },
+    {
+        .desc = "ARM erratum 1319537",
+        .capability = ARM64_WORKAROUND_AT_SPECULATE,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_A72),
+    },
+    {
+        .desc = "ARM erratum 1319367",
+        .capability = ARM64_WORKAROUND_AT_SPECULATE,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_A57),
     },
     {},
 };

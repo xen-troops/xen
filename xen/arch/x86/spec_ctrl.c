@@ -35,6 +35,8 @@ static bool __initdata opt_msr_sc_pv = true;
 static bool __initdata opt_msr_sc_hvm = true;
 static bool __initdata opt_rsb_pv = true;
 static bool __initdata opt_rsb_hvm = true;
+static int8_t __initdata opt_md_clear_pv = -1;
+static int8_t __initdata opt_md_clear_hvm = -1;
 
 /* Cmdline controls for Xen's speculative settings. */
 static enum ind_thunk {
@@ -50,6 +52,7 @@ bool __read_mostly opt_ibpb = true;
 bool __read_mostly opt_ssbd = false;
 int8_t __read_mostly opt_eager_fpu = -1;
 int8_t __read_mostly opt_l1d_flush = -1;
+bool __read_mostly opt_branch_harden = true;
 
 bool __initdata bsp_delay_spec_ctrl;
 uint8_t __read_mostly default_xen_spec_ctrl;
@@ -58,6 +61,9 @@ uint8_t __read_mostly default_spec_ctrl_flags;
 paddr_t __read_mostly l1tf_addr_mask, __read_mostly l1tf_safe_maddr;
 static bool __initdata cpu_has_bug_l1tf;
 static unsigned int __initdata l1d_maxphysaddr;
+
+static bool __initdata cpu_has_bug_msbds_only; /* => minimal HT impact. */
+static bool __initdata cpu_has_bug_mds; /* Any other M{LP,SB,FB}DS combination. */
 
 static int __init parse_spec_ctrl(const char *s)
 {
@@ -91,9 +97,13 @@ static int __init parse_spec_ctrl(const char *s)
             if ( opt_pv_l1tf_domu < 0 )
                 opt_pv_l1tf_domu = 0;
 
+            opt_branch_harden = false;
+
         disable_common:
             opt_rsb_pv = false;
             opt_rsb_hvm = false;
+            opt_md_clear_pv = 0;
+            opt_md_clear_hvm = 0;
 
             opt_thunk = THUNK_JMP;
             opt_ibrs = 0;
@@ -116,11 +126,13 @@ static int __init parse_spec_ctrl(const char *s)
         {
             opt_msr_sc_pv = val;
             opt_rsb_pv = val;
+            opt_md_clear_pv = val;
         }
         else if ( (val = parse_boolean("hvm", s, ss)) >= 0 )
         {
             opt_msr_sc_hvm = val;
             opt_rsb_hvm = val;
+            opt_md_clear_hvm = val;
         }
         else if ( (val = parse_boolean("msr-sc", s, ss)) >= 0 )
         {
@@ -131,6 +143,11 @@ static int __init parse_spec_ctrl(const char *s)
         {
             opt_rsb_pv = val;
             opt_rsb_hvm = val;
+        }
+        else if ( (val = parse_boolean("md-clear", s, ss)) >= 0 )
+        {
+            opt_md_clear_pv = val;
+            opt_md_clear_hvm = val;
         }
 
         /* Xen's speculative sidechannel mitigation settings. */
@@ -157,6 +174,8 @@ static int __init parse_spec_ctrl(const char *s)
             opt_eager_fpu = val;
         else if ( (val = parse_boolean("l1d-flush", s, ss)) >= 0 )
             opt_l1d_flush = val;
+        else if ( (val = parse_boolean("branch-harden", s, ss)) >= 0 )
+            opt_branch_harden = val;
         else
             rc = -EINVAL;
 
@@ -166,6 +185,73 @@ static int __init parse_spec_ctrl(const char *s)
     return rc;
 }
 custom_param("spec-ctrl", parse_spec_ctrl);
+
+int8_t __read_mostly opt_xpti_hwdom = -1;
+int8_t __read_mostly opt_xpti_domu = -1;
+
+static __init void xpti_init_default(uint64_t caps)
+{
+    if ( boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
+        caps = ARCH_CAPS_RDCL_NO;
+
+    if ( caps & ARCH_CAPS_RDCL_NO )
+    {
+        if ( opt_xpti_hwdom < 0 )
+            opt_xpti_hwdom = 0;
+        if ( opt_xpti_domu < 0 )
+            opt_xpti_domu = 0;
+    }
+    else
+    {
+        if ( opt_xpti_hwdom < 0 )
+            opt_xpti_hwdom = 1;
+        if ( opt_xpti_domu < 0 )
+            opt_xpti_domu = 1;
+    }
+}
+
+static __init int parse_xpti(const char *s)
+{
+    const char *ss;
+    int val, rc = 0;
+
+    /* Interpret 'xpti' alone in its positive boolean form. */
+    if ( *s == '\0' )
+        opt_xpti_hwdom = opt_xpti_domu = 1;
+
+    do {
+        ss = strchr(s, ',');
+        if ( !ss )
+            ss = strchr(s, '\0');
+
+        switch ( parse_bool(s, ss) )
+        {
+        case 0:
+            opt_xpti_hwdom = opt_xpti_domu = 0;
+            break;
+
+        case 1:
+            opt_xpti_hwdom = opt_xpti_domu = 1;
+            break;
+
+        default:
+            if ( !strcmp(s, "default") )
+                opt_xpti_hwdom = opt_xpti_domu = -1;
+            else if ( (val = parse_boolean("dom0", s, ss)) >= 0 )
+                opt_xpti_hwdom = val;
+            else if ( (val = parse_boolean("domu", s, ss)) >= 0 )
+                opt_xpti_domu = val;
+            else if ( *s )
+                rc = -EINVAL;
+            break;
+        }
+
+        s = ss + 1;
+    } while ( *ss );
+
+    return rc;
+}
+custom_param("xpti", parse_xpti);
 
 int8_t __read_mostly opt_pv_l1tf_hwdom = -1;
 int8_t __read_mostly opt_pv_l1tf_domu = -1;
@@ -224,17 +310,19 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
     printk("Speculative mitigation facilities:\n");
 
     /* Hardware features which pertain to speculative mitigations. */
-    printk("  Hardware features:%s%s%s%s%s%s%s%s%s%s\n",
+    printk("  Hardware features:%s%s%s%s%s%s%s%s%s%s%s%s\n",
            (_7d0 & cpufeat_mask(X86_FEATURE_IBRSB)) ? " IBRS/IBPB" : "",
            (_7d0 & cpufeat_mask(X86_FEATURE_STIBP)) ? " STIBP"     : "",
            (_7d0 & cpufeat_mask(X86_FEATURE_L1D_FLUSH)) ? " L1D_FLUSH" : "",
            (_7d0 & cpufeat_mask(X86_FEATURE_SSBD))  ? " SSBD"      : "",
+           (_7d0 & cpufeat_mask(X86_FEATURE_MD_CLEAR)) ? " MD_CLEAR" : "",
            (e8b  & cpufeat_mask(X86_FEATURE_IBPB))  ? " IBPB"      : "",
            (caps & ARCH_CAPS_IBRS_ALL)              ? " IBRS_ALL"  : "",
            (caps & ARCH_CAPS_RDCL_NO)               ? " RDCL_NO"   : "",
            (caps & ARCH_CAPS_RSBA)                  ? " RSBA"      : "",
            (caps & ARCH_CAPS_SKIP_L1DFL)            ? " SKIP_L1DFL": "",
-           (caps & ARCH_CAPS_SSB_NO)                ? " SSB_NO"    : "");
+           (caps & ARCH_CAPS_SSB_NO)                ? " SSB_NO"    : "",
+           (caps & ARCH_CAPS_MDS_NO)                ? " MDS_NO"    : "");
 
     /* Compiled-in support which pertains to mitigations. */
     if ( IS_ENABLED(CONFIG_INDIRECT_THUNK) || IS_ENABLED(CONFIG_SHADOW_PAGING) )
@@ -248,7 +336,7 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
                "\n");
 
     /* Settings for Xen's protection, irrespective of guests. */
-    printk("  Xen settings: BTI-Thunk %s, SPEC_CTRL: %s%s, Other:%s%s\n",
+    printk("  Xen settings: BTI-Thunk %s, SPEC_CTRL: %s%s, Other:%s%s%s%s\n",
            thunk == THUNK_NONE      ? "N/A" :
            thunk == THUNK_RETPOLINE ? "RETPOLINE" :
            thunk == THUNK_LFENCE    ? "LFENCE" :
@@ -258,7 +346,9 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
            !boot_cpu_has(X86_FEATURE_SSBD)           ? "" :
            (default_xen_spec_ctrl & SPEC_CTRL_SSBD)  ? " SSBD+" : " SSBD-",
            opt_ibpb                                  ? " IBPB"  : "",
-           opt_l1d_flush                             ? " L1D_FLUSH" : "");
+           opt_l1d_flush                             ? " L1D_FLUSH" : "",
+           opt_md_clear_pv || opt_md_clear_hvm       ? " VERW"  : "",
+           opt_branch_harden                         ? " BRANCH_HARDEN" : "");
 
     /* L1TF diagnostics, printed if vulnerable or PV shadowing is in use. */
     if ( cpu_has_bug_l1tf || opt_pv_l1tf_hwdom || opt_pv_l1tf_domu )
@@ -272,23 +362,27 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
      * mitigation support for guests.
      */
 #ifdef CONFIG_HVM
-    printk("  Support for HVM VMs:%s%s%s%s\n",
+    printk("  Support for HVM VMs:%s%s%s%s%s\n",
            (boot_cpu_has(X86_FEATURE_SC_MSR_HVM) ||
             boot_cpu_has(X86_FEATURE_SC_RSB_HVM) ||
+            boot_cpu_has(X86_FEATURE_MD_CLEAR)   ||
             opt_eager_fpu)                           ? ""               : " None",
            boot_cpu_has(X86_FEATURE_SC_MSR_HVM)      ? " MSR_SPEC_CTRL" : "",
            boot_cpu_has(X86_FEATURE_SC_RSB_HVM)      ? " RSB"           : "",
-           opt_eager_fpu                             ? " EAGER_FPU"     : "");
+           opt_eager_fpu                             ? " EAGER_FPU"     : "",
+           boot_cpu_has(X86_FEATURE_MD_CLEAR)        ? " MD_CLEAR"      : "");
 
 #endif
 #ifdef CONFIG_PV
-    printk("  Support for PV VMs:%s%s%s%s\n",
+    printk("  Support for PV VMs:%s%s%s%s%s\n",
            (boot_cpu_has(X86_FEATURE_SC_MSR_PV) ||
             boot_cpu_has(X86_FEATURE_SC_RSB_PV) ||
+            boot_cpu_has(X86_FEATURE_MD_CLEAR)  ||
             opt_eager_fpu)                           ? ""               : " None",
            boot_cpu_has(X86_FEATURE_SC_MSR_PV)       ? " MSR_SPEC_CTRL" : "",
            boot_cpu_has(X86_FEATURE_SC_RSB_PV)       ? " RSB"           : "",
-           opt_eager_fpu                             ? " EAGER_FPU"     : "");
+           opt_eager_fpu                             ? " EAGER_FPU"     : "",
+           boot_cpu_has(X86_FEATURE_MD_CLEAR)        ? " MD_CLEAR"      : "");
 
     printk("  XPTI (64-bit PV only): Dom0 %s, DomU %s (with%s PCID)\n",
            opt_xpti_hwdom ? "enabled" : "disabled",
@@ -301,12 +395,51 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
 #endif
 }
 
+static bool __init check_smt_enabled(void)
+{
+    uint64_t val;
+    unsigned int cpu;
+
+    /*
+     * x86_num_siblings defaults to 1 in the absence of other information, and
+     * is adjusted based on other topology information found in CPUID leaves.
+     *
+     * On AMD hardware, it will be the current SMT configuration.  On Intel
+     * hardware, it will represent the maximum capability, rather than the
+     * current configuration.
+     */
+    if ( boot_cpu_data.x86_num_siblings < 2 )
+        return false;
+
+    /*
+     * Intel Nehalem and later hardware does have an MSR which reports the
+     * current count of cores/threads in the package.
+     *
+     * At the time of writing, it is almost completely undocumented, so isn't
+     * virtualised reliably.
+     */
+    if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL && !cpu_has_hypervisor &&
+         !rdmsr_safe(MSR_INTEL_CORE_THREAD_COUNT, val) )
+        return (MASK_EXTR(val, MSR_CTC_CORE_MASK) !=
+                MASK_EXTR(val, MSR_CTC_THREAD_MASK));
+
+    /*
+     * Search over the CPUs reported in the ACPI tables.  Any whose APIC ID
+     * has a non-zero thread id component indicates that SMT is active.
+     */
+    for_each_present_cpu ( cpu )
+        if ( x86_cpu_to_apicid[cpu] & (boot_cpu_data.x86_num_siblings - 1) )
+            return true;
+
+    return false;
+}
+
 /* Calculate whether Retpoline is known-safe on this CPU. */
 static bool __init retpoline_safe(uint64_t caps)
 {
-    unsigned int ucode_rev = this_cpu(ucode_cpu_info).cpu_sig.rev;
+    unsigned int ucode_rev = this_cpu(cpu_sig).rev;
 
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+    if ( boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
         return true;
 
     if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
@@ -371,13 +504,13 @@ static bool __init retpoline_safe(uint64_t caps)
         /*
          * Skylake, Kabylake and Cannonlake processors are not retpoline-safe.
          */
-    case 0x4e:
-    case 0x55:
-    case 0x5e:
-    case 0x66:
-    case 0x67:
-    case 0x8e:
-    case 0x9e:
+    case 0x4e: /* Skylake M */
+    case 0x55: /* Skylake X */
+    case 0x5e: /* Skylake D */
+    case 0x66: /* Cannonlake */
+    case 0x67: /* Cannonlake? */
+    case 0x8e: /* Kabylake M */
+    case 0x9e: /* Kabylake D */
         return false;
 
         /*
@@ -392,9 +525,11 @@ static bool __init retpoline_safe(uint64_t caps)
     case 0x4d: /* Avaton / Rangely (Silvermont) */
     case 0x4c: /* Cherrytrail / Brasswell */
     case 0x4a: /* Merrifield */
+    case 0x57: /* Knights Landing */
     case 0x5a: /* Moorefield */
     case 0x5c: /* Goldmont */
     case 0x5f: /* Denverton */
+    case 0x85: /* Knights Mill */
         return true;
 
     default:
@@ -627,81 +762,117 @@ static __init void l1tf_calculations(uint64_t caps)
                                             : (3ul << (paddr_bits - 2))));
 }
 
-int8_t __read_mostly opt_xpti_hwdom = -1;
-int8_t __read_mostly opt_xpti_domu = -1;
-
-static __init void xpti_init_default(uint64_t caps)
+/* Calculate whether this CPU is vulnerable to MDS. */
+static __init void mds_calculations(uint64_t caps)
 {
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
-        caps = ARCH_CAPS_RDCL_NO;
+    /* MDS is only known to affect Intel Family 6 processors at this time. */
+    if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+         boot_cpu_data.x86 != 6 )
+        return;
 
-    if ( caps & ARCH_CAPS_RDCL_NO )
+    /* Any processor advertising MDS_NO should be not vulnerable to MDS. */
+    if ( caps & ARCH_CAPS_MDS_NO )
+        return;
+
+    switch ( boot_cpu_data.x86_model )
     {
-        if ( opt_xpti_hwdom < 0 )
-            opt_xpti_hwdom = 0;
-        if ( opt_xpti_domu < 0 )
-            opt_xpti_domu = 0;
-    }
-    else
-    {
-        if ( opt_xpti_hwdom < 0 )
-            opt_xpti_hwdom = 1;
-        if ( opt_xpti_domu < 0 )
-            opt_xpti_domu = 1;
+        /*
+         * Core processors since at least Nehalem are vulnerable.
+         */
+    case 0x1f: /* Auburndale / Havendale */
+    case 0x1e: /* Nehalem */
+    case 0x1a: /* Nehalem EP */
+    case 0x2e: /* Nehalem EX */
+    case 0x25: /* Westmere */
+    case 0x2c: /* Westmere EP */
+    case 0x2f: /* Westmere EX */
+    case 0x2a: /* SandyBridge */
+    case 0x2d: /* SandyBridge EP/EX */
+    case 0x3a: /* IvyBridge */
+    case 0x3e: /* IvyBridge EP/EX */
+    case 0x3c: /* Haswell */
+    case 0x3f: /* Haswell EX/EP */
+    case 0x45: /* Haswell D */
+    case 0x46: /* Haswell H */
+    case 0x3d: /* Broadwell */
+    case 0x47: /* Broadwell H */
+    case 0x4f: /* Broadwell EP/EX */
+    case 0x56: /* Broadwell D */
+    case 0x4e: /* Skylake M */
+    case 0x5e: /* Skylake D */
+        cpu_has_bug_mds = true;
+        break;
+
+        /*
+         * Some Core processors have per-stepping vulnerability.
+         */
+    case 0x55: /* Skylake-X / Cascade Lake */
+        if ( boot_cpu_data.x86_mask <= 5 )
+            cpu_has_bug_mds = true;
+        break;
+
+    case 0x8e: /* Kaby / Coffee / Whiskey Lake M */
+        if ( boot_cpu_data.x86_mask <= 0xb )
+            cpu_has_bug_mds = true;
+        break;
+
+    case 0x9e: /* Kaby / Coffee / Whiskey Lake D */
+        if ( boot_cpu_data.x86_mask <= 0xc )
+            cpu_has_bug_mds = true;
+        break;
+
+        /*
+         * Very old and very new Atom processors are not vulnerable.
+         */
+    case 0x1c: /* Pineview */
+    case 0x26: /* Lincroft */
+    case 0x27: /* Penwell */
+    case 0x35: /* Cloverview */
+    case 0x36: /* Cedarview */
+    case 0x7a: /* Goldmont */
+        break;
+
+        /*
+         * Middling Atom processors are vulnerable to just the Store Buffer
+         * aspect.
+         */
+    case 0x37: /* Baytrail / Valleyview (Silvermont) */
+    case 0x4a: /* Merrifield */
+    case 0x4c: /* Cherrytrail / Brasswell */
+    case 0x4d: /* Avaton / Rangely (Silvermont) */
+    case 0x5a: /* Moorefield */
+    case 0x5d: /* SoFIA 3G Granite/ES2.1 */
+    case 0x65: /* SoFIA LTE AOSP */
+    case 0x6e: /* Cougar Mountain */
+    case 0x75: /* Lightning Mountain */
+        /*
+         * Knights processors (which are based on the Silvermont/Airmont
+         * microarchitecture) are similarly only affected by the Store Buffer
+         * aspect.
+         */
+    case 0x57: /* Knights Landing */
+    case 0x85: /* Knights Mill */
+        cpu_has_bug_msbds_only = true;
+        break;
+
+    default:
+        printk("Unrecognised CPU model %#x - assuming vulnerable to MDS\n",
+               boot_cpu_data.x86_model);
+        cpu_has_bug_mds = true;
+        break;
     }
 }
-
-static __init int parse_xpti(const char *s)
-{
-    const char *ss;
-    int val, rc = 0;
-
-    /* Interpret 'xpti' alone in its positive boolean form. */
-    if ( *s == '\0' )
-        opt_xpti_hwdom = opt_xpti_domu = 1;
-
-    do {
-        ss = strchr(s, ',');
-        if ( !ss )
-            ss = strchr(s, '\0');
-
-        switch ( parse_bool(s, ss) )
-        {
-        case 0:
-            opt_xpti_hwdom = opt_xpti_domu = 0;
-            break;
-
-        case 1:
-            opt_xpti_hwdom = opt_xpti_domu = 1;
-            break;
-
-        default:
-            if ( !strcmp(s, "default") )
-                opt_xpti_hwdom = opt_xpti_domu = -1;
-            else if ( (val = parse_boolean("dom0", s, ss)) >= 0 )
-                opt_xpti_hwdom = val;
-            else if ( (val = parse_boolean("domu", s, ss)) >= 0 )
-                opt_xpti_domu = val;
-            else if ( *s )
-                rc = -EINVAL;
-            break;
-        }
-
-        s = ss + 1;
-    } while ( *ss );
-
-    return rc;
-}
-custom_param("xpti", parse_xpti);
 
 void __init init_speculation_mitigations(void)
 {
     enum ind_thunk thunk = THUNK_DEFAULT;
-    bool use_spec_ctrl = false, ibrs = false;
+    bool use_spec_ctrl = false, ibrs = false, hw_smt_enabled;
     uint64_t caps = 0;
 
     if ( boot_cpu_has(X86_FEATURE_ARCH_CAPS) )
         rdmsrl(MSR_ARCH_CAPABILITIES, caps);
+
+    hw_smt_enabled = check_smt_enabled();
 
     /*
      * Has the user specified any custom BTI mitigations?  If so, follow their
@@ -862,6 +1033,9 @@ void __init init_speculation_mitigations(void)
     else if ( opt_l1d_flush == -1 )
         opt_l1d_flush = cpu_has_bug_l1tf && !(caps & ARCH_CAPS_SKIP_L1DFL);
 
+    if ( opt_branch_harden )
+        setup_force_cpu_cap(X86_FEATURE_SC_BRANCH_HARDEN);
+
     /*
      * We do not disable HT by default on affected hardware.
      *
@@ -873,12 +1047,52 @@ void __init init_speculation_mitigations(void)
      * However, if we are on affected hardware, with HT enabled, and the user
      * hasn't explicitly chosen whether to use HT or not, nag them to do so.
      */
-    if ( opt_smt == -1 && cpu_has_bug_l1tf && !pv_shim &&
-         boot_cpu_data.x86_num_siblings > 1 )
+    if ( opt_smt == -1 && cpu_has_bug_l1tf && !pv_shim && hw_smt_enabled )
         warning_add(
             "Booted on L1TF-vulnerable hardware with SMT/Hyperthreading\n"
             "enabled.  Please assess your configuration and choose an\n"
             "explicit 'smt=<bool>' setting.  See XSA-273.\n");
+
+    mds_calculations(caps);
+
+    /*
+     * By default, enable PV and HVM mitigations on MDS-vulnerable hardware.
+     * This will only be a token effort for MLPDS/MFBDS when HT is enabled,
+     * but it is somewhat better than nothing.
+     */
+    if ( opt_md_clear_pv == -1 )
+        opt_md_clear_pv = ((cpu_has_bug_mds || cpu_has_bug_msbds_only) &&
+                           boot_cpu_has(X86_FEATURE_MD_CLEAR));
+    if ( opt_md_clear_hvm == -1 )
+        opt_md_clear_hvm = ((cpu_has_bug_mds || cpu_has_bug_msbds_only) &&
+                            boot_cpu_has(X86_FEATURE_MD_CLEAR));
+
+    /*
+     * Enable MDS defences as applicable.  The PV blocks need using all the
+     * time, and the Idle blocks need using if either PV or HVM defences are
+     * used.
+     *
+     * HVM is more complicated.  The MD_CLEAR microcode extends L1D_FLUSH with
+     * equivelent semantics to avoid needing to perform both flushes on the
+     * HVM path.  The HVM blocks don't need activating if our hypervisor told
+     * us it was handling L1D_FLUSH, or we are using L1D_FLUSH ourselves.
+     */
+    if ( opt_md_clear_pv )
+        setup_force_cpu_cap(X86_FEATURE_SC_VERW_PV);
+    if ( opt_md_clear_pv || opt_md_clear_hvm )
+        setup_force_cpu_cap(X86_FEATURE_SC_VERW_IDLE);
+    if ( opt_md_clear_hvm && !(caps & ARCH_CAPS_SKIP_L1DFL) && !opt_l1d_flush )
+        setup_force_cpu_cap(X86_FEATURE_SC_VERW_HVM);
+
+    /*
+     * Warn the user if they are on MLPDS/MFBDS-vulnerable hardware with HT
+     * active and no explicit SMT choice.
+     */
+    if ( opt_smt == -1 && cpu_has_bug_mds && hw_smt_enabled )
+        warning_add(
+            "Booted on MLPDS/MFBDS-vulnerable hardware with SMT/Hyperthreading\n"
+            "enabled.  Mitigations will not be fully effective.  Please\n"
+            "choose an explicit smt=<bool> setting.  See XSA-297.\n");
 
     print_details(thunk, caps);
 

@@ -31,6 +31,9 @@ config HAS_DEVICE_TREE
 config HAS_EX_TABLE
 	bool
 
+config HAS_FAST_MULTIPLY
+	bool
+
 config MEM_ACCESS_ALWAYS_ON
 	bool
 
@@ -43,9 +46,6 @@ config MEM_ACCESS
 	  related events in userspace.
 
 config HAS_MEM_PAGING
-	bool
-
-config HAS_MEM_SHARING
 	bool
 
 config HAS_PDX
@@ -63,6 +63,9 @@ config HAS_GDBSX
 config HAS_IOPORTS
 	bool
 
+config HAS_SCHED_GRANULARITY
+	bool
+
 config NEEDS_LIBELF
 	bool
 
@@ -77,6 +80,53 @@ config HAS_CHECKPOLICY
 	string
 	option env="XEN_HAS_CHECKPOLICY"
 
+menu "Speculative hardening"
+
+config SPECULATIVE_HARDEN_ARRAY
+	bool "Speculative Array Hardening"
+	default y
+	---help---
+	  Contemporary processors may use speculative execution as a
+	  performance optimisation, but this can potentially be abused by an
+	  attacker to leak data via speculative sidechannels.
+
+	  One source of data leakage is via speculative out-of-bounds array
+	  accesses.
+
+	  When enabled, specific array accesses which have been deemed liable
+	  to be speculatively abused will be hardened to avoid out-of-bounds
+	  accesses.
+
+	  This is a best-effort mitigation.  There are no guarantees that all
+	  areas of code open to abuse have been hardened.
+
+	  If unsure, say Y.
+
+config SPECULATIVE_HARDEN_BRANCH
+	bool "Speculative Branch Hardening"
+	default y
+	depends on X86
+        ---help---
+	  Contemporary processors may use speculative execution as a
+	  performance optimisation, but this can potentially be abused by an
+	  attacker to leak data via speculative sidechannels.
+
+	  One source of misbehaviour is by executing the wrong basic block
+	  following a conditional jump.
+
+	  When enabled, specific conditions which have been deemed liable to
+	  be speculatively abused will be hardened to avoid entering the wrong
+	  basic block.
+
+	  This is a best-effort mitigation.  There are no guarantees that all
+	  areas of code open to abuse have been hardened, nor that
+	  optimisations in the compiler haven't subverted the attempts to
+	  harden.
+
+	  If unsure, say Y.
+
+endmenu
+
 config KEXEC
 	bool "kexec support"
 	default y
@@ -88,20 +138,15 @@ config KEXEC
 
 	  If unsure, say Y.
 
-config TMEM
-	bool "Transcendent Memory Support (deprecated)" if EXPERT = "y"
-	---help---
-	  Transcendent memory allows PV-aware guests to collaborate on memory
-	  usage. Guests can 'swap' their memory to the hypervisor or have an
-	  collective pool of memory shared across guests. The end result is
-	  less memory usage by guests allowing higher guest density.
+config EFI_SET_VIRTUAL_ADDRESS_MAP
+    bool "EFI: call SetVirtualAddressMap()" if EXPERT = "y"
+    ---help---
+      Call EFI SetVirtualAddressMap() runtime service to setup memory map for
+      further runtime services. According to UEFI spec, it isn't strictly
+      necessary, but many UEFI implementations misbehave when this call is
+      missing.
 
-	  You also have to enable it on the Xen commandline by using tmem=1.
-
-	  WARNING: This option (and its underlying code) is going to go away
-	  in a future Xen version.
-
-	  If unsure, say N.
+      If unsure, say N.
 
 config XENOPROF
 	def_bool y
@@ -117,7 +162,7 @@ config XENOPROF
 
 config XSM
 	bool "Xen Security Modules support"
-	default n
+	default ARM
 	---help---
 	  Enables the security framework known as Xen Security Modules which
 	  allows administrators fine-grained control over a Xen domain and
@@ -182,6 +227,7 @@ config XSM_SILO
 choice
 	prompt "Default XSM implementation"
 	depends on XSM
+	default XSM_SILO_DEFAULT if XSM_SILO && ARM
 	default XSM_FLASK_DEFAULT if XSM_FLASK
 	default XSM_SILO_DEFAULT if XSM_SILO
 	default XSM_DUMMY_DEFAULT
@@ -325,9 +371,24 @@ config FAST_SYMBOL_LOOKUP
 
 	  If unsure, say Y.
 
+config ENFORCE_UNIQUE_SYMBOLS
+	bool "Enforce unique symbols"
+	default y
+	depends on LIVEPATCH
+	---help---
+	  Multiple symbols with the same name aren't generally a problem
+	  unless livepatching is to be used.
+
+	  Livepatch loading involves resolving relocations against symbol
+	  names, and attempting to a duplicate symbol in a livepatch will
+	  result in incorrect livepatch application.
+
+	  This option should be used to ensure that a build of Xen can have a
+	  livepatch build and apply correctly.
+
 config SUPPRESS_DUPLICATE_SYMBOL_WARNINGS
-	bool "Suppress duplicate symbol warnings" if !LIVEPATCH
-	default y if !LIVEPATCH
+	bool "Suppress duplicate symbol warnings" if !ENFORCE_UNIQUE_SYMBOLS
+	default y if !ENFORCE_UNIQUE_SYMBOLS
 	---help---
 	  Multiple symbols with the same name aren't generally a problem
 	  unless Live patching is to be used, so these warnings can be
@@ -367,5 +428,14 @@ config DOM0_MEM
 	  See docs/misc/xen-command-line.markdown for the supported syntax.
 
 	  Leave empty if you are not sure what to specify.
+
+config TRACEBUFFER
+	bool "Enable tracing infrastructure" if EXPERT = "y"
+	default y
+	---help---
+	  Enable tracing infrastructure and pre-defined tracepoints within Xen.
+	  This will allow live information about Xen's execution and performance
+	  to be collected at run time for debugging or performance analysis.
+	  Memory and execution overhead when not active is minimal.
 
 endmenu

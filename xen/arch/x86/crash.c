@@ -10,7 +10,6 @@
 
 #include <asm/atomic.h>
 #include <asm/elf.h>
-#include <asm/percpu.h>
 #include <xen/types.h>
 #include <xen/irq.h>
 #include <asm/nmi.h>
@@ -30,6 +29,7 @@
 #include <asm/io_apic.h>
 #include <xen/iommu.h>
 #include <asm/hpet.h>
+#include <xen/console.h>
 
 static cpumask_t waiting_to_crash;
 static unsigned int crashing_cpu;
@@ -155,12 +155,18 @@ static void nmi_shootdown_cpus(void)
         msecs--;
     }
 
+    /*
+     * We may have NMI'd another CPU while it was holding the console lock.
+     * It won't be in a position to release the lock...
+     */
+    console_force_unlock();
+
     /* Leave a hint of how well we did trying to shoot down the other cpus */
     if ( cpumask_empty(&waiting_to_crash) )
         printk("Shot down all CPUs\n");
     else
         printk("Failed to shoot down CPUs {%*pbl}\n",
-               nr_cpu_ids, cpumask_bits(&waiting_to_crash));
+               CPUMASK_PR(&waiting_to_crash));
 
     /*
      * Try to crash shutdown IOMMU functionality as some old crashdump
@@ -169,15 +175,20 @@ static void nmi_shootdown_cpus(void)
      */
     iommu_crash_shutdown();
 
-    __stop_this_cpu();
+    if ( cpu_online(cpu) )
+    {
+        __stop_this_cpu();
 
-    /* This is a bit of a hack due to the problems with the x2apic_enabled
-     * variable, but we can't do any better without a significant refactoring
-     * of the APIC code */
-    x2apic_enabled = (current_local_apic_mode() == APIC_MODE_X2APIC);
+        /*
+         * This is a bit of a hack due to the problems with the x2apic_enabled
+         * variable, but we can't do any better without a significant
+         * refactoring of the APIC code
+         */
+        x2apic_enabled = (current_local_apic_mode() == APIC_MODE_X2APIC);
 
-    disable_IO_APIC();
-    hpet_disable();
+        disable_IO_APIC();
+        hpet_disable();
+    }
 }
 
 void machine_crash_shutdown(void)

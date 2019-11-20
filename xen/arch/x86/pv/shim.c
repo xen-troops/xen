@@ -410,7 +410,7 @@ int pv_shim_shutdown(uint8_t reason)
         unmap_vcpu_info(v);
 
         /* Reset the periodic timer to the default value. */
-        v->periodic_period = MILLISECS(10);
+        vcpu_set_periodic_timer(v, MILLISECS(10));
         /* Stop the singleshot timer. */
         stop_timer(&v->singleshot_timer);
 
@@ -419,8 +419,6 @@ int pv_shim_shutdown(uint8_t reason)
 
         if ( v != current )
             vcpu_unpause_by_systemcontroller(v);
-        else
-            vcpu_force_reschedule(v);
     }
 
     return 0;
@@ -515,6 +513,9 @@ static long pv_shim_event_channel_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             rc = evtchn_status(&status);
         else
             rc = xen_hypercall_event_channel_op(EVTCHNOP_status, &status);
+
+        if ( !rc && __copy_to_guest(arg, &status, 1) )
+            rc = -EFAULT;
 
         break;
     }
@@ -839,6 +840,8 @@ long pv_shim_cpu_up(void *data)
                     v->vcpu_id, rc);
             return rc;
         }
+
+        vcpu_set_hard_affinity(v, cpumask_of(v->vcpu_id));
     }
 
     wake = test_and_clear_bit(_VPF_down, &v->pause_flags);

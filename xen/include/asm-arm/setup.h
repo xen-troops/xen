@@ -16,6 +16,7 @@ typedef enum {
     BOOTMOD_KERNEL,
     BOOTMOD_RAMDISK,
     BOOTMOD_XSM,
+    BOOTMOD_GUEST_DTB,
     BOOTMOD_UNKNOWN
 }  bootmodule_kind;
 
@@ -66,6 +67,7 @@ struct bootcmdlines {
 
 struct bootinfo {
     struct meminfo mem;
+    struct meminfo reserved_mem;
     struct bootmodules modules;
     struct bootcmdlines cmdlines;
 #ifdef CONFIG_ACPI
@@ -76,8 +78,6 @@ struct bootinfo {
 extern struct bootinfo bootinfo;
 
 extern domid_t max_init_domid;
-
-void arch_init_memory(void);
 
 void copy_from_paddr(void *dst, paddr_t paddr, unsigned long len);
 
@@ -115,6 +115,12 @@ const char *boot_module_kind_as_string(bootmodule_kind kind);
 
 extern uint32_t hyp_traps_vector[];
 void init_traps(void);
+
+void device_tree_get_reg(const __be32 **cell, u32 address_cells,
+                         u32 size_cells, u64 *start, u64 *size);
+
+u32 device_tree_get_u32(const void *fdt, int node,
+                        const char *prop_name, u32 dflt);
 
 #endif
 /*

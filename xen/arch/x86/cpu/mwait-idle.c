@@ -724,14 +724,20 @@ static void mwait_idle(void)
 	u64 before, after;
 	u32 exp = 0, pred = 0, irq_traced[4] = { 0 };
 
-	if (max_cstate > 0 && power && !sched_has_urgent_vcpu() &&
+	if (max_cstate > 0 && power &&
 	    (next_state = cpuidle_current_governor->select(power)) > 0) {
+		unsigned int max_state = sched_has_urgent_vcpu() ? ACPI_STATE_C1
+								 : max_cstate;
+
 		do {
 			cx = &power->states[next_state];
-		} while (cx->type > max_cstate && --next_state);
+		} while ((cx->type > max_state || (cx->type == max_cstate &&
+			  MWAIT_HINT2SUBSTATE(cx->address) > max_csubstate)) &&
+			 --next_state);
 		if (!next_state)
 			cx = NULL;
-		menu_get_trace_data(&exp, &pred);
+		else if (tb_init_done)
+			menu_get_trace_data(&exp, &pred);
 	}
 	if (!cx) {
 		if (pm_idle_save)
@@ -778,7 +784,7 @@ static void mwait_idle(void)
 	if (!(lapic_timer_reliable_states & (1 << cstate)))
 		lapic_timer_off();
 
-	before = cpuidle_get_tick();
+	before = alternative_call(cpuidle_get_tick);
 	TRACE_4D(TRC_PM_IDLE_ENTRY, cx->type, before, exp, pred);
 
 	update_last_cx_stat(power, cx, before);
@@ -786,7 +792,7 @@ static void mwait_idle(void)
 	if (cpu_is_haltable(cpu))
 		mwait_idle_with_hints(eax, MWAIT_ECX_INTERRUPT_BREAK);
 
-	after = cpuidle_get_tick();
+	after = alternative_call(cpuidle_get_tick);
 
 	cstate_restore_tsc();
 	trace_exit_reason(irq_traced);
@@ -956,6 +962,7 @@ static const struct x86_cpu_id intel_idle_ids[] __initconstrel = {
 	ICPU(0x5c, bxt),
 	ICPU(0x7a, bxt),
 	ICPU(0x5f, dnv),
+	ICPU(0x86, dnv),
 	{}
 };
 
@@ -1166,12 +1173,17 @@ static int mwait_idle_cpu_init(struct notifier_block *nfb,
 	struct acpi_processor_power *dev = processor_powers[cpu];
 
 	switch (action) {
+		int rc;
+
 	default:
 		return NOTIFY_DONE;
 
 	case CPU_UP_PREPARE:
-		cpuidle_init_cpu(cpu);
-		return NOTIFY_DONE;
+		rc = cpuidle_init_cpu(cpu);
+		dev = processor_powers[cpu];
+		if (!rc && cpuidle_current_governor->enable)
+			rc = cpuidle_current_governor->enable(dev);
+		return !rc ? NOTIFY_DONE : notifier_from_errno(rc);
 
 	case CPU_ONLINE:
 		if (!dev)
@@ -1260,8 +1272,6 @@ int __init mwait_idle_init(struct notifier_block *nfb)
 	}
 	if (!err) {
 		nfb->notifier_call = mwait_idle_cpu_init;
-		mwait_idle_cpu_init(nfb, CPU_UP_PREPARE, NULL);
-
 		pm_idle_save = pm_idle;
 		pm_idle = mwait_idle;
 		dead_idle = acpi_dead_idle;

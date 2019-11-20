@@ -605,6 +605,69 @@ option should only be used with a trusted device tree.
 Note that the partial device tree should avoid using the phandle 65000
 which is reserved by the toolstack.
 
+=item B<passthrough="STRING">
+
+Specify whether IOMMU mappings are enabled for the domain and hence whether
+it will be enabled for passthrough hardware. Valid values for this option
+are:
+
+=over 4
+
+=item B<disabled>
+
+IOMMU mappings are disabled for the domain and so hardware may not be
+passed through.
+
+This option is the default if no passthrough hardware is specified in the
+domain's configuration.
+
+=item B<enabled>
+
+This option enables IOMMU mappings and selects an appropriate default
+operating mode (see below for details of the operating modes). For HVM/PVH
+domains running on platforms where the option is available, this is
+equivalent to B<share_pt>. Otherwise, and also for PV domains, this
+option is equivalent to B<sync_pt>.
+
+This option is the default if passthrough hardware is specified in the
+domain's configuration.
+
+=item B<sync_pt>
+
+This option means that IOMMU mappings will be synchronized with the
+domain's P2M table as follows:
+
+For a PV domain, all writable pages assigned to the domain are identity
+mapped by MFN in the IOMMU page table. Thus a device driver running in the
+domain may program passthrough hardware for DMA using MFN values
+(i.e. host/machine frame numbers) looked up in its P2M.
+
+For an HVM/PVH domain, all non-foreign RAM pages present in its P2M will be
+mapped by GFN in the IOMMU page table. Thus a device driver running in the
+domain may program passthrough hardware using GFN values (i.e. guest
+physical frame numbers) without any further translation.
+
+This option is not currently available on Arm.
+
+=item B<share_pt>
+
+This option is unavailable for a PV domain. For an HVM/PVH domain, this
+option means that the IOMMU will be programmed to directly reference the
+domain's P2M table as its page table. From the point of view of a device
+driver running in the domain this is functionally equivalent to B<sync_pt>
+but places less load on the hypervisor and so should generally be selected
+in preference. However, the availability of this option is hardware
+specific. If B<xl info> reports B<virt_caps> containing
+B<iommu_hap_pt_share> then this option may be used.
+
+=item B<default>
+
+The default, which chooses between B<disabled> and B<enabled>
+according to whether passthrough devices are enabled in the config
+file.
+
+=back
+
 =back
 
 =head2 Devices
@@ -691,7 +754,7 @@ Specify the backend domain name or id, defaults to dom0.
 Creates a Xen pvcalls connection to handle pvcalls requests from
 frontend to backend. It can be used as an alternative networking model.
 For more information about the protocol, see
-https://xenbits.xen.org/docs/unstable/misc/pvcalls.html.
+https://xenbits.xenproject.org/docs/unstable/misc/pvcalls.html.
 
 =item B<vfb=[ "VFB_SPEC_STRING", "VFB_SPEC_STRING", ...]>
 
@@ -1139,7 +1202,7 @@ to initialize the graphics card.
 
 Most graphics adapters require vendor specific tweaks for properly
 working graphics passthrough. See the XenVGAPassthroughTestedAdapters
-L<http://wiki.xen.org/wiki/XenVGAPassthroughTestedAdapters> wiki page
+L<https://wiki.xenproject.org/wiki/XenVGAPassthroughTestedAdapters> wiki page
 for graphics cards currently supported by B<gfx_passthru>.
 
 B<gfx_passthru> is currently supported both with the qemu-xen-traditional
@@ -1182,7 +1245,7 @@ graphics card, and VNC output is available from the QEMU-emulated
 primary adapter.
 
 More information about the Xen B<gfx_passthru> feature is available
-on the XenVGAPassthrough L<http://wiki.xen.org/wiki/XenVGAPassthrough>
+on the XenVGAPassthrough L<https://wiki.xenproject.org/wiki/XenVGAPassthrough>
 wiki page.
 
 =item B<rdm_mem_boundary=MBYTES>
@@ -1541,6 +1604,35 @@ Set maximum width for pointer device.
 =item B<height=HEIGHT>
 
 Set maximum height for pointer device.
+
+=back
+
+=item B<tee="STRING">
+
+B<Arm only.> Set TEE type for the guest. TEE is a Trusted Execution
+Environment -- separate secure OS found on some platforms. B<STRING> can be one of the:
+
+=over 4
+
+=item B<none>
+
+"Don't allow the guest to use TEE if present on the platform. This is
+the default value.
+
+=item B<optee>
+
+Allow a guest to access the host OP-TEE OS. Xen will mediate the
+access to OP-TEE and the resource isolation will be provided directly
+by OP-TEE. OP-TEE itself may limit the number of guests that can
+concurrently use it. This requires a virtualization-aware OP-TEE for
+this to work.
+
+You can refer to
+L<OP-TEE documentation|https://optee.readthedocs.io/en/latest/architecture/virtualization.html>
+for more information about how to enable and configure virtualization support
+in OP-TEE.
+
+This feature is a B<technology preview>.
 
 =back
 
@@ -1922,7 +2014,7 @@ xend: [ "1:ecx=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx0,edx=xx0xxxxxxxxxxxxxxxxxxxxxxxxx
 libxl: "host,tm=0,sse3=0"
 
 More info about the CPUID instruction can be found in the processor manuals,
-and on Wikipedia: L<http://en.wikipedia.org/wiki/CPUID>
+and on Wikipedia: L<https://en.wikipedia.org/wiki/CPUID>
 
 =item B<acpi_firmware="STRING">
 
@@ -1971,7 +2063,7 @@ Do not provide a VM generation ID.
 =back
 
 See also "Virtual Machine Generation ID" by Microsoft:
-L<http://www.microsoft.com/en-us/download/details.aspx?id=30707>
+L<https://docs.microsoft.com/en-us/windows/win32/hyperv_v2/virtual-machine-generation-identifier>
 
 =back 
 
@@ -2105,8 +2197,8 @@ availability of suitable drivers) to make use of paravirtualisation
 features such as disk and network devices etc. Enabling these drivers
 improves performance and is strongly recommended when available. PV
 drivers are available for various Operating Systems including HVM
-Linux L<http://wiki.xen.org/wiki/XenLinuxPVonHVMdrivers> and Microsoft
-Windows L<http://wiki.xen.org/wiki/XenWindowsGplPv>.
+Linux (out-of-the-box) and Microsoft
+Windows L<https://xenproject.org/windows-pv-drivers/>.
 
 Setting B<xen_platform_pci=0> with the default device_model "qemu-xen"
 requires at least QEMU 1.6.
@@ -2167,11 +2259,25 @@ This group incorporates the crash control MSRs. These enlightenments
 allow Windows to write crash information such that it can be logged
 by Xen.
 
+=item B<stimer>
+
+This set incorporates the SynIC and synthetic timer MSRs. Windows will
+use synthetic timers in preference to emulated HPET for a source of
+ticks and hence enabling this group will ensure that ticks will be
+consistent with use of an enlightened time source (B<time_ref_count> or
+B<reference_tsc>).
+
+=item B<hcall_ipi>
+
+This set incorporates use of a hypercall for interprocessor interrupts.
+This enlightenment may improve performance of Windows guests with multiple
+virtual CPUs.
+
 =item B<defaults>
 
 This is a special value that enables the default set of groups, which
-is currently the B<base>, B<freq>, B<time_ref_count>, B<apic_assist>
-and B<crash_ctl> groups.
+is currently the B<base>, B<freq>, B<time_ref_count>, B<apic_assist>,
+B<crash_ctl> and B<stimer> groups.
 
 =item B<all>
 
@@ -2408,6 +2514,10 @@ Select the virtual sound card to expose to the guest. The valid
 devices are defined by the device model configuration, please see the
 B<qemu(1)> manpage for details. The default is not to export any sound
 device.
+
+=item B<vkb_device=BOOLEAN>
+
+Specifies that the HVM guest gets a vkdb. The default is true (1).
 
 =item B<usb=BOOLEAN>
 
@@ -2753,7 +2863,7 @@ F<@XEN_DUMP_DIR@/NAME>
 
 This document may contain items which require further
 documentation. Patches to improve incomplete items (or any other item)
-are gratefully received on the xen-devel@lists.xen.org mailing
-list. Please see L<http://wiki.xen.org/wiki/SubmittingXenPatches> for
+are gratefully received on the xen-devel@lists.xenproject.org mailing
+list. Please see L<https://wiki.xenproject.org/wiki/Submitting_Xen_Project_Patches> for
 information on how to submit a patch to Xen.
 

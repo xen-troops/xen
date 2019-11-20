@@ -27,11 +27,13 @@
 #include <asm/event.h>
 #include <asm/gic.h>
 #include <asm/guest_access.h>
+#include <asm/guest_atomics.h>
 #include <asm/irq.h>
 #include <asm/p2m.h>
 #include <asm/platform.h>
 #include <asm/procinfo.h>
 #include <asm/regs.h>
+#include <asm/tee/tee.h>
 #include <asm/vfp.h>
 #include <asm/vgic.h>
 #include <asm/vtimer.h>
@@ -278,43 +280,47 @@ static void ctxt_switch_to(struct vcpu *n)
 static void update_runstate_area(struct vcpu *v)
 {
     void __user *guest_handle = NULL;
+    struct vcpu_runstate_info runstate;
 
     if ( guest_handle_is_null(runstate_guest(v)) )
         return;
+
+    memcpy(&runstate, &v->runstate, sizeof(runstate));
 
     if ( VM_ASSIST(v->domain, runstate_update_flag) )
     {
         guest_handle = &v->runstate_guest.p->state_entry_time + 1;
         guest_handle--;
-        v->runstate.state_entry_time |= XEN_RUNSTATE_UPDATE;
+        runstate.state_entry_time |= XEN_RUNSTATE_UPDATE;
         __raw_copy_to_guest(guest_handle,
-                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+                            (void *)(&runstate.state_entry_time + 1) - 1, 1);
         smp_wmb();
     }
 
-    __copy_to_guest(runstate_guest(v), &v->runstate, 1);
+    __copy_to_guest(runstate_guest(v), &runstate, 1);
 
     if ( guest_handle )
     {
-        v->runstate.state_entry_time &= ~XEN_RUNSTATE_UPDATE;
+        runstate.state_entry_time &= ~XEN_RUNSTATE_UPDATE;
         smp_wmb();
         __raw_copy_to_guest(guest_handle,
-                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+                            (void *)(&runstate.state_entry_time + 1) - 1, 1);
     }
 }
 
 static void schedule_tail(struct vcpu *prev)
 {
+    ASSERT(prev != current);
+
     ctxt_switch_from(prev);
 
     ctxt_switch_to(current);
 
     local_irq_enable();
 
-    context_saved(prev);
+    sched_context_switched(prev, current);
 
-    if ( prev != current )
-        update_runstate_area(current);
+    update_runstate_area(current);
 
     /* Ensure that the vcpu has an up-to-date time base. */
     update_vcpu_system_time(current);
@@ -343,21 +349,9 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
     ASSERT(prev != next);
     ASSERT(!vcpu_cpu_dirty(next));
 
-    if ( prev != next )
-        update_runstate_area(prev);
+    update_runstate_area(prev);
 
     local_irq_disable();
-
-    /*
-     * If the serrors_op is "FORWARD", we have to prevent forwarding
-     * SError to wrong vCPU. So before context switch, we have to use
-     * the SYNCRONIZE_SERROR to guarantee that the pending SError would
-     * be caught by current vCPU.
-     *
-     * The SKIP_CTXT_SWITCH_SERROR_SYNC will be set to cpu_hwcaps when the
-     * serrors_op is NOT "FORWARD".
-     */
-    SYNCHRONIZE_SERROR(SKIP_CTXT_SWITCH_SERROR_SYNC);
 
     set_current(next);
 
@@ -381,14 +375,15 @@ void sync_vcpu_execstate(struct vcpu *v)
     /* Nothing to do -- no lazy switching */
 }
 
-#define next_arg(fmt, args) ({                                              \
+#define NEXT_ARG(fmt, args)                                                 \
+({                                                                          \
     unsigned long __arg;                                                    \
     switch ( *(fmt)++ )                                                     \
     {                                                                       \
     case 'i': __arg = (unsigned long)va_arg(args, unsigned int);  break;    \
     case 'l': __arg = (unsigned long)va_arg(args, unsigned long); break;    \
     case 'h': __arg = (unsigned long)va_arg(args, void *);        break;    \
-    default:  __arg = 0; BUG();                                             \
+    default:  goto bad_fmt;                                                 \
     }                                                                       \
     __arg;                                                                  \
 })
@@ -403,9 +398,6 @@ unsigned long hypercall_create_continuation(
     unsigned int i;
     va_list args;
 
-    /* All hypercalls take at least one argument */
-    BUG_ON( !p || *p == '\0' );
-
     current->hcall_preempted = true;
 
     va_start(args, format);
@@ -413,7 +405,7 @@ unsigned long hypercall_create_continuation(
     if ( mcs->flags & MCSF_in_multicall )
     {
         for ( i = 0; *p != '\0'; i++ )
-            mcs->call.args[i] = next_arg(p, args);
+            mcs->call.args[i] = NEXT_ARG(p, args);
 
         /* Return value gets written back to mcs->call.result */
         rc = mcs->call.result;
@@ -429,7 +421,7 @@ unsigned long hypercall_create_continuation(
 
             for ( i = 0; *p != '\0'; i++ )
             {
-                arg = next_arg(p, args);
+                arg = NEXT_ARG(p, args);
 
                 switch ( i )
                 {
@@ -452,7 +444,7 @@ unsigned long hypercall_create_continuation(
 
             for ( i = 0; *p != '\0'; i++ )
             {
-                arg = next_arg(p, args);
+                arg = NEXT_ARG(p, args);
 
                 switch ( i )
                 {
@@ -473,7 +465,15 @@ unsigned long hypercall_create_continuation(
     va_end(args);
 
     return rc;
+
+ bad_fmt:
+    gprintk(XENLOG_ERR, "Bad hypercall continuation format '%c'\n", *p);
+    ASSERT_UNREACHABLE();
+    domain_crash(current->domain);
+    return 0;
 }
+
+#undef NEXT_ARG
 
 void startup_cpu_idle_loop(void)
 {
@@ -557,7 +557,6 @@ int arch_vcpu_create(struct vcpu *v)
                                            - sizeof(struct cpu_info));
     memset(v->arch.cpu_info, 0, sizeof(*v->arch.cpu_info));
 
-    memset(&v->arch.saved_context, 0, sizeof(v->arch.saved_context));
     v->arch.saved_context.sp = (register_t)v->arch.cpu_info;
     v->arch.saved_context.pc = (register_t)continue_new_vcpu;
 
@@ -607,9 +606,20 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
 {
     unsigned int max_vcpus;
 
-    if ( config->flags != (XEN_DOMCTL_CDF_hvm_guest | XEN_DOMCTL_CDF_hap) )
+    /* HVM and HAP must be set. IOMMU may or may not be */
+    if ( (config->flags & ~XEN_DOMCTL_CDF_iommu) !=
+         (XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap) )
     {
-        dprintk(XENLOG_INFO, "Unsupported configuration %#x\n", config->flags);
+        dprintk(XENLOG_INFO, "Unsupported configuration %#x\n",
+                config->flags);
+        return -EINVAL;
+    }
+
+    /* The P2M table must always be shared between the CPU and the IOMMU */
+    if ( config->iommu_opts & XEN_DOMCTL_IOMMU_no_sharept )
+    {
+        dprintk(XENLOG_INFO,
+                "Unsupported iommu option: XEN_DOMCTL_IOMMU_no_sharept\n");
         return -EINVAL;
     }
 
@@ -648,6 +658,13 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
         return -EINVAL;
     }
 
+    if ( config->arch.tee_type != XEN_DOMCTL_CONFIG_TEE_NONE &&
+         config->arch.tee_type != tee_get_type() )
+    {
+        dprintk(XENLOG_INFO, "Unsupported TEE type\n");
+        return -EINVAL;
+    }
+
     return 0;
 }
 
@@ -666,7 +683,7 @@ int arch_domain_create(struct domain *d,
     ASSERT(config != NULL);
 
     /* p2m_init relies on some value initialized by the IOMMU subsystem */
-    if ( (rc = iommu_domain_init(d)) != 0 )
+    if ( (rc = iommu_domain_init(d, config->iommu_opts)) != 0 )
         goto fail;
 
     if ( (rc = p2m_init(d)) != 0 )
@@ -703,6 +720,9 @@ int arch_domain_create(struct domain *d,
         goto fail;
 
     if ( (rc = domain_vtimer_init(d, &config->arch)) != 0 )
+        goto fail;
+
+    if ( (rc = tee_domain_init(d, config->arch.tee_type)) != 0 )
         goto fail;
 
     update_domain_wallclock_time(d);
@@ -915,9 +935,7 @@ static int relinquish_memory(struct domain *d, struct page_list_head *list)
              */
             continue;
 
-        if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
-            put_page(page);
-
+        put_page_alloc_ref(page);
         put_page(page);
 
         if ( hypercall_preempt_check() )
@@ -948,6 +966,14 @@ int domain_relinquish_resources(struct domain *d)
          * allocated via a DOMCTL call XEN_DOMCTL_vuart_op.
          */
         domain_vpl011_deinit(d);
+
+        d->arch.relmem = RELMEM_tee;
+        /* Fallthrough */
+
+    case RELMEM_tee:
+        ret = tee_relinquish_resources(d);
+        if (ret )
+            return ret;
 
         d->arch.relmem = RELMEM_xen;
         /* Fallthrough */
@@ -1017,7 +1043,7 @@ void arch_dump_vcpu_info(struct vcpu *v)
 
 void vcpu_mark_events_pending(struct vcpu *v)
 {
-    int already_pending = test_and_set_bit(
+    bool already_pending = guest_test_and_set_bit(v->domain,
         0, (unsigned long *)&vcpu_info(v, evtchn_upcall_pending));
 
     if ( already_pending )

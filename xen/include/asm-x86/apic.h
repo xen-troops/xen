@@ -16,10 +16,6 @@
 
 #define	SET_APIC_LOGICAL_ID(x)	(((x)<<24))
 
-#define IO_APIC_REDIR_VECTOR_MASK	0x000FF
-#define IO_APIC_REDIR_DEST_LOGICAL	0x00800
-#define IO_APIC_REDIR_DEST_PHYSICAL	0x00000
-
 /* Possible APIC states */
 enum apic_mode {
     APIC_MODE_INVALID,  /* Not set yet */
@@ -29,7 +25,6 @@ enum apic_mode {
 };
 
 extern u8 apic_verbosity;
-extern bool x2apic_enabled;
 extern bool directed_eoi_enabled;
 
 void check_x2apic_preenabled(void);

@@ -46,101 +46,14 @@ static int gdbsx_guest_mem_io(domid_t domid, struct xen_domctl_gdbsx_memio *iop)
     return iop->remain ? -EFAULT : 0;
 }
 
-static int update_domain_cpuid_info(struct domain *d,
-                                    const struct xen_domctl_cpuid *ctl)
+static void domain_cpu_policy_changed(struct domain *d)
 {
-    struct cpuid_policy *p = d->arch.cpuid;
-    const struct cpuid_leaf leaf = { ctl->eax, ctl->ebx, ctl->ecx, ctl->edx };
-    int old_vendor = p->x86_vendor;
-    unsigned int old_7d0 = p->feat.raw[0].d, old_e8b = p->extd.raw[8].b;
-    bool call_policy_changed = false; /* Avoid for_each_vcpu() unnecessarily */
+    const struct cpuid_policy *p = d->arch.cpuid;
+    struct vcpu *v;
 
-    /*
-     * Skip update for leaves we don't care about, to avoid the overhead of
-     * recalculate_cpuid_policy().
-     */
-    switch ( ctl->input[0] )
+    if ( is_pv_domain(d) )
     {
-    case 0x00000000 ... ARRAY_SIZE(p->basic.raw) - 1:
-        if ( ctl->input[0] == 4 &&
-             ctl->input[1] >= ARRAY_SIZE(p->cache.raw) )
-            return 0;
-
-        if ( ctl->input[0] == 7 &&
-             ctl->input[1] >= ARRAY_SIZE(p->feat.raw) )
-            return 0;
-
-        if ( ctl->input[0] == 0xb &&
-             ctl->input[1] >= ARRAY_SIZE(p->topo.raw) )
-            return 0;
-
-        BUILD_BUG_ON(ARRAY_SIZE(p->xstate.raw) < 2);
-        if ( ctl->input[0] == XSTATE_CPUID &&
-             ctl->input[1] != 1 ) /* Everything else automatically calculated. */
-            return 0;
-        break;
-
-    case 0x40000000: case 0x40000100:
-        /* Only care about the max_leaf limit. */
-
-    case 0x80000000 ... 0x80000000 + ARRAY_SIZE(p->extd.raw) - 1:
-        break;
-
-    default:
-        return 0;
-    }
-
-    /* Insert ctl data into cpuid_policy. */
-    switch ( ctl->input[0] )
-    {
-    case 0x00000000 ... ARRAY_SIZE(p->basic.raw) - 1:
-        switch ( ctl->input[0] )
-        {
-        case 4:
-            p->cache.raw[ctl->input[1]] = leaf;
-            break;
-
-        case 7:
-            p->feat.raw[ctl->input[1]] = leaf;
-            break;
-
-        case 0xb:
-            p->topo.raw[ctl->input[1]] = leaf;
-            break;
-
-        case XSTATE_CPUID:
-            p->xstate.raw[ctl->input[1]] = leaf;
-            break;
-
-        default:
-            p->basic.raw[ctl->input[0]] = leaf;
-            break;
-        }
-        break;
-
-    case 0x40000000:
-        p->hv_limit = ctl->eax;
-        break;
-
-    case 0x40000100:
-        p->hv2_limit = ctl->eax;
-        break;
-
-    case 0x80000000 ... 0x80000000 + ARRAY_SIZE(p->extd.raw) - 1:
-        p->extd.raw[ctl->input[0] - 0x80000000] = leaf;
-        break;
-    }
-
-    recalculate_cpuid_policy(d);
-
-    switch ( ctl->input[0] )
-    {
-    case 0:
-        call_policy_changed = (p->x86_vendor != old_vendor);
-        break;
-
-    case 1:
-        if ( is_pv_domain(d) && ((levelling_caps & LCAP_1cd) == LCAP_1cd) )
+        if ( ((levelling_caps & LCAP_1cd) == LCAP_1cd) )
         {
             uint64_t mask = cpuidmask_defaults._1cd;
             uint32_t ecx = p->basic._1c;
@@ -176,6 +89,7 @@ static int update_domain_cpuid_info(struct domain *d,
                 break;
 
             case X86_VENDOR_AMD:
+            case X86_VENDOR_HYGON:
                 mask &= ((uint64_t)ecx << 32) | edx;
 
                 /*
@@ -196,65 +110,35 @@ static int update_domain_cpuid_info(struct domain *d,
 
             d->arch.pv.cpuidmasks->_1cd = mask;
         }
-        break;
 
-    case 6:
-        if ( is_pv_domain(d) && ((levelling_caps & LCAP_6c) == LCAP_6c) )
+        if ( ((levelling_caps & LCAP_6c) == LCAP_6c) )
         {
             uint64_t mask = cpuidmask_defaults._6c;
 
             if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
-                mask &= (~0ULL << 32) | ctl->ecx;
+                mask &= (~0ULL << 32) | p->basic.raw[6].c;
 
             d->arch.pv.cpuidmasks->_6c = mask;
         }
-        break;
 
-    case 7:
-        if ( ctl->input[1] != 0 )
-            break;
-
-        if ( is_pv_domain(d) && ((levelling_caps & LCAP_7ab0) == LCAP_7ab0) )
+        if ( ((levelling_caps & LCAP_7ab0) == LCAP_7ab0) )
         {
             uint64_t mask = cpuidmask_defaults._7ab0;
-            uint32_t eax = ctl->eax;
-            uint32_t ebx = p->feat._7b0;
 
-            if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
-                mask &= ((uint64_t)eax << 32) | ebx;
+            /*
+             * Leaf 7[0].eax is max_subleaf, not a feature mask.  Take it
+             * wholesale from the policy, but clamp the features in 7[0].ebx
+             * per usual.
+             */
+            if ( boot_cpu_data.x86_vendor &
+                 (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
+                mask = (((uint64_t)p->feat.max_subleaf << 32) |
+                        ((uint32_t)mask & p->feat._7b0));
 
             d->arch.pv.cpuidmasks->_7ab0 = mask;
         }
 
-        /*
-         * If the IBRS/IBPB policy has changed, we need to recalculate the MSR
-         * interception bitmaps.
-         */
-        call_policy_changed = (is_hvm_domain(d) &&
-                               ((old_7d0 ^ p->feat.raw[0].d) &
-                                (cpufeat_mask(X86_FEATURE_IBRSB) |
-                                 cpufeat_mask(X86_FEATURE_L1D_FLUSH))));
-        break;
-
-    case 0xa:
-        if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
-            break;
-
-        /* If PMU version is zero then the guest doesn't have VPMU */
-        if ( p->basic.pmu_version == 0 )
-        {
-            struct vcpu *v;
-
-            for_each_vcpu ( d, v )
-                vpmu_destroy(v);
-        }
-        break;
-
-    case 0xd:
-        if ( ctl->input[1] != 1 )
-            break;
-
-        if ( is_pv_domain(d) && ((levelling_caps & LCAP_Da1) == LCAP_Da1) )
+        if ( ((levelling_caps & LCAP_Da1) == LCAP_Da1) )
         {
             uint64_t mask = cpuidmask_defaults.Da1;
             uint32_t eax = p->xstate.Da1;
@@ -264,10 +148,8 @@ static int update_domain_cpuid_info(struct domain *d,
 
             d->arch.pv.cpuidmasks->Da1 = mask;
         }
-        break;
 
-    case 0x80000001:
-        if ( is_pv_domain(d) && ((levelling_caps & LCAP_e1cd) == LCAP_e1cd) )
+        if ( ((levelling_caps & LCAP_e1cd) == LCAP_e1cd) )
         {
             uint64_t mask = cpuidmask_defaults.e1cd;
             uint32_t ecx = p->extd.e1c;
@@ -281,8 +163,11 @@ static int update_domain_cpuid_info(struct domain *d,
             if ( cpu_has_cmp_legacy )
                 ecx |= cpufeat_mask(X86_FEATURE_CMP_LEGACY);
 
-            /* If not emulating AMD, clear the duplicated features in e1d. */
-            if ( p->x86_vendor != X86_VENDOR_AMD )
+            /*
+             * If not emulating AMD or Hygon, clear the duplicated features
+             * in e1d.
+             */
+            if ( !(p->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
                 edx &= ~CPUID_COMMON_1D_FEATURES;
 
             switch ( boot_cpu_data.x86_vendor )
@@ -292,6 +177,7 @@ static int update_domain_cpuid_info(struct domain *d,
                 break;
 
             case X86_VENDOR_AMD:
+            case X86_VENDOR_HYGON:
                 mask &= ((uint64_t)ecx << 32) | edx;
 
                 /*
@@ -307,28 +193,76 @@ static int update_domain_cpuid_info(struct domain *d,
 
             d->arch.pv.cpuidmasks->e1cd = mask;
         }
-        break;
-
-    case 0x80000008:
-        /*
-         * If the IBPB policy has changed, we need to recalculate the MSR
-         * interception bitmaps.
-         */
-        call_policy_changed = (is_hvm_domain(d) &&
-                               ((old_e8b ^ p->extd.raw[8].b) &
-                                cpufeat_mask(X86_FEATURE_IBPB)));
-        break;
     }
 
-    if ( call_policy_changed )
+    for_each_vcpu ( d, v )
     {
-        struct vcpu *v;
+        cpuid_policy_updated(v);
 
-        for_each_vcpu( d, v )
-            cpuid_policy_updated(v);
+        /* If PMU version is zero then the guest doesn't have VPMU */
+        if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
+             p->basic.pmu_version == 0 )
+            vpmu_destroy(v);
+    }
+}
+
+static int update_domain_cpu_policy(struct domain *d,
+                                    xen_domctl_cpu_policy_t *xdpc)
+{
+    struct cpu_policy new = {};
+    const struct cpu_policy *sys = is_pv_domain(d)
+        ? &system_policies[XEN_SYSCTL_cpu_policy_pv_max]
+        : &system_policies[XEN_SYSCTL_cpu_policy_hvm_max];
+    struct cpu_policy_errors err = INIT_CPU_POLICY_ERRORS;
+    int ret = -ENOMEM;
+
+    /* Start by copying the domain's existing policies. */
+    if ( !(new.cpuid = xmemdup(d->arch.cpuid)) ||
+         !(new.msr   = xmemdup(d->arch.msr)) )
+        goto out;
+
+    /* Merge the toolstack provided data. */
+    if ( (ret = x86_cpuid_copy_from_buffer(
+              new.cpuid, xdpc->cpuid_policy, xdpc->nr_leaves,
+              &err.leaf, &err.subleaf)) ||
+         (ret = x86_msr_copy_from_buffer(
+              new.msr, xdpc->msr_policy, xdpc->nr_msrs, &err.msr)) )
+        goto out;
+
+    /* Trim any newly-stale out-of-range leaves. */
+    x86_cpuid_policy_clear_out_of_range_leaves(new.cpuid);
+
+    /* Audit the combined dataset. */
+    ret = x86_cpu_policies_are_compatible(sys, &new, &err);
+    if ( ret )
+        goto out;
+
+    /*
+     * Audit was successful.  Replace existing policies, leaving the old
+     * policies to be freed.
+     */
+    SWAP(new.cpuid, d->arch.cpuid);
+    SWAP(new.msr,   d->arch.msr);
+
+    /* TODO: Drop when x86_cpu_policies_are_compatible() is completed. */
+    recalculate_cpuid_policy(d);
+
+    /* Recalculate relevant dom/vcpu state now the policy has changed. */
+    domain_cpu_policy_changed(d);
+
+ out:
+    /* Free whichever cpuid/msr structs are not installed in struct domain. */
+    xfree(new.cpuid);
+    xfree(new.msr);
+
+    if ( ret )
+    {
+        xdpc->err_leaf    = err.leaf;
+        xdpc->err_subleaf = err.subleaf;
+        xdpc->err_msr     = err.msr;
     }
 
-    return 0;
+    return ret;
 }
 
 static int vcpu_set_vmce(struct vcpu *v,
@@ -517,7 +451,7 @@ long arch_do_domctl(
         }
 
         hypercall_page = __map_domain_page(page);
-        hypercall_page_initialise(d, hypercall_page);
+        init_hypercall_page(d, hypercall_page);
         unmap_domain_page(hypercall_page);
 
         put_page_and_type(page);
@@ -638,18 +572,6 @@ long arch_do_domctl(
             ASSERT_UNREACHABLE();
         break;
 
-    case XEN_DOMCTL_set_machine_address_size:
-        if ( d->tot_pages > 0 )
-            ret = -EBUSY;
-        else
-            d->arch.physaddr_bitsize = domctl->u.address_size.size;
-        break;
-
-    case XEN_DOMCTL_get_machine_address_size:
-        domctl->u.address_size.size = d->arch.physaddr_bitsize;
-        copyback = true;
-        break;
-
     case XEN_DOMCTL_sendtrigger:
     {
         struct vcpu *v;
@@ -710,7 +632,7 @@ long arch_do_domctl(
             break;
 
         ret = -ESRCH;
-        if ( iommu_enabled )
+        if ( is_iommu_enabled(d) )
         {
             pcidevs_lock();
             ret = pt_irq_create_bind(d, bind);
@@ -739,7 +661,7 @@ long arch_do_domctl(
         if ( ret )
             break;
 
-        if ( iommu_enabled )
+        if ( is_iommu_enabled(d) )
         {
             pcidevs_lock();
             ret = pt_irq_destroy_bind(d, bind);
@@ -941,19 +863,6 @@ long arch_do_domctl(
         break;
     }
 
-    case XEN_DOMCTL_set_cpuid:
-        if ( d == currd ) /* no domain_pause() */
-            ret = -EINVAL;
-        else if ( d->creation_finished )
-            ret = -EEXIST; /* No changing once the domain is running. */
-        else
-        {
-            domain_pause(d);
-            ret = update_domain_cpuid_info(d, &domctl->u.cpuid);
-            domain_unpause(d);
-        }
-        break;
-
     case XEN_DOMCTL_gettscinfo:
         if ( d == currd ) /* no domain_pause() */
             ret = -EINVAL;
@@ -981,10 +890,6 @@ long arch_do_domctl(
                                domctl->u.tsc_info.incarnation);
             domain_unpause(d);
         }
-        break;
-
-    case XEN_DOMCTL_suppress_spurious_page_faults:
-        d->arch.suppress_spurious_page_faults = 1;
         break;
 
 #ifdef CONFIG_HVM
@@ -1231,9 +1136,11 @@ long arch_do_domctl(
         break;
     }
 
+#ifdef CONFIG_MEM_SHARING
     case XEN_DOMCTL_mem_sharing_op:
         ret = mem_sharing_domctl(d, &domctl->u.mem_sharing_op);
         break;
+#endif
 
 #if P2M_AUDIT && defined(CONFIG_HVM)
     case XEN_DOMCTL_audit_p2m:
@@ -1525,6 +1432,27 @@ long arch_do_domctl(
             break;
 
         copyback = true;
+        break;
+
+    case XEN_DOMCTL_set_cpu_policy:
+        if ( d == currd ) /* No domain_pause() */
+        {
+            ret = -EINVAL;
+            break;
+        }
+
+        domain_pause(d);
+
+        if ( d->creation_finished )
+            ret = -EEXIST; /* No changing once the domain is running. */
+        else
+        {
+            ret = update_domain_cpu_policy(d, &domctl->u.cpu_policy);
+            if ( ret ) /* Copy domctl->u.cpu_policy.err_* to guest. */
+                copyback = true;
+        }
+
+        domain_unpause(d);
         break;
 
     default:

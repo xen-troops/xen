@@ -1207,6 +1207,7 @@ void parse_config_data(const char *config_source,
                        int config_len,
                        libxl_domain_config *d_config)
 {
+    libxl_physinfo physinfo;
     const char *buf;
     long l, vcpus = 0;
     XLU_Config *config;
@@ -1224,6 +1225,15 @@ void parse_config_data(const char *config_source,
 
     libxl_domain_create_info *c_info = &d_config->c_info;
     libxl_domain_build_info *b_info = &d_config->b_info;
+
+    libxl_physinfo_init(&physinfo);
+    if (libxl_get_physinfo(ctx, &physinfo) != 0) {
+        libxl_physinfo_dispose(&physinfo);
+        fprintf(stderr, "libxl_get_physinfo failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    libxl_physinfo_dispose(&physinfo);
 
     config= xlu_cfg_init(stderr, config_source);
     if (!config) {
@@ -1448,13 +1458,65 @@ void parse_config_data(const char *config_source,
         exit(1);
     }
 
-    /* libxl_get_required_shadow_memory() must be called after final values
-     * (default or specified) for vcpus and memory are set, because the
-     * calculation depends on those values. */
-    b_info->shadow_memkb = !xlu_cfg_get_long(config, "shadow_memory", &l, 0)
-        ? l * 1024
-        : libxl_get_required_shadow_memory(b_info->max_memkb,
-                                           b_info->max_vcpus);
+    if (!xlu_cfg_get_list (config, "pci", &pcis, 0, 0)) {
+        d_config->num_pcidevs = 0;
+        d_config->pcidevs = NULL;
+        for(i = 0; (buf = xlu_cfg_get_listitem (pcis, i)) != NULL; i++) {
+            libxl_device_pci *pcidev;
+
+            pcidev = ARRAY_EXTEND_INIT_NODEVID(d_config->pcidevs,
+                                               d_config->num_pcidevs,
+                                               libxl_device_pci_init);
+            pcidev->msitranslate = pci_msitranslate;
+            pcidev->power_mgmt = pci_power_mgmt;
+            pcidev->permissive = pci_permissive;
+            pcidev->seize = pci_seize;
+            /*
+             * Like other pci option, the per-device policy always follows
+             * the global policy by default.
+             */
+            pcidev->rdm_policy = b_info->u.hvm.rdm.policy;
+            e = xlu_pci_parse_bdf(config, pcidev, buf);
+            if (e) {
+                fprintf(stderr,
+                        "unable to parse PCI BDF `%s' for passthrough\n",
+                        buf);
+                exit(-e);
+            }
+        }
+        if (d_config->num_pcidevs && c_info->type == LIBXL_DOMAIN_TYPE_PV)
+            libxl_defbool_set(&b_info->u.pv.e820_host, true);
+    }
+
+    if (!xlu_cfg_get_list (config, "dtdev", &dtdevs, 0, 0)) {
+        d_config->num_dtdevs = 0;
+        d_config->dtdevs = NULL;
+        for (i = 0; (buf = xlu_cfg_get_listitem(dtdevs, i)) != NULL; i++) {
+            libxl_device_dtdev *dtdev;
+
+            dtdev = ARRAY_EXTEND_INIT_NODEVID(d_config->dtdevs,
+                                              d_config->num_dtdevs,
+                                              libxl_device_dtdev_init);
+
+            dtdev->path = strdup(buf);
+            if (dtdev->path == NULL) {
+                fprintf(stderr, "unable to duplicate string for dtdevs\n");
+                exit(-1);
+            }
+        }
+    }
+
+    if (!xlu_cfg_get_string(config, "passthrough", &buf, 0)) {
+        if (libxl_passthrough_from_string(buf, &c_info->passthrough)) {
+            fprintf(stderr,
+                    "ERROR: unknown passthrough option '%s'\n",
+                    buf);
+            exit(1);
+        }
+    }
+
+    if (!xlu_cfg_get_long(config, "shadow_memory", &l, 0))
+        b_info->shadow_memkb = l * 1024;
 
     xlu_cfg_get_defbool(config, "nomigrate", &b_info->disable_migrate, 0);
 
@@ -2278,54 +2340,6 @@ skip_vfb:
         }
     }
 
-    if (!xlu_cfg_get_list (config, "pci", &pcis, 0, 0)) {
-        d_config->num_pcidevs = 0;
-        d_config->pcidevs = NULL;
-        for(i = 0; (buf = xlu_cfg_get_listitem (pcis, i)) != NULL; i++) {
-            libxl_device_pci *pcidev;
-
-            pcidev = ARRAY_EXTEND_INIT_NODEVID(d_config->pcidevs,
-                                               d_config->num_pcidevs,
-                                               libxl_device_pci_init);
-            pcidev->msitranslate = pci_msitranslate;
-            pcidev->power_mgmt = pci_power_mgmt;
-            pcidev->permissive = pci_permissive;
-            pcidev->seize = pci_seize;
-            /*
-             * Like other pci option, the per-device policy always follows
-             * the global policy by default.
-             */
-            pcidev->rdm_policy = b_info->u.hvm.rdm.policy;
-            e = xlu_pci_parse_bdf(config, pcidev, buf);
-            if (e) {
-                fprintf(stderr,
-                        "unable to parse PCI BDF `%s' for passthrough\n",
-                        buf);
-                exit(-e);
-            }
-        }
-        if (d_config->num_pcidevs && c_info->type == LIBXL_DOMAIN_TYPE_PV)
-            libxl_defbool_set(&b_info->u.pv.e820_host, true);
-    }
-
-    if (!xlu_cfg_get_list (config, "dtdev", &dtdevs, 0, 0)) {
-        d_config->num_dtdevs = 0;
-        d_config->dtdevs = NULL;
-        for (i = 0; (buf = xlu_cfg_get_listitem(dtdevs, i)) != NULL; i++) {
-            libxl_device_dtdev *dtdev;
-
-            dtdev = ARRAY_EXTEND_INIT_NODEVID(d_config->dtdevs,
-                                              d_config->num_dtdevs,
-                                              libxl_device_dtdev_init);
-
-            dtdev->path = strdup(buf);
-            if (dtdev->path == NULL) {
-                fprintf(stderr, "unable to duplicate string for dtdevs\n");
-                exit(-1);
-            }
-        }
-    }
-
     if (!xlu_cfg_get_list(config, "usbctrl", &usbctrls, 0, 0)) {
         d_config->num_usbctrls = 0;
         d_config->usbctrls = NULL;
@@ -2652,6 +2666,7 @@ skip_usbdev:
             fprintf(stderr,"xl: Unable to parse usbdevice.\n");
             exit(-ERROR_FAIL);
         }
+        xlu_cfg_get_defbool(config, "vkb_device", &b_info->u.hvm.vkb_device, 0);
         xlu_cfg_replace_string (config, "soundhw", &b_info->u.hvm.soundhw, 0);
         xlu_cfg_get_defbool(config, "xen_platform_pci",
                             &b_info->u.hvm.xen_platform_pci, 0);
@@ -2686,6 +2701,15 @@ skip_usbdev:
         if (e) {
             fprintf(stderr,
                     "Unknown gic_version \"%s\" specified\n", buf);
+            exit(-ERROR_FAIL);
+        }
+    }
+
+    if (!xlu_cfg_get_string (config, "tee", &buf, 1)) {
+        e = libxl_tee_type_from_string(buf, &b_info->tee);
+        if (e) {
+            fprintf(stderr,
+                    "Unknown tee \"%s\" specified\n", buf);
             exit(-ERROR_FAIL);
         }
     }

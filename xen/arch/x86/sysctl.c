@@ -114,6 +114,50 @@ long cpu_down_helper(void *data)
     return ret;
 }
 
+static long smt_up_down_helper(void *data)
+{
+    bool up = (bool)data;
+    unsigned int cpu, sibling_mask = boot_cpu_data.x86_num_siblings - 1;
+    int ret = 0;
+
+    opt_smt = up;
+
+    for_each_present_cpu ( cpu )
+    {
+        /* Skip primary siblings (those whose thread id is 0). */
+        if ( !(x86_cpu_to_apicid[cpu] & sibling_mask) )
+            continue;
+
+        if ( !up && core_parking_remove(cpu) )
+            continue;
+
+        ret = up ? cpu_up_helper(_p(cpu))
+                 : cpu_down_helper(_p(cpu));
+
+        if ( ret && ret != -EEXIST )
+            break;
+
+        /*
+         * Ensure forward progress by only considering preemption when we have
+         * changed the state of one or more cpus.
+         */
+        if ( ret != -EEXIST && general_preempt_check() )
+        {
+            /* In tasklet context - can't create a contination. */
+            ret = -EBUSY;
+            break;
+        }
+
+        ret = 0; /* Avoid exiting with -EEXIST in the success case. */
+    }
+
+    if ( !ret )
+        printk(XENLOG_INFO "SMT %s - online CPUs 0x%*pb\n",
+               up ? "enabled" : "disabled", CPUMASK_PR(&cpu_online_map));
+
+    return ret;
+}
+
 void arch_do_physinfo(struct xen_sysctl_physinfo *pi)
 {
     memcpy(pi->hw_cap, boot_cpu_data.x86_capability,
@@ -122,8 +166,10 @@ void arch_do_physinfo(struct xen_sysctl_physinfo *pi)
         pi->capabilities |= XEN_SYSCTL_PHYSCAP_hvm;
     if ( IS_ENABLED(CONFIG_PV) )
         pi->capabilities |= XEN_SYSCTL_PHYSCAP_pv;
-    if ( iommu_enabled )
-        pi->capabilities |= XEN_SYSCTL_PHYSCAP_directio;
+    if ( hvm_hap_supported() )
+        pi->capabilities |= XEN_SYSCTL_PHYSCAP_hap;
+    if ( IS_ENABLED(CONFIG_SHADOW_PAGING) )
+        pi->capabilities |= XEN_SYSCTL_PHYSCAP_shadow;
 }
 
 long arch_do_sysctl(
@@ -137,27 +183,53 @@ long arch_do_sysctl(
     case XEN_SYSCTL_cpu_hotplug:
     {
         unsigned int cpu = sysctl->u.cpu_hotplug.cpu;
+        unsigned int op  = sysctl->u.cpu_hotplug.op;
+        bool plug;
+        long (*fn)(void *);
+        void *hcpu;
 
-        switch ( sysctl->u.cpu_hotplug.op )
+        switch ( op )
         {
         case XEN_SYSCTL_CPU_HOTPLUG_ONLINE:
-            ret = xsm_resource_plug_core(XSM_HOOK);
-            if ( ret )
-                break;
-            ret = continue_hypercall_on_cpu(
-                0, cpu_up_helper, (void *)(unsigned long)cpu);
+            plug = true;
+            fn = cpu_up_helper;
+            hcpu = _p(cpu);
             break;
+
         case XEN_SYSCTL_CPU_HOTPLUG_OFFLINE:
-            ret = xsm_resource_unplug_core(XSM_HOOK);
-            if ( ret )
-                break;
-            ret = continue_hypercall_on_cpu(
-                0, cpu_down_helper, (void *)(unsigned long)cpu);
+            plug = false;
+            fn = cpu_down_helper;
+            hcpu = _p(cpu);
             break;
+
+        case XEN_SYSCTL_CPU_HOTPLUG_SMT_ENABLE:
+        case XEN_SYSCTL_CPU_HOTPLUG_SMT_DISABLE:
+            if ( !cpu_has_htt || boot_cpu_data.x86_num_siblings < 2 )
+            {
+                ret = -EOPNOTSUPP;
+                break;
+            }
+            if ( sched_disable_smt_switching )
+            {
+                ret = -EBUSY;
+                break;
+            }
+            plug = op == XEN_SYSCTL_CPU_HOTPLUG_SMT_ENABLE;
+            fn = smt_up_down_helper;
+            hcpu = _p(plug);
+            break;
+
         default:
-            ret = -EINVAL;
+            ret = -EOPNOTSUPP;
             break;
         }
+
+        if ( !ret )
+            ret = plug ? xsm_resource_plug_core(XSM_HOOK)
+                       : xsm_resource_unplug_core(XSM_HOOK);
+
+        if ( !ret )
+            ret = continue_hypercall_on_cpu(0, fn, hcpu);
     }
     break;
 

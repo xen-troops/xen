@@ -90,7 +90,7 @@ static int libxl__vtpm_from_xenstore(libxl__gc *gc, const char *libxl_path,
 
 int libxl_device_vtpm_getinfo(libxl_ctx *ctx,
                               uint32_t domid,
-                              libxl_device_vtpm *vtpm,
+                              const libxl_device_vtpm *vtpm,
                               libxl_vtpminfo *vtpminfo)
 {
     GC_INIT(ctx);
@@ -183,8 +183,8 @@ int libxl_devid_to_device_vtpm(libxl_ctx *ctx,
     return rc;
 }
 
-static int libxl_device_vtpm_compare(libxl_device_vtpm *d1,
-                                     libxl_device_vtpm *d2)
+static int libxl_device_vtpm_compare(const libxl_device_vtpm *d1,
+                                     const libxl_device_vtpm *d2)
 {
     return COMPARE_DEVID(d1, d2);
 }

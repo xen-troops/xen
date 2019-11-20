@@ -34,12 +34,12 @@ static int fd_lock = -1;
 
 static void pause_domain(uint32_t domid)
 {
-    libxl_domain_pause(ctx, domid);
+    libxl_domain_pause(ctx, domid, NULL);
 }
 
 static void unpause_domain(uint32_t domid)
 {
-    libxl_domain_unpause(ctx, domid);
+    libxl_domain_unpause(ctx, domid, NULL);
 }
 
 static void destroy_domain(uint32_t domid, int force)
@@ -103,12 +103,12 @@ static void reboot_domain(uint32_t domid, libxl_evgen_domain_death **deathw,
     int rc;
 
     fprintf(stderr, "Rebooting domain %u\n", domid);
-    rc=libxl_domain_reboot(ctx, domid);
+    rc = libxl_domain_reboot(ctx, domid, NULL);
     if (rc == ERROR_NOPARAVIRT) {
         if (fallback_trigger) {
             fprintf(stderr, "PV control interface not available:"
                     " sending ACPI reset button event.\n");
-            rc = libxl_send_trigger(ctx, domid, LIBXL_TRIGGER_RESET, 0);
+            rc = libxl_send_trigger(ctx, domid, LIBXL_TRIGGER_RESET, 0, NULL);
         } else {
             fprintf(stderr, "PV control interface not available:"
                     " external graceful reboot not possible.\n");
@@ -136,12 +136,12 @@ static void shutdown_domain(uint32_t domid,
     int rc;
 
     fprintf(stderr, "Shutting down domain %u\n", domid);
-    rc=libxl_domain_shutdown(ctx, domid);
+    rc = libxl_domain_shutdown(ctx, domid, NULL);
     if (rc == ERROR_NOPARAVIRT) {
         if (fallback_trigger) {
             fprintf(stderr, "PV control interface not available:"
                     " sending ACPI power button event.\n");
-            rc = libxl_send_trigger(ctx, domid, LIBXL_TRIGGER_POWER, 0);
+            rc = libxl_send_trigger(ctx, domid, LIBXL_TRIGGER_POWER, 0, NULL);
         } else {
             fprintf(stderr, "PV control interface not available:"
                     " external graceful shutdown not possible.\n");
@@ -314,7 +314,7 @@ static int domain_wait_event(uint32_t domid, libxl_event **event_r)
  * Returns true in case there is already, or we manage to free it, enough
  * memory, but also if autoballoon is false.
  */
-static bool freemem(uint32_t domid, libxl_domain_build_info *b_info)
+static bool freemem(uint32_t domid, libxl_domain_config *d_config)
 {
     int rc, retries = 3;
     uint64_t need_memkb, free_memkb;
@@ -322,7 +322,7 @@ static bool freemem(uint32_t domid, libxl_domain_build_info *b_info)
     if (!autoballoon)
         return true;
 
-    rc = libxl_domain_need_memory(ctx, b_info, &need_memkb);
+    rc = libxl_domain_need_memory(ctx, d_config, domid, &need_memkb);
     if (rc < 0)
         return false;
 
@@ -377,7 +377,8 @@ static void reload_domain_config(uint32_t domid,
     }
 
     libxl_domain_config_init(&d_config_new);
-    rc = libxl_retrieve_domain_configuration(ctx, domid, &d_config_new);
+    rc = libxl_retrieve_domain_configuration(ctx, domid, &d_config_new,
+                                             NULL);
     if (rc) {
         LOG("failed to retrieve guest configuration (rc=%d). "
             "reusing old configuration", rc);
@@ -878,7 +879,7 @@ start:
         goto error_out;
 
     if (domid_soft_reset == INVALID_DOMID) {
-        if (!freemem(domid, &d_config.b_info)) {
+        if (!freemem(domid, &d_config)) {
             fprintf(stderr, "failed to free memory for the domain\n");
             ret = ERROR_FAIL;
             goto error_out;
@@ -972,7 +973,7 @@ start:
     }
 
     if (!paused)
-        libxl_domain_unpause(ctx, domid);
+        libxl_domain_unpause(ctx, domid, NULL);
 
     ret = domid; /* caller gets success in parent */
     if (!daemonize && !monitor)

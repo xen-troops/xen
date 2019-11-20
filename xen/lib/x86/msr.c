@@ -38,7 +38,7 @@ int x86_msr_copy_to_buffer(const struct msr_policy *p,
             return ret;                                         \
     })
 
-    COPY_MSR(MSR_INTEL_PLATFORM_INFO, p->plaform_info.raw);
+    COPY_MSR(MSR_INTEL_PLATFORM_INFO, p->platform_info.raw);
 
 #undef COPY_MSR
 
@@ -54,6 +54,9 @@ int x86_msr_copy_from_buffer(struct msr_policy *p,
     unsigned int i;
     xen_msr_entry_t data;
     int rc;
+
+    if ( err_msr )
+        *err_msr = -1;
 
     /*
      * A well formed caller is expected to pass an array with entries in
@@ -95,7 +98,7 @@ int x86_msr_copy_from_buffer(struct msr_policy *p,
     p->field = data.val;                          \
 })
 
-        case MSR_INTEL_PLATFORM_INFO: ASSIGN(plaform_info.raw); break;
+        case MSR_INTEL_PLATFORM_INFO: ASSIGN(platform_info.raw); break;
 
 #undef ASSIGN
 

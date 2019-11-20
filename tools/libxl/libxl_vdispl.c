@@ -48,8 +48,8 @@ static void libxl__update_config_vdispl(libxl__gc *gc,
     dst->be_alloc = src->be_alloc;
 }
 
-static int libxl_device_vdispl_compare(libxl_device_vdispl *d1,
-                                       libxl_device_vdispl *d2)
+static int libxl_device_vdispl_compare(const libxl_device_vdispl *d1,
+                                       const libxl_device_vdispl *d2)
 {
     return COMPARE_DEVID(d1, d2);
 }
@@ -152,7 +152,7 @@ out:
 }
 
 int libxl_device_vdispl_getinfo(libxl_ctx *ctx, uint32_t domid,
-                                libxl_device_vdispl *vdispl,
+                                const libxl_device_vdispl *vdispl,
                                 libxl_vdisplinfo *info)
 {
     GC_INIT(ctx);

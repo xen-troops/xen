@@ -779,12 +779,18 @@ static void vmx_load_cpu_state(struct vcpu *v, struct hvm_hw_cpu *data)
 
 static void vmx_save_vmcs_ctxt(struct vcpu *v, struct hvm_hw_cpu *ctxt)
 {
+    if ( v == current )
+        vmx_save_guest_msrs(v);
+
     vmx_save_cpu_state(v, ctxt);
     vmx_vmcs_save(v, ctxt);
 }
 
 static int vmx_load_vmcs_ctxt(struct vcpu *v, struct hvm_hw_cpu *ctxt)
 {
+    /* Not currently safe to use in current context. */
+    ASSERT(v != current);
+
     vmx_load_cpu_state(v, ctxt);
 
     if ( vmx_vmcs_restore(v, ctxt) )
@@ -795,71 +801,6 @@ static int vmx_load_vmcs_ctxt(struct vcpu *v, struct hvm_hw_cpu *ctxt)
     }
 
     return 0;
-}
-
-static unsigned int __init vmx_init_msr(void)
-{
-    return (cpu_has_mpx && cpu_has_vmx_mpx) +
-           (cpu_has_xsaves && cpu_has_vmx_xsaves);
-}
-
-static void vmx_save_msr(struct vcpu *v, struct hvm_msr *ctxt)
-{
-    vmx_vmcs_enter(v);
-
-    if ( cpu_has_mpx && cpu_has_vmx_mpx )
-    {
-        __vmread(GUEST_BNDCFGS, &ctxt->msr[ctxt->count].val);
-        if ( ctxt->msr[ctxt->count].val )
-            ctxt->msr[ctxt->count++].index = MSR_IA32_BNDCFGS;
-    }
-
-    vmx_vmcs_exit(v);
-
-    if ( cpu_has_xsaves && cpu_has_vmx_xsaves )
-    {
-        ctxt->msr[ctxt->count].val = v->arch.hvm.msr_xss;
-        if ( ctxt->msr[ctxt->count].val )
-            ctxt->msr[ctxt->count++].index = MSR_IA32_XSS;
-    }
-}
-
-static int vmx_load_msr(struct vcpu *v, struct hvm_msr *ctxt)
-{
-    unsigned int i;
-    int err = 0;
-
-    vmx_vmcs_enter(v);
-
-    for ( i = 0; i < ctxt->count; ++i )
-    {
-        switch ( ctxt->msr[i].index )
-        {
-        case MSR_IA32_BNDCFGS:
-            if ( cpu_has_mpx && cpu_has_vmx_mpx &&
-                 is_canonical_address(ctxt->msr[i].val) &&
-                 !(ctxt->msr[i].val & IA32_BNDCFGS_RESERVED) )
-                __vmwrite(GUEST_BNDCFGS, ctxt->msr[i].val);
-            else if ( ctxt->msr[i].val )
-                err = -ENXIO;
-            break;
-        case MSR_IA32_XSS:
-            if ( cpu_has_xsaves && cpu_has_vmx_xsaves )
-                v->arch.hvm.msr_xss = ctxt->msr[i].val;
-            else
-                err = -ENXIO;
-            break;
-        default:
-            continue;
-        }
-        if ( err )
-            break;
-        ctxt->msr[i]._rsvd = 1;
-    }
-
-    vmx_vmcs_exit(v);
-
-    return err;
 }
 
 static void vmx_fpu_enter(struct vcpu *v)
@@ -1269,7 +1210,7 @@ static void vmx_handle_cd(struct vcpu *v, unsigned long value)
         {
             v->arch.hvm.cache_mode = NORMAL_CACHE_MODE;
             vmx_set_guest_pat(v, *pat);
-            if ( !iommu_enabled || iommu_snoop )
+            if ( !is_iommu_enabled(v->domain) || iommu_snoop )
                 vmx_clear_msr_intercept(v, MSR_IA32_CR_PAT, VMX_MSR_RW);
             hvm_asid_flush_vcpu(v); /* no need to flush cache */
         }
@@ -1321,17 +1262,20 @@ static void vmx_set_descriptor_access_exiting(struct vcpu *v, bool enable)
     vmx_vmcs_exit(v);
 }
 
-static void vmx_init_hypercall_page(struct domain *d, void *hypercall_page)
+static void vmx_init_hypercall_page(void *p)
 {
-    char *p;
-    int i;
+    unsigned int i;
 
-    for ( i = 0; i < (PAGE_SIZE / 32); i++ )
+    for ( i = 0; i < (PAGE_SIZE / 32); i++, p += 32 )
     {
-        if ( i == __HYPERVISOR_iret )
-            continue;
+        if ( unlikely(i == __HYPERVISOR_iret) )
+        {
+            /* HYPERVISOR_iret isn't supported */
+            *(u16 *)p = 0x0b0f; /* ud2 */
 
-        p = (char *)(hypercall_page + (i * 32));
+            continue;
+        }
+
         *(u8  *)(p + 0) = 0xb8; /* mov imm32, %eax */
         *(u32 *)(p + 1) = i;
         *(u8  *)(p + 5) = 0x0f; /* vmcall */
@@ -1339,9 +1283,6 @@ static void vmx_init_hypercall_page(struct domain *d, void *hypercall_page)
         *(u8  *)(p + 7) = 0xc1;
         *(u8  *)(p + 8) = 0xc3; /* ret */
     }
-
-    /* Don't support HYPERVISOR_iret at the moment */
-    *(u16 *)(hypercall_page + (__HYPERVISOR_iret * 32)) = 0x0b0f; /* ud2 */
 }
 
 static unsigned int vmx_get_interrupt_shadow(struct vcpu *v)
@@ -2298,9 +2239,6 @@ static struct hvm_function_table __initdata vmx_function_table = {
     .vcpu_destroy         = vmx_vcpu_destroy,
     .save_cpu_ctxt        = vmx_save_vmcs_ctxt,
     .load_cpu_ctxt        = vmx_load_vmcs_ctxt,
-    .init_msr             = vmx_init_msr,
-    .save_msr             = vmx_save_msr,
-    .load_msr             = vmx_load_msr,
     .get_interrupt_shadow = vmx_get_interrupt_shadow,
     .set_interrupt_shadow = vmx_set_interrupt_shadow,
     .guest_x86_mode       = vmx_guest_x86_mode,
@@ -2339,12 +2277,6 @@ static struct hvm_function_table __initdata vmx_function_table = {
     .nhvm_vcpu_vmexit_event = nvmx_vmexit_event,
     .nhvm_intr_blocked    = nvmx_intr_blocked,
     .nhvm_domain_relinquish_resources = nvmx_domain_relinquish_resources,
-    .update_eoi_exit_bitmap = vmx_update_eoi_exit_bitmap,
-    .process_isr          = vmx_process_isr,
-    .deliver_posted_intr  = vmx_deliver_posted_intr,
-    .sync_pir_to_irr      = vmx_sync_pir_to_irr,
-    .test_pir             = vmx_test_pir,
-    .handle_eoi           = vmx_handle_eoi,
     .nhvm_hap_walk_L1_p2m = nvmx_hap_walk_L1_p2m,
     .enable_msr_interception = vmx_enable_msr_interception,
     .is_singlestep_supported = vmx_is_singlestep_supported,
@@ -2437,7 +2369,7 @@ static void pi_notification_interrupt(struct cpu_user_regs *regs)
 }
 
 static void __init lbr_tsx_fixup_check(void);
-static void __init bdw_erratum_bdf14_fixup_check(void);
+static void __init bdf93_fixup_check(void);
 
 const struct hvm_function_table * __init start_vmx(void)
 {
@@ -2472,26 +2404,23 @@ const struct hvm_function_table * __init start_vmx(void)
         setup_ept_dump();
     }
 
-    if ( !cpu_has_vmx_virtual_intr_delivery )
+    if ( cpu_has_vmx_virtual_intr_delivery )
     {
-        vmx_function_table.update_eoi_exit_bitmap = NULL;
-        vmx_function_table.process_isr = NULL;
-        vmx_function_table.handle_eoi = NULL;
-    }
-    else
+        vmx_function_table.update_eoi_exit_bitmap = vmx_update_eoi_exit_bitmap;
+        vmx_function_table.process_isr = vmx_process_isr;
+        vmx_function_table.handle_eoi = vmx_handle_eoi;
         vmx_function_table.virtual_intr_delivery_enabled = true;
+    }
 
     if ( cpu_has_vmx_posted_intr_processing )
     {
         alloc_direct_apic_vector(&posted_intr_vector, pi_notification_interrupt);
         if ( iommu_intpost )
             alloc_direct_apic_vector(&pi_wakeup_vector, pi_wakeup_interrupt);
-    }
-    else
-    {
-        vmx_function_table.deliver_posted_intr = NULL;
-        vmx_function_table.sync_pir_to_irr = NULL;
-        vmx_function_table.test_pir = NULL;
+
+        vmx_function_table.deliver_posted_intr = vmx_deliver_posted_intr;
+        vmx_function_table.sync_pir_to_irr     = vmx_sync_pir_to_irr;
+        vmx_function_table.test_pir            = vmx_test_pir;
     }
 
     if ( cpu_has_vmx_tsc_scaling )
@@ -2509,7 +2438,7 @@ const struct hvm_function_table * __init start_vmx(void)
     setup_vmcs_dump();
 
     lbr_tsx_fixup_check();
-    bdw_erratum_bdf14_fixup_check();
+    bdf93_fixup_check();
 
     return &vmx_function_table;
 }
@@ -2558,29 +2487,6 @@ static void vmx_fpu_dirty_intercept(void)
         curr->arch.hvm.hw_cr[0] &= ~X86_CR0_TS;
         __vmwrite(GUEST_CR0, curr->arch.hvm.hw_cr[0]);
     }
-}
-
-static int vmx_do_cpuid(struct cpu_user_regs *regs)
-{
-    struct vcpu *curr = current;
-    uint32_t leaf = regs->eax, subleaf = regs->ecx;
-    struct cpuid_leaf res;
-
-    if ( hvm_check_cpuid_faulting(current) )
-    {
-        hvm_inject_hw_exception(TRAP_gp_fault, 0);
-        return 1;  /* Don't advance the guest IP! */
-    }
-
-    guest_cpuid(curr, leaf, subleaf, &res);
-    HVMTRACE_5D(CPUID, leaf, res.a, res.b, res.c, res.d);
-
-    regs->rax = res.a;
-    regs->rbx = res.b;
-    regs->rcx = res.c;
-    regs->rdx = res.d;
-
-    return hvm_monitor_cpuid(get_instruction_length(), leaf, subleaf);
 }
 
 static void vmx_dr_access(unsigned long exit_qualification,
@@ -2676,14 +2582,6 @@ static int vmx_cr_access(cr_access_qual_t qual)
 
     return X86EMUL_OKAY;
 }
-
-/* This defines the layout of struct lbr_info[] */
-#define LBR_LASTINT_FROM_IDX    0
-#define LBR_LASTINT_TO_IDX      1
-#define LBR_LASTBRANCH_TOS_IDX  2
-#define LBR_LASTBRANCH_FROM_IDX 3
-#define LBR_LASTBRANCH_TO_IDX   4
-#define LBR_LASTBRANCH_INFO     5
 
 static const struct lbr_info {
     u32 base, count;
@@ -2816,52 +2714,76 @@ enum
 
 #define LBR_MSRS_INSERTED      (1u << 0)
 #define LBR_FIXUP_TSX          (1u << 1)
-#define LBR_FIXUP_BDF14        (1u << 2)
-#define LBR_FIXUP_MASK         (LBR_FIXUP_TSX | LBR_FIXUP_BDF14)
+#define LBR_FIXUP_BDF93        (1u << 2)
+#define LBR_FIXUP_MASK         (LBR_FIXUP_TSX | LBR_FIXUP_BDF93)
 
 static bool __read_mostly lbr_tsx_fixup_needed;
-static bool __read_mostly bdw_erratum_bdf14_fixup_needed;
-static uint32_t __read_mostly lbr_from_start;
-static uint32_t __read_mostly lbr_from_end;
-static uint32_t __read_mostly lbr_lastint_from;
+static bool __read_mostly bdf93_fixup_needed;
 
 static void __init lbr_tsx_fixup_check(void)
 {
-    bool tsx_support = cpu_has_hle || cpu_has_rtm;
     uint64_t caps;
     uint32_t lbr_format;
 
-    /* Fixup is needed only when TSX support is disabled ... */
-    if ( tsx_support )
+    /*
+     * HSM182, HSD172, HSE117, BDM127, BDD117, BDF85, BDE105:
+     *
+     * On processors that do not support Intel Transactional Synchronization
+     * Extensions (Intel TSX) (CPUID.07H.EBX bits 4 and 11 are both zero),
+     * writes to MSR_LASTBRANCH_x_FROM_IP (MSR 680H to 68FH) may #GP unless
+     * bits[62:61] are equal to bit[47].
+     *
+     * Software should sign extend the MSRs.
+     *
+     * Experimentally, MSR_LER_FROM_LIP (1DDH) is similarly impacted, so is
+     * fixed up as well.
+     */
+    if ( cpu_has_hle || cpu_has_rtm ||
+         boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+         boot_cpu_data.x86 != 6 )
         return;
 
+    switch ( boot_cpu_data.x86_model )
+    {
+    case 0x3c: /* HSM182, HSD172 - 4th gen Core */
+    case 0x3f: /* HSE117 - Xeon E5 v3 */
+    case 0x45: /* HSM182 - 4th gen Core */
+    case 0x46: /* HSM182, HSD172 - 4th gen Core (GT3) */
+    case 0x3d: /* BDM127 - 5th gen Core */
+    case 0x47: /* BDD117 - 5th gen Core (GT3) */
+    case 0x4f: /* BDF85  - Xeon E5-2600 v4 */
+    case 0x56: /* BDE105 - Xeon D-1500 */
+        break;
+    default:
+        return;
+    }
+
+    /*
+     * Fixup is needed only when TSX support is disabled and the address
+     * format of LBR includes TSX bits 61:62
+     */
     if ( !cpu_has_pdcm )
         return;
 
     rdmsrl(MSR_IA32_PERF_CAPABILITIES, caps);
     lbr_format = caps & MSR_IA32_PERF_CAP_LBR_FORMAT;
 
-    /* ... and the address format of LBR includes TSX bits 61:62 */
     if ( lbr_format == LBR_FORMAT_EIP_FLAGS_TSX )
-    {
-        const struct lbr_info *lbr = last_branch_msr_get();
-
-        if ( lbr == NULL )
-            return;
-
-        lbr_lastint_from = lbr[LBR_LASTINT_FROM_IDX].base;
-        lbr_from_start = lbr[LBR_LASTBRANCH_FROM_IDX].base;
-        lbr_from_end = lbr_from_start + lbr[LBR_LASTBRANCH_FROM_IDX].count;
-
         lbr_tsx_fixup_needed = true;
-    }
 }
 
-static void __init bdw_erratum_bdf14_fixup_check(void)
+static void __init bdf93_fixup_check(void)
 {
-    /* Broadwell E5-2600 v4 processors need to work around erratum BDF14. */
-    if ( boot_cpu_data.x86 == 6 && boot_cpu_data.x86_model == 79 )
-        bdw_erratum_bdf14_fixup_needed = true;
+    /*
+     * Broadwell erratum BDF93:
+     *
+     * Reads from MSR_LER_TO_LIP (MSR 1DEH) may return values for bits[63:61]
+     * that are not equal to bit[47].  Attempting to context switch this value
+     * may cause a #GP.  Software should sign extend the MSR.
+     */
+    if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
+         boot_cpu_data.x86 == 6 && boot_cpu_data.x86_model == 0x4f )
+        bdf93_fixup_needed = true;
 }
 
 static int is_last_branch_msr(u32 ecx)
@@ -3222,8 +3144,8 @@ static int vmx_msr_write_intercept(unsigned int msr, uint64_t msr_content)
             v->arch.hvm.vmx.lbr_flags |= LBR_MSRS_INSERTED;
             if ( lbr_tsx_fixup_needed )
                 v->arch.hvm.vmx.lbr_flags |= LBR_FIXUP_TSX;
-            if ( bdw_erratum_bdf14_fixup_needed )
-                v->arch.hvm.vmx.lbr_flags |= LBR_FIXUP_BDF14;
+            if ( bdf93_fixup_needed )
+                v->arch.hvm.vmx.lbr_flags |= LBR_FIXUP_BDF93;
         }
 
         __vmwrite(GUEST_IA32_DEBUGCTL, msr_content);
@@ -3933,7 +3855,7 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
     }
     case EXIT_REASON_CPUID:
     {
-        int rc = vmx_do_cpuid(regs);
+        int rc = hvm_vmexit_cpuid(regs, get_instruction_length());
 
         /*
          * rc < 0 error in monitor/vm_event, crash
@@ -4220,8 +4142,12 @@ static void lbr_tsx_fixup(void)
     struct vmx_msr_entry *msr_area = curr->arch.hvm.vmx.msr_area;
     struct vmx_msr_entry *msr;
 
-    if ( (msr = vmx_find_msr(curr, lbr_from_start, VMX_MSR_GUEST)) != NULL )
+    if ( (msr = vmx_find_msr(curr, MSR_P4_LASTBRANCH_0_FROM_LIP,
+                             VMX_MSR_GUEST)) != NULL )
     {
+        const unsigned int lbr_from_end =
+            MSR_P4_LASTBRANCH_0_FROM_LIP + NUM_MSR_P4_LASTBRANCH_FROM_TO;
+
         /*
          * Sign extend into bits 61:62 while preserving bit 63
          * The loop relies on the fact that MSR array is sorted.
@@ -4230,7 +4156,8 @@ static void lbr_tsx_fixup(void)
             msr->data |= ((LBR_FROM_SIGNEXT_2MSB & msr->data) << 2);
     }
 
-    if ( (msr = vmx_find_msr(curr, lbr_lastint_from, VMX_MSR_GUEST)) != NULL )
+    if ( (msr = vmx_find_msr(curr, MSR_IA32_LASTINTFROMIP,
+                             VMX_MSR_GUEST)) != NULL )
         msr->data |= ((LBR_FROM_SIGNEXT_2MSB & msr->data) << 2);
 }
 
@@ -4242,20 +4169,10 @@ static void sign_extend_msr(struct vcpu *v, u32 msr, int type)
         entry->data = canonicalise_addr(entry->data);
 }
 
-static void bdw_erratum_bdf14_fixup(void)
+static void bdf93_fixup(void)
 {
     struct vcpu *curr = current;
 
-    /*
-     * Occasionally, on certain Broadwell CPUs MSR_IA32_LASTINTTOIP has
-     * been observed to have the top three bits corrupted as though the
-     * MSR is using the LBR_FORMAT_EIP_FLAGS_TSX format. This is
-     * incorrect and causes a vmentry failure -- the MSR should contain
-     * an offset into the current code segment. This is assumed to be
-     * erratum BDF14. Fix up MSR_IA32_LASTINT{FROM,TO}IP by
-     * sign-extending into bits 48:63.
-     */
-    sign_extend_msr(curr, MSR_IA32_LASTINTFROMIP, VMX_MSR_GUEST);
     sign_extend_msr(curr, MSR_IA32_LASTINTTOIP, VMX_MSR_GUEST);
 }
 
@@ -4265,8 +4182,8 @@ static void lbr_fixup(void)
 
     if ( curr->arch.hvm.vmx.lbr_flags & LBR_FIXUP_TSX )
         lbr_tsx_fixup();
-    if ( curr->arch.hvm.vmx.lbr_flags & LBR_FIXUP_BDF14 )
-        bdw_erratum_bdf14_fixup();
+    if ( curr->arch.hvm.vmx.lbr_flags & LBR_FIXUP_BDF93 )
+        bdf93_fixup();
 }
 
 /* Returns false if the vmentry has to be restarted */

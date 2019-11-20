@@ -6,10 +6,10 @@
 #include <asm/atomic.h>
 #include <asm/numa.h>
 #include <xen/cpumask.h>
+#include <xen/percpu.h>
 #include <xen/smp.h>
 #include <asm/hvm/irq.h>
 #include <irq_vectors.h>
-#include <asm/percpu.h>
 
 extern unsigned int nr_irqs_gsi;
 extern unsigned int nr_irqs;
@@ -32,13 +32,24 @@ struct irq_desc;
 struct arch_irq_desc {
         s16 vector;                  /* vector itself is only 8 bits, */
         s16 old_vector;              /* but we use -1 for unassigned  */
+        /*
+         * Except for high priority interrupts @cpu_mask may have bits set for
+         * offline CPUs.  Consumers need to be careful to mask this down to
+         * online ones as necessary.  There is supposed to always be a non-
+         * empty intersection with cpu_online_map.
+         */
         cpumask_var_t cpu_mask;
         cpumask_var_t old_cpu_mask;
         cpumask_var_t pending_mask;
-        unsigned move_cleanup_count;
         vmask_t *used_vectors;
+        unsigned move_cleanup_count;
         u8 move_in_progress : 1;
         s8 used;
+        /*
+         * Weak reference to domain having permission over this IRQ (which can
+         * be different from the domain actually having the IRQ assigned)
+         */
+        domid_t creator_domid;
 };
 
 /* For use with irq_desc.arch.used */
@@ -68,12 +79,12 @@ DECLARE_PER_CPU(struct cpu_user_regs *, __irq_regs);
 
 static inline struct cpu_user_regs *get_irq_regs(void)
 {
-	return __get_cpu_var(__irq_regs);
+	return this_cpu(__irq_regs);
 }
 
 static inline struct cpu_user_regs *set_irq_regs(struct cpu_user_regs *new_regs)
 {
-	struct cpu_user_regs *old_regs, **pp_regs = &__get_cpu_var(__irq_regs);
+	struct cpu_user_regs *old_regs, **pp_regs = &this_cpu(__irq_regs);
 
 	old_regs = *pp_regs;
 	*pp_regs = new_regs;
@@ -155,7 +166,11 @@ int  init_irq_data(void);
 void clear_irq_vector(int irq);
 
 int irq_to_vector(int irq);
-int create_irq(nodeid_t node);
+/*
+ * If grant_access is set the current domain is given permissions over
+ * the created IRQ.
+ */
+int create_irq(nodeid_t node, bool grant_access);
 void destroy_irq(unsigned int irq);
 int assign_irq_vector(int irq, const cpumask_t *);
 

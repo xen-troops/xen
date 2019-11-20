@@ -36,6 +36,10 @@
 #define LDT_ENTRY (TSS_ENTRY + 2)
 #define PER_CPU_GDT_ENTRY (LDT_ENTRY + 2)
 
+#define TSS_SELECTOR     (TSS_ENTRY << 3)
+#define LDT_SELECTOR     (LDT_ENTRY << 3)
+#define PER_CPU_SELECTOR (PER_CPU_GDT_ENTRY << 3)
+
 #ifndef __ASSEMBLY__
 
 #define GUEST_KERNEL_RPL(d) (is_pv_32bit_domain(d) ? 1 : 3)
@@ -103,10 +107,10 @@
 #define SYS_DESC_trap_gate    15
 
 typedef union {
+    uint64_t raw;
     struct {
         uint32_t a, b;
     };
-    uint64_t raw;
 } seg_desc_t;
 
 typedef union {
@@ -151,7 +155,7 @@ do {                                                     \
         ((unsigned long)(dpl) << 45) |                   \
         ((unsigned long)(type) << 40) |                  \
         ((unsigned long)(addr) & 0xFFFFUL) |             \
-        ((unsigned long)__HYPERVISOR_CS64 << 16) |       \
+        ((unsigned long)__HYPERVISOR_CS << 16) |         \
         (1UL << 47);                                     \
 } while (0)
 
@@ -165,7 +169,7 @@ static inline void _set_gate_lower(idt_entry_t *gate, unsigned long type,
         ((unsigned long)(dpl) << 45) |
         ((unsigned long)(type) << 40) |
         ((unsigned long)(addr) & 0xFFFFUL) |
-        ((unsigned long)__HYPERVISOR_CS64 << 16) |
+        ((unsigned long)__HYPERVISOR_CS << 16) |
         (1UL << 47);
     _write_gate_lower(gate, &idte);
 }
@@ -204,12 +208,13 @@ struct __packed desc_ptr {
 	unsigned long base;
 };
 
-extern seg_desc_t boot_cpu_gdt_table[];
-DECLARE_PER_CPU(seg_desc_t *, gdt_table);
-extern seg_desc_t boot_cpu_compat_gdt_table[];
-DECLARE_PER_CPU(seg_desc_t *, compat_gdt_table);
-
-extern void load_TR(void);
+extern seg_desc_t boot_gdt[];
+DECLARE_PER_CPU(seg_desc_t *, gdt);
+DECLARE_PER_CPU(l1_pgentry_t, gdt_l1e);
+extern seg_desc_t boot_compat_gdt[];
+DECLARE_PER_CPU(seg_desc_t *, compat_gdt);
+DECLARE_PER_CPU(l1_pgentry_t, compat_gdt_l1e);
+DECLARE_PER_CPU(bool, full_gdt_loaded);
 
 static inline void lgdt(const struct desc_ptr *gdtr)
 {

@@ -75,7 +75,7 @@ static void failwith_xl(int error, char *fname)
 {
 	CAMLparam0();
 	CAMLlocal1(arg);
-	static value *exc = NULL;
+	static const value *exc = NULL;
 
 	/* First time around, lookup by name */
 	if (!exc)
@@ -424,7 +424,7 @@ void async_callback(libxl_ctx *ctx, int rc, void *for_callback)
 	caml_leave_blocking_section();
 	CAMLparam0();
 	CAMLlocal2(error, tmp);
-	static value *func = NULL;
+	static const value *func = NULL;
 	value *p = (value *) for_callback;
 
 	if (func == NULL) {
@@ -551,15 +551,18 @@ value stub_libxl_domain_create_restore(value ctx, value domain_config, value par
 	CAMLreturn(Val_int(c_domid));
 }
 
-value stub_libxl_domain_shutdown(value ctx, value domid)
+value stub_libxl_domain_shutdown(value ctx, value domid, value async, value unit)
 {
-	CAMLparam2(ctx, domid);
+	CAMLparam4(ctx, domid, async, unit);
 	int ret;
 	uint32_t c_domid = Int_val(domid);
+	libxl_asyncop_how *ao_how = aohow_val(async);
 
 	caml_enter_blocking_section();
-	ret = libxl_domain_shutdown(CTX, c_domid);
+	ret = libxl_domain_shutdown(CTX, c_domid, ao_how);
 	caml_leave_blocking_section();
+
+	free(ao_how);
 
 	if (ret != 0)
 		failwith_xl(ret, "domain_shutdown");
@@ -567,15 +570,18 @@ value stub_libxl_domain_shutdown(value ctx, value domid)
 	CAMLreturn(Val_unit);
 }
 
-value stub_libxl_domain_reboot(value ctx, value domid)
+value stub_libxl_domain_reboot(value ctx, value domid, value async, value unit)
 {
-	CAMLparam2(ctx, domid);
+	CAMLparam4(ctx, domid, async, unit);
 	int ret;
 	uint32_t c_domid = Int_val(domid);
+	libxl_asyncop_how *ao_how = aohow_val(async);
 
 	caml_enter_blocking_section();
-	ret = libxl_domain_reboot(CTX, c_domid);
+	ret = libxl_domain_reboot(CTX, c_domid, ao_how);
 	caml_leave_blocking_section();
+
+	free(ao_how);
 
 	if (ret != 0)
 		failwith_xl(ret, "domain_reboot");
@@ -622,15 +628,18 @@ value stub_libxl_domain_suspend(value ctx, value domid, value fd, value async, v
 	CAMLreturn(Val_unit);
 }
 
-value stub_libxl_domain_pause(value ctx, value domid)
+value stub_libxl_domain_pause(value ctx, value domid, value async)
 {
-	CAMLparam2(ctx, domid);
+	CAMLparam3(ctx, domid, async);
 	int ret;
 	uint32_t c_domid = Int_val(domid);
+	libxl_asyncop_how *ao_how = aohow_val(async);
 
 	caml_enter_blocking_section();
-	ret = libxl_domain_pause(CTX, c_domid);
+	ret = libxl_domain_pause(CTX, c_domid, ao_how);
 	caml_leave_blocking_section();
+
+	free(ao_how);
 
 	if (ret != 0)
 		failwith_xl(ret, "domain_pause");
@@ -638,15 +647,18 @@ value stub_libxl_domain_pause(value ctx, value domid)
 	CAMLreturn(Val_unit);
 }
 
-value stub_libxl_domain_unpause(value ctx, value domid)
+value stub_libxl_domain_unpause(value ctx, value domid, value async)
 {
-	CAMLparam2(ctx, domid);
+	CAMLparam3(ctx, domid, async);
 	int ret;
 	uint32_t c_domid = Int_val(domid);
+	libxl_asyncop_how *ao_how = aohow_val(async);
 
 	caml_enter_blocking_section();
-	ret = libxl_domain_unpause(CTX, c_domid);
+	ret = libxl_domain_unpause(CTX, c_domid, ao_how);
 	caml_leave_blocking_section();
+
+	free(ao_how);
 
 	if (ret != 0)
 		failwith_xl(ret, "domain_unpause");
@@ -1031,19 +1043,22 @@ value stub_xl_domain_sched_params_set(value ctx, value domid, value scinfo)
 	CAMLreturn(Val_unit);
 }
 
-value stub_xl_send_trigger(value ctx, value domid, value trigger, value vcpuid)
+value stub_xl_send_trigger(value ctx, value domid, value trigger, value vcpuid, value async)
 {
-	CAMLparam4(ctx, domid, trigger, vcpuid);
+	CAMLparam5(ctx, domid, trigger, vcpuid, async);
 	int ret;
 	uint32_t c_domid = Int_val(domid);
 	libxl_trigger c_trigger = LIBXL_TRIGGER_UNKNOWN;
 	int c_vcpuid = Int_val(vcpuid);
+	libxl_asyncop_how *ao_how = aohow_val(async);
 
 	trigger_val(CTX, &c_trigger, trigger);
 
 	caml_enter_blocking_section();
-	ret = libxl_send_trigger(CTX, c_domid, c_trigger, c_vcpuid);
+	ret = libxl_send_trigger(CTX, c_domid, c_trigger, c_vcpuid, ao_how);
 	caml_leave_blocking_section();
+
+	free(ao_how);
 
 	if (ret != 0)
 		failwith_xl(ret, "send_trigger");
@@ -1118,7 +1133,7 @@ value stub_libxl_xen_console_read_start(value ctx, value clear)
 
 static void raise_eof(void)
 {
-	static value *exc = NULL;
+	static const value *exc = NULL;
 
 	/* First time around, lookup by name */
 	if (!exc)
@@ -1259,7 +1274,7 @@ int fd_register(void *user, int fd, void **for_app_registration_out,
 	CAMLparam0();
 	CAMLlocalN(args, 4);
 	int ret = 0;
-	static value *func = NULL;
+	static const value *func = NULL;
 	value *p = (value *) user;
 	value *for_app;
 
@@ -1302,7 +1317,7 @@ int fd_modify(void *user, int fd, void **for_app_registration_update,
 	CAMLparam0();
 	CAMLlocalN(args, 4);
 	int ret = 0;
-	static value *func = NULL;
+	static const value *func = NULL;
 	value *p = (value *) user;
 	value *for_app = *for_app_registration_update;
 
@@ -1341,7 +1356,7 @@ void fd_deregister(void *user, int fd, void *for_app_registration)
 	caml_leave_blocking_section();
 	CAMLparam0();
 	CAMLlocalN(args, 3);
-	static value *func = NULL;
+	static const value *func = NULL;
 	value *p = (value *) user;
 	value *for_app = for_app_registration;
 
@@ -1383,7 +1398,7 @@ int timeout_register(void *user, void **for_app_registration_out,
 	CAMLlocal2(sec, usec);
 	CAMLlocalN(args, 4);
 	int ret = 0;
-	static value *func = NULL;
+	static const value *func = NULL;
 	value *p = (value *) user;
 	struct timeout_handles *handles;
 
@@ -1435,7 +1450,7 @@ int timeout_modify(void *user, void **for_app_registration_update,
 	CAMLlocal1(for_app_update);
 	CAMLlocalN(args, 2);
 	int ret = 0;
-	static value *func = NULL;
+	static const value *func = NULL;
 	value *p = (value *) user;
 	struct timeout_handles *handles = *for_app_registration_update;
 
@@ -1551,7 +1566,7 @@ void event_occurs(void *user, libxl_event *event)
 	CAMLparam0();
 	CAMLlocalN(args, 2);
 	struct user_with_ctx *c_user = (struct user_with_ctx *) user;
-	static value *func = NULL;
+	static const value *func = NULL;
 
 	if (func == NULL) {
 		/* First time around, lookup by name */
@@ -1574,7 +1589,7 @@ void disaster(void *user, libxl_event_type type,
 	CAMLparam0();
 	CAMLlocalN(args, 4);
 	struct user_with_ctx *c_user = (struct user_with_ctx *) user;
-	static value *func = NULL;
+	static const value *func = NULL;
 
 	if (func == NULL) {
 		/* First time around, lookup by name */

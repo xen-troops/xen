@@ -38,7 +38,7 @@
 #include "hvm/save.h"
 #include "memory.h"
 
-#define XEN_DOMCTL_INTERFACE_VERSION 0x00000011
+#define XEN_DOMCTL_INTERFACE_VERSION 0x00000012
 
 /*
  * NB. xen_domctl.domain is an IN/OUT parameter for this operation.
@@ -50,8 +50,8 @@ struct xen_domctl_createdomain {
     uint32_t ssidref;
     xen_domain_handle_t handle;
  /* Is this an HVM guest (as opposed to a PV guest)? */
-#define _XEN_DOMCTL_CDF_hvm_guest     0
-#define XEN_DOMCTL_CDF_hvm_guest      (1U<<_XEN_DOMCTL_CDF_hvm_guest)
+#define _XEN_DOMCTL_CDF_hvm           0
+#define XEN_DOMCTL_CDF_hvm            (1U<<_XEN_DOMCTL_CDF_hvm)
  /* Use hardware-assisted paging if available? */
 #define _XEN_DOMCTL_CDF_hap           1
 #define XEN_DOMCTL_CDF_hap            (1U<<_XEN_DOMCTL_CDF_hap)
@@ -64,7 +64,22 @@ struct xen_domctl_createdomain {
  /* Is this a xenstore domain? */
 #define _XEN_DOMCTL_CDF_xs_domain     4
 #define XEN_DOMCTL_CDF_xs_domain      (1U<<_XEN_DOMCTL_CDF_xs_domain)
+ /* Should this domain be permitted to use the IOMMU? */
+#define _XEN_DOMCTL_CDF_iommu         5
+#define XEN_DOMCTL_CDF_iommu          (1U<<_XEN_DOMCTL_CDF_iommu)
+
+/* Max XEN_DOMCTL_CDF_* constant.  Used for ABI checking. */
+#define XEN_DOMCTL_CDF_MAX XEN_DOMCTL_CDF_iommu
+
     uint32_t flags;
+
+#define _XEN_DOMCTL_IOMMU_no_sharept  0
+#define XEN_DOMCTL_IOMMU_no_sharept   (1U << _XEN_DOMCTL_IOMMU_no_sharept)
+
+/* Max XEN_DOMCTL_IOMMU_* constant.  Used for ABI checking. */
+#define XEN_DOMCTL_IOMMU_MAX XEN_DOMCTL_IOMMU_no_sharept
+
+    uint32_t iommu_opts;
 
     /*
      * Various domain limits, which impact the quantity of resources (global
@@ -644,27 +659,25 @@ struct xen_domctl_set_target {
 
 #if defined(__i386__) || defined(__x86_64__)
 # define XEN_CPUID_INPUT_UNUSED  0xFFFFFFFF
-/* XEN_DOMCTL_set_cpuid */
-struct xen_domctl_cpuid {
-  uint32_t input[2];
-  uint32_t eax;
-  uint32_t ebx;
-  uint32_t ecx;
-  uint32_t edx;
-};
 
 /*
- * XEN_DOMCTL_get_cpu_policy (x86 specific)
+ * XEN_DOMCTL_{get,set}_cpu_policy (x86 specific)
  *
- * Query the CPUID and MSR policies for a specific domain.
+ * Query or set the CPUID and MSR policies for a specific domain.
  */
 struct xen_domctl_cpu_policy {
     uint32_t nr_leaves; /* IN/OUT: Number of leaves in/written to
                          * 'cpuid_policy'. */
     uint32_t nr_msrs;   /* IN/OUT: Number of MSRs in/written to
                          * 'msr_domain_policy' */
-    XEN_GUEST_HANDLE_64(xen_cpuid_leaf_t) cpuid_policy; /* OUT */
-    XEN_GUEST_HANDLE_64(xen_msr_entry_t) msr_policy;    /* OUT */
+    XEN_GUEST_HANDLE_64(xen_cpuid_leaf_t) cpuid_policy; /* IN/OUT */
+    XEN_GUEST_HANDLE_64(xen_msr_entry_t) msr_policy;    /* IN/OUT */
+
+    /*
+     * OUT, set_policy only.  Written in some (but not all) error cases to
+     * identify the CPUID leaf/subleaf and/or MSR which auditing objects to.
+     */
+    uint32_t err_leaf, err_subleaf, err_msr;
 };
 typedef struct xen_domctl_cpu_policy xen_domctl_cpu_policy_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_cpu_policy_t);
@@ -690,18 +703,6 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_cpu_policy_t);
 struct xen_domctl_subscribe {
     uint32_t port; /* IN */
 };
-
-/*
- * Define the maximum machine address size which should be allocated
- * to a guest.
- */
-/* XEN_DOMCTL_set_machine_address_size */
-/* XEN_DOMCTL_get_machine_address_size */
-
-/*
- * Do not inject spurious page faults into this domain.
- */
-/* XEN_DOMCTL_suppress_spurious_page_faults */
 
 /* XEN_DOMCTL_debug_op */
 #define XEN_DOMCTL_DEBUG_OP_SINGLE_STEP_OFF         0
@@ -1168,11 +1169,11 @@ struct xen_domctl {
 #define XEN_DOMCTL_set_target                    46
 #define XEN_DOMCTL_deassign_device               47
 #define XEN_DOMCTL_unbind_pt_irq                 48
-#define XEN_DOMCTL_set_cpuid                     49
+/* #define XEN_DOMCTL_set_cpuid                  49 - Obsolete - use set_cpu_policy */
 #define XEN_DOMCTL_get_device_group              50
-#define XEN_DOMCTL_set_machine_address_size      51
-#define XEN_DOMCTL_get_machine_address_size      52
-#define XEN_DOMCTL_suppress_spurious_page_faults 53
+/* #define XEN_DOMCTL_set_machine_address_size   51 - Obsolete */
+/* #define XEN_DOMCTL_get_machine_address_size   52 - Obsolete */
+/* #define XEN_DOMCTL_suppress_spurious_page_faults 53 - Obsolete */
 #define XEN_DOMCTL_debug_op                      54
 #define XEN_DOMCTL_gethvmcontext_partial         55
 #define XEN_DOMCTL_vm_event_op                   56
@@ -1201,6 +1202,7 @@ struct xen_domctl {
 /* #define XEN_DOMCTL_set_gnttab_limits          80 - Moved into XEN_DOMCTL_createdomain */
 #define XEN_DOMCTL_vuart_op                      81
 #define XEN_DOMCTL_get_cpu_policy                82
+#define XEN_DOMCTL_set_cpu_policy                83
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
@@ -1244,7 +1246,6 @@ struct xen_domctl {
         struct xen_domctl_vm_event_op       vm_event_op;
         struct xen_domctl_mem_sharing_op    mem_sharing_op;
 #if defined(__i386__) || defined(__x86_64__)
-        struct xen_domctl_cpuid             cpuid;
         struct xen_domctl_cpu_policy        cpu_policy;
         struct xen_domctl_vcpuextstate      vcpuextstate;
         struct xen_domctl_vcpu_msrs         vcpu_msrs;

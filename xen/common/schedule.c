@@ -38,6 +38,12 @@
 #include <xsm/xsm.h>
 #include <xen/err.h>
 
+#ifdef CONFIG_XEN_GUEST
+#include <asm/guest.h>
+#else
+#define pv_shim false
+#endif
+
 /* opt_sched: scheduler - default to configured value */
 static char __initdata opt_sched[10] = CONFIG_SCHED_DEFAULT;
 string_param("sched", opt_sched);
@@ -54,6 +60,14 @@ boolean_param("sched_smt_power_savings", sched_smt_power_savings);
  * */
 int sched_ratelimit_us = SCHED_DEFAULT_RATELIMIT_US;
 integer_param("sched_ratelimit_us", sched_ratelimit_us);
+
+/* Number of vcpus per struct sched_unit. */
+bool __read_mostly sched_disable_smt_switching;
+cpumask_t sched_res_mask;
+
+/* Common lock for free cpus. */
+static DEFINE_SPINLOCK(sched_free_cpu_lock);
+
 /* Various timer handlers. */
 static void s_timer_fn(void *unused);
 static void vcpu_periodic_timer_fn(void *data);
@@ -61,11 +75,15 @@ static void vcpu_singleshot_timer_fn(void *data);
 static void poll_timer_fn(void *data);
 
 /* This is global for now so that private implementations can reach it */
-DEFINE_PER_CPU(struct schedule_data, schedule_data);
-DEFINE_PER_CPU(struct scheduler *, scheduler);
+DEFINE_PER_CPU_READ_MOSTLY(struct sched_resource *, sched_res);
+static DEFINE_PER_CPU_READ_MOSTLY(unsigned int, sched_res_idx);
+DEFINE_RCU_READ_LOCK(sched_res_rculock);
 
 /* Scratch space for cpumasks. */
 DEFINE_PER_CPU(cpumask_t, cpumask_scratch);
+
+/* How many urgent vcpus. */
+DEFINE_PER_CPU(atomic_t, sched_urgent_count);
 
 extern const struct scheduler *__start_schedulers_array[], *__end_schedulers_array[];
 #define NUM_SCHEDULERS (__end_schedulers_array - __start_schedulers_array)
@@ -73,9 +91,68 @@ extern const struct scheduler *__start_schedulers_array[], *__end_schedulers_arr
 
 static struct scheduler __read_mostly ops;
 
-#define SCHED_OP(opsptr, fn, ...)                                          \
-         (( (opsptr)->fn != NULL ) ? (opsptr)->fn(opsptr, ##__VA_ARGS__ )  \
-          : (typeof((opsptr)->fn(opsptr, ##__VA_ARGS__)))0 )
+static bool scheduler_active;
+
+static void sched_set_affinity(
+    struct sched_unit *unit, const cpumask_t *hard, const cpumask_t *soft);
+
+static struct sched_resource *
+sched_idle_res_pick(const struct scheduler *ops, const struct sched_unit *unit)
+{
+    return unit->res;
+}
+
+static void *
+sched_idle_alloc_udata(const struct scheduler *ops, struct sched_unit *unit,
+                       void *dd)
+{
+    /* Any non-NULL pointer is fine here. */
+    return ZERO_BLOCK_PTR;
+}
+
+static void
+sched_idle_free_udata(const struct scheduler *ops, void *priv)
+{
+}
+
+static void sched_idle_schedule(
+    const struct scheduler *ops, struct sched_unit *unit, s_time_t now,
+    bool tasklet_work_scheduled)
+{
+    const unsigned int cpu = smp_processor_id();
+
+    unit->next_time = -1;
+    unit->next_task = sched_idle_unit(cpu);
+}
+
+static struct scheduler sched_idle_ops = {
+    .name           = "Idle Scheduler",
+    .opt_name       = "idle",
+    .sched_data     = NULL,
+
+    .pick_resource  = sched_idle_res_pick,
+    .do_schedule    = sched_idle_schedule,
+
+    .alloc_udata    = sched_idle_alloc_udata,
+    .free_udata     = sched_idle_free_udata,
+};
+
+static inline struct vcpu *unit2vcpu_cpu(const struct sched_unit *unit,
+                                         unsigned int cpu)
+{
+    unsigned int idx = unit->unit_id + per_cpu(sched_res_idx, cpu);
+    const struct domain *d = unit->domain;
+
+    return (idx < d->max_vcpus) ? d->vcpu[idx] : NULL;
+}
+
+static inline struct vcpu *sched_unit2vcpu_cpu(const struct sched_unit *unit,
+                                               unsigned int cpu)
+{
+    struct vcpu *v = unit2vcpu_cpu(unit, cpu);
+
+    return (v && v->new_state == RUNSTATE_running) ? v : idle_vcpu[cpu];
+}
 
 static inline struct scheduler *dom_scheduler(const struct domain *d)
 {
@@ -95,28 +172,34 @@ static inline struct scheduler *dom_scheduler(const struct domain *d)
     return &ops;
 }
 
-static inline struct scheduler *vcpu_scheduler(const struct vcpu *v)
+static inline struct scheduler *unit_scheduler(const struct sched_unit *unit)
 {
-    struct domain *d = v->domain;
+    struct domain *d = unit->domain;
 
     if ( likely(d->cpupool != NULL) )
         return d->cpupool->sched;
 
     /*
-     * If d->cpupool is NULL, this is a vCPU of the idle domain. And this
+     * If d->cpupool is NULL, this is a unit of the idle domain. And this
      * case is special because the idle domain does not really belong to
      * a cpupool and, hence, doesn't really have a scheduler). In fact, its
-     * vCPUs (may) run on pCPUs which are in different pools, with different
+     * units (may) run on pCPUs which are in different pools, with different
      * schedulers.
      *
      * What we want, in this case, is the scheduler of the pCPU where this
-     * particular idle vCPU is running. And, since v->processor never changes
-     * for idle vCPUs, it is safe to use it, with no locks, to figure that out.
+     * particular idle unit is running. And, since unit->res never changes
+     * for idle units, it is safe to use it, with no locks, to figure that out.
      */
+
     ASSERT(is_idle_domain(d));
-    return per_cpu(scheduler, v->processor);
+    return unit->res->scheduler;
 }
-#define VCPU2ONLINE(_v) cpupool_domain_cpumask((_v)->domain)
+
+static inline struct scheduler *vcpu_scheduler(const struct vcpu *v)
+{
+    return unit_scheduler(v->sched_unit);
+}
+#define VCPU2ONLINE(_v) cpupool_domain_master_cpumask((_v)->domain)
 
 static inline void trace_runstate_change(struct vcpu *v, int new_state)
 {
@@ -160,7 +243,7 @@ static inline void vcpu_urgent_count_update(struct vcpu *v)
              !test_bit(v->vcpu_id, v->domain->poll_mask) )
         {
             v->is_urgent = 0;
-            atomic_dec(&per_cpu(schedule_data,v->processor).urgent_count);
+            atomic_dec(&per_cpu(sched_urgent_count, v->processor));
         }
     }
     else
@@ -169,7 +252,7 @@ static inline void vcpu_urgent_count_update(struct vcpu *v)
              unlikely(test_bit(v->vcpu_id, v->domain->poll_mask)) )
         {
             v->is_urgent = 1;
-            atomic_inc(&per_cpu(schedule_data,v->processor).urgent_count);
+            atomic_inc(&per_cpu(sched_urgent_count, v->processor));
         }
     }
 }
@@ -178,13 +261,21 @@ static inline void vcpu_runstate_change(
     struct vcpu *v, int new_state, s_time_t new_entry_time)
 {
     s_time_t delta;
+    struct sched_unit *unit = v->sched_unit;
 
-    ASSERT(v->runstate.state != new_state);
-    ASSERT(spin_is_locked(per_cpu(schedule_data,v->processor).schedule_lock));
+    ASSERT(spin_is_locked(get_sched_res(v->processor)->schedule_lock));
+    if ( v->runstate.state == new_state )
+        return;
 
     vcpu_urgent_count_update(v);
 
     trace_runstate_change(v, new_state);
+
+    if ( !is_idle_vcpu(v) )
+    {
+        unit->runstate_cnt[v->runstate.state]--;
+        unit->runstate_cnt[new_state]++;
+    }
 
     delta = new_entry_time - v->runstate.state_entry_time;
     if ( delta > 0 )
@@ -196,18 +287,37 @@ static inline void vcpu_runstate_change(
     v->runstate.state = new_state;
 }
 
+void sched_guest_idle(void (*idle) (void), unsigned int cpu)
+{
+    /*
+     * Another vcpu of the unit is active in guest context while this one is
+     * idle. In case of a scheduling event we don't want to have high latencies
+     * due to a cpu needing to wake up from deep C state for joining the
+     * rendezvous, so avoid those deep C states by incrementing the urgent
+     * count of the cpu.
+     */
+    atomic_inc(&per_cpu(sched_urgent_count, cpu));
+    idle();
+    atomic_dec(&per_cpu(sched_urgent_count, cpu));
+}
+
 void vcpu_runstate_get(struct vcpu *v, struct vcpu_runstate_info *runstate)
 {
-    spinlock_t *lock = likely(v == current) ? NULL : vcpu_schedule_lock_irq(v);
+    spinlock_t *lock;
     s_time_t delta;
 
+    rcu_read_lock(&sched_res_rculock);
+
+    lock = likely(v == current) ? NULL : unit_schedule_lock_irq(v->sched_unit);
     memcpy(runstate, &v->runstate, sizeof(*runstate));
     delta = NOW() - runstate->state_entry_time;
     if ( delta > 0 )
         runstate->time[runstate->state] += delta;
 
     if ( unlikely(lock != NULL) )
-        vcpu_schedule_unlock_irq(lock, v);
+        unit_schedule_unlock_irq(lock, v->sched_unit);
+
+    rcu_read_unlock(&sched_res_rculock);
 }
 
 uint64_t get_cpu_idle_time(unsigned int cpu)
@@ -253,63 +363,256 @@ static void sched_spin_unlock_double(spinlock_t *lock1, spinlock_t *lock2,
     spin_unlock_irqrestore(lock1, flags);
 }
 
-int sched_init_vcpu(struct vcpu *v, unsigned int processor)
+static void sched_free_unit_mem(struct sched_unit *unit)
+{
+    struct sched_unit *prev_unit;
+    struct domain *d = unit->domain;
+
+    if ( d->sched_unit_list == unit )
+        d->sched_unit_list = unit->next_in_list;
+    else
+    {
+        for_each_sched_unit ( d, prev_unit )
+        {
+            if ( prev_unit->next_in_list == unit )
+            {
+                prev_unit->next_in_list = unit->next_in_list;
+                break;
+            }
+        }
+    }
+
+    free_cpumask_var(unit->cpu_hard_affinity);
+    free_cpumask_var(unit->cpu_hard_affinity_saved);
+    free_cpumask_var(unit->cpu_soft_affinity);
+
+    xfree(unit);
+}
+
+static void sched_free_unit(struct sched_unit *unit, struct vcpu *v)
+{
+    struct vcpu *vunit;
+    unsigned int cnt = 0;
+
+    /* Don't count to be released vcpu, might be not in vcpu list yet. */
+    for_each_sched_unit_vcpu ( unit, vunit )
+        if ( vunit != v )
+            cnt++;
+
+    v->sched_unit = NULL;
+    unit->runstate_cnt[v->runstate.state]--;
+
+    if ( unit->vcpu_list == v )
+        unit->vcpu_list = v->next_in_list;
+
+    if ( !cnt )
+        sched_free_unit_mem(unit);
+}
+
+static void sched_unit_add_vcpu(struct sched_unit *unit, struct vcpu *v)
+{
+    v->sched_unit = unit;
+
+    /* All but idle vcpus are allocated with sequential vcpu_id. */
+    if ( !unit->vcpu_list || unit->vcpu_list->vcpu_id > v->vcpu_id )
+    {
+        unit->vcpu_list = v;
+        /*
+         * unit_id is always the same as lowest vcpu_id of unit.
+         * This is used for stopping for_each_sched_unit_vcpu() loop and in
+         * order to support cpupools with different granularities.
+         */
+        unit->unit_id = v->vcpu_id;
+    }
+    unit->runstate_cnt[v->runstate.state]++;
+}
+
+static struct sched_unit *sched_alloc_unit_mem(void)
+{
+    struct sched_unit *unit;
+
+    unit = xzalloc(struct sched_unit);
+    if ( !unit )
+        return NULL;
+
+    if ( !zalloc_cpumask_var(&unit->cpu_hard_affinity) ||
+         !zalloc_cpumask_var(&unit->cpu_hard_affinity_saved) ||
+         !zalloc_cpumask_var(&unit->cpu_soft_affinity) )
+    {
+        sched_free_unit_mem(unit);
+        unit = NULL;
+    }
+
+    return unit;
+}
+
+static void sched_domain_insert_unit(struct sched_unit *unit, struct domain *d)
+{
+    struct sched_unit **prev_unit;
+
+    unit->domain = d;
+
+    for ( prev_unit = &d->sched_unit_list; *prev_unit;
+          prev_unit = &(*prev_unit)->next_in_list )
+        if ( (*prev_unit)->next_in_list &&
+             (*prev_unit)->next_in_list->unit_id > unit->unit_id )
+            break;
+
+    unit->next_in_list = *prev_unit;
+    *prev_unit = unit;
+}
+
+static struct sched_unit *sched_alloc_unit(struct vcpu *v)
+{
+    struct sched_unit *unit;
+    struct domain *d = v->domain;
+    unsigned int gran = cpupool_get_granularity(d->cpupool);
+
+    for_each_sched_unit ( d, unit )
+        if ( unit->unit_id / gran == v->vcpu_id / gran )
+            break;
+
+    if ( unit )
+    {
+        sched_unit_add_vcpu(unit, v);
+        return unit;
+    }
+
+    if ( (unit = sched_alloc_unit_mem()) == NULL )
+        return NULL;
+
+    sched_unit_add_vcpu(unit, v);
+    sched_domain_insert_unit(unit, d);
+
+    return unit;
+}
+
+static unsigned int sched_select_initial_cpu(const struct vcpu *v)
+{
+    const struct domain *d = v->domain;
+    nodeid_t node;
+    spinlock_t *lock;
+    unsigned long flags;
+    unsigned int cpu_ret, cpu = smp_processor_id();
+    cpumask_t *cpus = cpumask_scratch_cpu(cpu);
+
+    lock = pcpu_schedule_lock_irqsave(cpu, &flags);
+    cpumask_clear(cpus);
+    for_each_node_mask ( node, d->node_affinity )
+        cpumask_or(cpus, cpus, &node_to_cpumask(node));
+    cpumask_and(cpus, cpus, d->cpupool->cpu_valid);
+    if ( cpumask_empty(cpus) )
+        cpumask_copy(cpus, d->cpupool->cpu_valid);
+
+    if ( v->vcpu_id == 0 )
+        cpu_ret = cpumask_first(cpus);
+    else
+    {
+        /* We can rely on previous vcpu being available. */
+        ASSERT(!is_idle_domain(d));
+
+        cpu_ret = cpumask_cycle(d->vcpu[v->vcpu_id - 1]->processor, cpus);
+    }
+
+    pcpu_schedule_unlock_irqrestore(lock, flags, cpu);
+
+    return cpu_ret;
+}
+
+int sched_init_vcpu(struct vcpu *v)
 {
     struct domain *d = v->domain;
+    struct sched_unit *unit;
+    unsigned int processor;
 
-    v->processor = processor;
+    if ( (unit = sched_alloc_unit(v)) == NULL )
+        return 1;
+
+    if ( is_idle_domain(d) )
+        processor = v->vcpu_id;
+    else
+        processor = sched_select_initial_cpu(v);
 
     /* Initialise the per-vcpu timers. */
-    init_timer(&v->periodic_timer, vcpu_periodic_timer_fn,
-               v, v->processor);
-    init_timer(&v->singleshot_timer, vcpu_singleshot_timer_fn,
-               v, v->processor);
-    init_timer(&v->poll_timer, poll_timer_fn,
-               v, v->processor);
+    spin_lock_init(&v->periodic_timer_lock);
+    init_timer(&v->periodic_timer, vcpu_periodic_timer_fn, v, processor);
+    init_timer(&v->singleshot_timer, vcpu_singleshot_timer_fn, v, processor);
+    init_timer(&v->poll_timer, poll_timer_fn, v, processor);
 
-    v->sched_priv = SCHED_OP(dom_scheduler(d), alloc_vdata, v,
-                     d->sched_priv);
-    if ( v->sched_priv == NULL )
+    /* If this is not the first vcpu of the unit we are done. */
+    if ( unit->priv != NULL )
+    {
+        v->processor = processor;
+        return 0;
+    }
+
+    rcu_read_lock(&sched_res_rculock);
+
+    /* The first vcpu of an unit can be set via sched_set_res(). */
+    sched_set_res(unit, get_sched_res(processor));
+
+    unit->priv = sched_alloc_udata(dom_scheduler(d), unit, d->sched_priv);
+    if ( unit->priv == NULL )
+    {
+        sched_free_unit(unit, v);
+        rcu_read_unlock(&sched_res_rculock);
         return 1;
+    }
 
     /*
      * Initialize affinity settings. The idler, and potentially
      * domain-0 VCPUs, are pinned onto their respective physical CPUs.
      */
-    if ( is_idle_domain(d) || d->is_pinned )
-        sched_set_affinity(v, cpumask_of(processor), &cpumask_all);
+    if ( is_idle_domain(d) || (is_hardware_domain(d) && opt_dom0_vcpus_pin) )
+        sched_set_affinity(unit, cpumask_of(processor), &cpumask_all);
     else
-        sched_set_affinity(v, &cpumask_all, &cpumask_all);
+        sched_set_affinity(unit, &cpumask_all, &cpumask_all);
 
     /* Idle VCPUs are scheduled immediately, so don't put them in runqueue. */
     if ( is_idle_domain(d) )
     {
-        per_cpu(schedule_data, v->processor).curr = v;
+        get_sched_res(v->processor)->curr = unit;
+        get_sched_res(v->processor)->sched_unit_idle = unit;
         v->is_running = 1;
+        unit->is_running = true;
+        unit->state_entry_time = NOW();
     }
     else
     {
-        SCHED_OP(dom_scheduler(d), insert_vcpu, v);
+        sched_insert_unit(dom_scheduler(d), unit);
     }
+
+    rcu_read_unlock(&sched_res_rculock);
 
     return 0;
 }
 
-static void sched_move_irqs(struct vcpu *v)
+static void vcpu_move_irqs(struct vcpu *v)
 {
     arch_move_irqs(v);
     evtchn_move_pirqs(v);
 }
 
+static void sched_move_irqs(const struct sched_unit *unit)
+{
+    struct vcpu *v;
+
+    for_each_sched_unit_vcpu ( unit, v )
+        vcpu_move_irqs(v);
+}
+
 int sched_move_domain(struct domain *d, struct cpupool *c)
 {
     struct vcpu *v;
-    unsigned int new_p;
-    void **vcpu_priv;
+    struct sched_unit *unit;
+    unsigned int new_p, unit_idx;
+    void **unit_priv;
     void *domdata;
-    void *vcpudata;
+    void *unitdata;
     struct scheduler *old_ops;
     void *old_domdata;
+    unsigned int gran = cpupool_get_granularity(c);
+    int ret = 0;
 
     for_each_vcpu ( d, v )
     {
@@ -317,28 +620,37 @@ int sched_move_domain(struct domain *d, struct cpupool *c)
             return -EBUSY;
     }
 
+    rcu_read_lock(&sched_res_rculock);
+
     domdata = sched_alloc_domdata(c->sched, d);
     if ( IS_ERR(domdata) )
-        return PTR_ERR(domdata);
-
-    vcpu_priv = xzalloc_array(void *, d->max_vcpus);
-    if ( vcpu_priv == NULL )
     {
-        sched_free_domdata(c->sched, domdata);
-        return -ENOMEM;
+        ret = PTR_ERR(domdata);
+        goto out;
     }
 
-    for_each_vcpu ( d, v )
+    unit_priv = xzalloc_array(void *, DIV_ROUND_UP(d->max_vcpus, gran));
+    if ( unit_priv == NULL )
     {
-        vcpu_priv[v->vcpu_id] = SCHED_OP(c->sched, alloc_vdata, v, domdata);
-        if ( vcpu_priv[v->vcpu_id] == NULL )
+        sched_free_domdata(c->sched, domdata);
+        ret = -ENOMEM;
+        goto out;
+    }
+
+    unit_idx = 0;
+    for_each_sched_unit ( d, unit )
+    {
+        unit_priv[unit_idx] = sched_alloc_udata(c->sched, unit, domdata);
+        if ( unit_priv[unit_idx] == NULL )
         {
-            for_each_vcpu ( d, v )
-                xfree(vcpu_priv[v->vcpu_id]);
-            xfree(vcpu_priv);
+            for ( unit_idx = 0; unit_priv[unit_idx]; unit_idx++ )
+                sched_free_udata(c->sched, unit_priv[unit_idx]);
+            xfree(unit_priv);
             sched_free_domdata(c->sched, domdata);
-            return -ENOMEM;
+            ret = -ENOMEM;
+            goto out;
         }
+        unit_idx++;
     }
 
     domain_pause(d);
@@ -346,46 +658,52 @@ int sched_move_domain(struct domain *d, struct cpupool *c)
     old_ops = dom_scheduler(d);
     old_domdata = d->sched_priv;
 
-    for_each_vcpu ( d, v )
+    for_each_sched_unit ( d, unit )
     {
-        SCHED_OP(old_ops, remove_vcpu, v);
+        sched_remove_unit(old_ops, unit);
     }
 
     d->cpupool = c;
     d->sched_priv = domdata;
 
     new_p = cpumask_first(c->cpu_valid);
-    for_each_vcpu ( d, v )
+    unit_idx = 0;
+    for_each_sched_unit ( d, unit )
     {
         spinlock_t *lock;
+        unsigned int unit_p = new_p;
 
-        vcpudata = v->sched_priv;
+        unitdata = unit->priv;
 
-        migrate_timer(&v->periodic_timer, new_p);
-        migrate_timer(&v->singleshot_timer, new_p);
-        migrate_timer(&v->poll_timer, new_p);
+        for_each_sched_unit_vcpu ( unit, v )
+        {
+            migrate_timer(&v->periodic_timer, new_p);
+            migrate_timer(&v->singleshot_timer, new_p);
+            migrate_timer(&v->poll_timer, new_p);
+            new_p = cpumask_cycle(new_p, c->cpu_valid);
+        }
 
-        lock = vcpu_schedule_lock_irq(v);
+        lock = unit_schedule_lock_irq(unit);
 
-        sched_set_affinity(v, &cpumask_all, &cpumask_all);
+        sched_set_affinity(unit, &cpumask_all, &cpumask_all);
 
-        v->processor = new_p;
+        sched_set_res(unit, get_sched_res(unit_p));
         /*
          * With v->processor modified we must not
          * - make any further changes assuming we hold the scheduler lock,
-         * - use vcpu_schedule_unlock_irq().
+         * - use unit_schedule_unlock_irq().
          */
         spin_unlock_irq(lock);
 
-        v->sched_priv = vcpu_priv[v->vcpu_id];
+        unit->priv = unit_priv[unit_idx];
         if ( !d->is_dying )
-            sched_move_irqs(v);
+            sched_move_irqs(unit);
 
-        new_p = cpumask_cycle(new_p, c->cpu_valid);
+        sched_insert_unit(c->sched, unit);
 
-        SCHED_OP(c->sched, insert_vcpu, v);
+        sched_free_udata(old_ops, unitdata);
 
-        SCHED_OP(old_ops, free_vdata, vcpudata);
+        unit_idx++;
     }
 
     domain_update_node_affinity(d);
@@ -394,20 +712,37 @@ int sched_move_domain(struct domain *d, struct cpupool *c)
 
     sched_free_domdata(old_ops, old_domdata);
 
-    xfree(vcpu_priv);
+    xfree(unit_priv);
 
-    return 0;
+out:
+    rcu_read_unlock(&sched_res_rculock);
+
+    return ret;
 }
 
 void sched_destroy_vcpu(struct vcpu *v)
 {
+    struct sched_unit *unit = v->sched_unit;
+
     kill_timer(&v->periodic_timer);
     kill_timer(&v->singleshot_timer);
     kill_timer(&v->poll_timer);
     if ( test_and_clear_bool(v->is_urgent) )
-        atomic_dec(&per_cpu(schedule_data, v->processor).urgent_count);
-    SCHED_OP(vcpu_scheduler(v), remove_vcpu, v);
-    SCHED_OP(vcpu_scheduler(v), free_vdata, v->sched_priv);
+        atomic_dec(&per_cpu(sched_urgent_count, v->processor));
+    /*
+     * Vcpus are being destroyed top-down. So being the first vcpu of an unit
+     * is the same as being the only one.
+     */
+    if ( unit->vcpu_list == v )
+    {
+        rcu_read_lock(&sched_res_rculock);
+
+        sched_remove_unit(vcpu_scheduler(v), unit);
+        sched_free_udata(vcpu_scheduler(v), unit->priv);
+        sched_free_unit(unit, v);
+
+        rcu_read_unlock(&sched_res_rculock);
+    }
 }
 
 int sched_init_domain(struct domain *d, int poolid)
@@ -424,7 +759,12 @@ int sched_init_domain(struct domain *d, int poolid)
     SCHED_STAT_CRANK(dom_init);
     TRACE_1D(TRC_SCHED_DOM_ADD, d->domain_id);
 
+    rcu_read_lock(&sched_res_rculock);
+
     sdom = sched_alloc_domdata(dom_scheduler(d), d);
+
+    rcu_read_unlock(&sched_res_rculock);
+
     if ( IS_ERR(sdom) )
         return PTR_ERR(sdom);
 
@@ -442,23 +782,37 @@ void sched_destroy_domain(struct domain *d)
         SCHED_STAT_CRANK(dom_destroy);
         TRACE_1D(TRC_SCHED_DOM_REM, d->domain_id);
 
+        rcu_read_lock(&sched_res_rculock);
+
         sched_free_domdata(dom_scheduler(d), d->sched_priv);
         d->sched_priv = NULL;
+
+        rcu_read_unlock(&sched_res_rculock);
 
         cpupool_rm_domain(d);
     }
 }
 
-void vcpu_sleep_nosync_locked(struct vcpu *v)
+static void vcpu_sleep_nosync_locked(struct vcpu *v)
 {
-    ASSERT(spin_is_locked(per_cpu(schedule_data,v->processor).schedule_lock));
+    struct sched_unit *unit = v->sched_unit;
+
+    ASSERT(spin_is_locked(get_sched_res(v->processor)->schedule_lock));
 
     if ( likely(!vcpu_runnable(v)) )
     {
         if ( v->runstate.state == RUNSTATE_runnable )
             vcpu_runstate_change(v, RUNSTATE_offline, NOW());
 
-        SCHED_OP(vcpu_scheduler(v), sleep, v);
+        /* Only put unit to sleep in case all vcpus are not runnable. */
+        if ( likely(!unit_runnable(unit)) )
+            sched_sleep(unit_scheduler(unit), unit);
+        else if ( unit_running(unit) > 1 && v->is_running &&
+                  !v->force_context_switch )
+        {
+            v->force_context_switch = true;
+            cpu_raise_softirq(v->processor, SCHED_SLAVE_SOFTIRQ);
+        }
     }
 }
 
@@ -469,11 +823,15 @@ void vcpu_sleep_nosync(struct vcpu *v)
 
     TRACE_2D(TRC_SCHED_SLEEP, v->domain->domain_id, v->vcpu_id);
 
-    lock = vcpu_schedule_lock_irqsave(v, &flags);
+    rcu_read_lock(&sched_res_rculock);
+
+    lock = unit_schedule_lock_irqsave(v->sched_unit, &flags);
 
     vcpu_sleep_nosync_locked(v);
 
-    vcpu_schedule_unlock_irqrestore(lock, flags, v);
+    unit_schedule_unlock_irqrestore(lock, flags, v->sched_unit);
+
+    rcu_read_unlock(&sched_res_rculock);
 }
 
 void vcpu_sleep_sync(struct vcpu *v)
@@ -490,16 +848,29 @@ void vcpu_wake(struct vcpu *v)
 {
     unsigned long flags;
     spinlock_t *lock;
+    struct sched_unit *unit = v->sched_unit;
 
     TRACE_2D(TRC_SCHED_WAKE, v->domain->domain_id, v->vcpu_id);
 
-    lock = vcpu_schedule_lock_irqsave(v, &flags);
+    rcu_read_lock(&sched_res_rculock);
+
+    lock = unit_schedule_lock_irqsave(unit, &flags);
 
     if ( likely(vcpu_runnable(v)) )
     {
         if ( v->runstate.state >= RUNSTATE_blocked )
             vcpu_runstate_change(v, RUNSTATE_runnable, NOW());
-        SCHED_OP(vcpu_scheduler(v), wake, v);
+        /*
+         * Call sched_wake() unconditionally, even if unit is running already.
+         * We might have not been de-scheduled after vcpu_sleep_nosync_locked()
+         * and are now to be woken up again.
+         */
+        sched_wake(unit_scheduler(unit), unit);
+        if ( unit->is_running && !v->is_running && !v->force_context_switch )
+        {
+            v->force_context_switch = true;
+            cpu_raise_softirq(v->processor, SCHED_SLAVE_SOFTIRQ);
+        }
     }
     else if ( !(v->pause_flags & VPF_blocked) )
     {
@@ -507,7 +878,9 @@ void vcpu_wake(struct vcpu *v)
             vcpu_runstate_change(v, RUNSTATE_offline, NOW());
     }
 
-    vcpu_schedule_unlock_irqrestore(lock, flags, v);
+    unit_schedule_unlock_irqrestore(lock, flags, unit);
+
+    rcu_read_unlock(&sched_res_rculock);
 }
 
 void vcpu_unblock(struct vcpu *v)
@@ -532,66 +905,45 @@ void vcpu_unblock(struct vcpu *v)
 }
 
 /*
- * Do the actual movement of a vcpu from old to new CPU. Locks for *both*
+ * Do the actual movement of an unit from old to new CPU. Locks for *both*
  * CPUs needs to have been taken already when calling this!
  */
-static void vcpu_move_locked(struct vcpu *v, unsigned int new_cpu)
+static void sched_unit_move_locked(struct sched_unit *unit,
+                                   unsigned int new_cpu)
 {
-    unsigned int old_cpu = v->processor;
+    unsigned int old_cpu = unit->res->master_cpu;
+    struct vcpu *v;
+
+    rcu_read_lock(&sched_res_rculock);
 
     /*
      * Transfer urgency status to new CPU before switching CPUs, as
      * once the switch occurs, v->is_urgent is no longer protected by
      * the per-CPU scheduler lock we are holding.
      */
-    if ( unlikely(v->is_urgent) && (old_cpu != new_cpu) )
+    for_each_sched_unit_vcpu ( unit, v )
     {
-        atomic_inc(&per_cpu(schedule_data, new_cpu).urgent_count);
-        atomic_dec(&per_cpu(schedule_data, old_cpu).urgent_count);
+        if ( unlikely(v->is_urgent) && (old_cpu != new_cpu) )
+        {
+            atomic_inc(&per_cpu(sched_urgent_count, new_cpu));
+            atomic_dec(&per_cpu(sched_urgent_count, old_cpu));
+        }
     }
 
     /*
      * Actual CPU switch to new CPU.  This is safe because the lock
-     * pointer cant' change while the current lock is held.
+     * pointer can't change while the current lock is held.
      */
-    if ( vcpu_scheduler(v)->migrate )
-        SCHED_OP(vcpu_scheduler(v), migrate, v, new_cpu);
-    else
-        v->processor = new_cpu;
-}
+    sched_migrate(unit_scheduler(unit), unit, new_cpu);
 
-/*
- * Move a vcpu from its current processor to a target new processor,
- * without asking the scheduler to do any placement. This is intended
- * for being called from special contexts, where things are quiet
- * enough that no contention is supposed to happen (i.e., during
- * shutdown or software suspend, like ACPI S3).
- */
-static void vcpu_move_nosched(struct vcpu *v, unsigned int new_cpu)
-{
-    unsigned long flags;
-    spinlock_t *lock, *new_lock;
-
-    ASSERT(system_state == SYS_STATE_suspend);
-    ASSERT(!vcpu_runnable(v) && (atomic_read(&v->pause_count) ||
-                                 atomic_read(&v->domain->pause_count)));
-
-    lock = per_cpu(schedule_data, v->processor).schedule_lock;
-    new_lock = per_cpu(schedule_data, new_cpu).schedule_lock;
-
-    sched_spin_lock_double(lock, new_lock, &flags);
-    ASSERT(new_cpu != v->processor);
-    vcpu_move_locked(v, new_cpu);
-    sched_spin_unlock_double(lock, new_lock, flags);
-
-    sched_move_irqs(v);
+    rcu_read_unlock(&sched_res_rculock);
 }
 
 /*
  * Initiating migration
  *
- * In order to migrate, we need the vcpu in question to have stopped
- * running and had SCHED_OP(sleep) called (to take it off any
+ * In order to migrate, we need the unit in question to have stopped
+ * running and have called sched_sleep() (to take it off any
  * runqueues, for instance); and if it is currently running, it needs
  * to be scheduled out.  Finally, we need to hold the scheduling locks
  * for both the processor we're migrating from, and the processor
@@ -605,37 +957,46 @@ static void vcpu_move_nosched(struct vcpu *v, unsigned int new_cpu)
  * These steps are encapsulated in the following two functions; they
  * should be called like this:
  *
- *     lock = vcpu_schedule_lock_irq(v);
- *     vcpu_migrate_start(v);
- *     vcpu_schedule_unlock_irq(lock, v)
- *     vcpu_migrate_finish(v);
+ *     lock = unit_schedule_lock_irq(unit);
+ *     sched_unit_migrate_start(unit);
+ *     unit_schedule_unlock_irq(lock, unit)
+ *     sched_unit_migrate_finish(unit);
  *
- * vcpu_migrate_finish() will do the work now if it can, or simply
- * return if it can't (because v is still running); in that case
- * vcpu_migrate_finish() will be called by context_saved().
+ * sched_unit_migrate_finish() will do the work now if it can, or simply
+ * return if it can't (because unit is still running); in that case
+ * sched_unit_migrate_finish() will be called by unit_context_saved().
  */
-void vcpu_migrate_start(struct vcpu *v)
+static void sched_unit_migrate_start(struct sched_unit *unit)
 {
-    set_bit(_VPF_migrating, &v->pause_flags);
-    vcpu_sleep_nosync_locked(v);
+    struct vcpu *v;
+
+    for_each_sched_unit_vcpu ( unit, v )
+    {
+        set_bit(_VPF_migrating, &v->pause_flags);
+        vcpu_sleep_nosync_locked(v);
+    }
 }
 
-static void vcpu_migrate_finish(struct vcpu *v)
+static void sched_unit_migrate_finish(struct sched_unit *unit)
 {
     unsigned long flags;
     unsigned int old_cpu, new_cpu;
     spinlock_t *old_lock, *new_lock;
     bool_t pick_called = 0;
+    struct vcpu *v;
 
     /*
-     * If the vcpu is currently running, this will be handled by
-     * context_saved(); and in any case, if the bit is cleared, then
+     * If the unit is currently running, this will be handled by
+     * unit_context_saved(); and in any case, if the bit is cleared, then
      * someone else has already done the work so we don't need to.
      */
-    if ( v->is_running || !test_bit(_VPF_migrating, &v->pause_flags) )
+    if ( unit->is_running )
         return;
+    for_each_sched_unit_vcpu ( unit, v )
+        if ( !test_bit(_VPF_migrating, &v->pause_flags) )
+            return;
 
-    old_cpu = new_cpu = v->processor;
+    old_cpu = new_cpu = unit->res->master_cpu;
     for ( ; ; )
     {
         /*
@@ -643,28 +1004,29 @@ static void vcpu_migrate_finish(struct vcpu *v)
          * are not correct any longer after evaluating old and new cpu holding
          * the locks.
          */
-        old_lock = per_cpu(schedule_data, old_cpu).schedule_lock;
-        new_lock = per_cpu(schedule_data, new_cpu).schedule_lock;
+        old_lock = get_sched_res(old_cpu)->schedule_lock;
+        new_lock = get_sched_res(new_cpu)->schedule_lock;
 
         sched_spin_lock_double(old_lock, new_lock, &flags);
 
-        old_cpu = v->processor;
-        if ( old_lock == per_cpu(schedule_data, old_cpu).schedule_lock )
+        old_cpu = unit->res->master_cpu;
+        if ( old_lock == get_sched_res(old_cpu)->schedule_lock )
         {
             /*
              * If we selected a CPU on the previosu iteration, check if it
              * remains suitable for running this vCPU.
              */
             if ( pick_called &&
-                 (new_lock == per_cpu(schedule_data, new_cpu).schedule_lock) &&
-                 cpumask_test_cpu(new_cpu, v->cpu_hard_affinity) &&
-                 cpumask_test_cpu(new_cpu, v->domain->cpupool->cpu_valid) )
+                 (new_lock == get_sched_res(new_cpu)->schedule_lock) &&
+                 cpumask_test_cpu(new_cpu, unit->cpu_hard_affinity) &&
+                 cpumask_test_cpu(new_cpu, unit->domain->cpupool->cpu_valid) )
                 break;
 
             /* Select a new CPU. */
-            new_cpu = SCHED_OP(vcpu_scheduler(v), pick_cpu, v);
-            if ( (new_lock == per_cpu(schedule_data, new_cpu).schedule_lock) &&
-                 cpumask_test_cpu(new_cpu, v->domain->cpupool->cpu_valid) )
+            new_cpu = sched_pick_resource(unit_scheduler(unit),
+                                          unit)->master_cpu;
+            if ( (new_lock == get_sched_res(new_cpu)->schedule_lock) &&
+                 cpumask_test_cpu(new_cpu, unit->domain->cpupool->cpu_valid) )
                 break;
             pick_called = 1;
         }
@@ -685,212 +1047,222 @@ static void vcpu_migrate_finish(struct vcpu *v)
      * because they both happen in (different) spinlock regions, and those
      * regions are strictly serialised.
      */
-    if ( v->is_running ||
-         !test_and_clear_bit(_VPF_migrating, &v->pause_flags) )
+    if ( unit->is_running )
     {
         sched_spin_unlock_double(old_lock, new_lock, flags);
         return;
     }
+    for_each_sched_unit_vcpu ( unit, v )
+    {
+        if ( !test_and_clear_bit(_VPF_migrating, &v->pause_flags) )
+        {
+            sched_spin_unlock_double(old_lock, new_lock, flags);
+            return;
+        }
+    }
 
-    vcpu_move_locked(v, new_cpu);
+    sched_unit_move_locked(unit, new_cpu);
 
     sched_spin_unlock_double(old_lock, new_lock, flags);
 
     if ( old_cpu != new_cpu )
-        sched_move_irqs(v);
+    {
+        /* Vcpus are moved to other pcpus, commit their states to memory. */
+        for_each_sched_unit_vcpu ( unit, v )
+            sync_vcpu_execstate(v);
+        sched_move_irqs(unit);
+    }
 
     /* Wake on new CPU. */
-    vcpu_wake(v);
+    for_each_sched_unit_vcpu ( unit, v )
+        vcpu_wake(v);
 }
 
-/*
- * Force a VCPU through a deschedule/reschedule path.
- * For example, using this when setting the periodic timer period means that
- * most periodic-timer state need only be touched from within the scheduler
- * which can thus be done without need for synchronisation.
- */
-void vcpu_force_reschedule(struct vcpu *v)
+static bool sched_check_affinity_broken(const struct sched_unit *unit)
 {
-    spinlock_t *lock = vcpu_schedule_lock_irq(v);
+    const struct vcpu *v;
 
-    if ( v->is_running )
-        vcpu_migrate_start(v);
+    for_each_sched_unit_vcpu ( unit, v )
+        if ( v->affinity_broken )
+            return true;
 
-    vcpu_schedule_unlock_irq(lock, v);
+    return false;
+}
 
-    vcpu_migrate_finish(v);
+static void sched_reset_affinity_broken(struct sched_unit *unit)
+{
+    struct vcpu *v;
+
+    for_each_sched_unit_vcpu ( unit, v )
+        v->affinity_broken = false;
 }
 
 void restore_vcpu_affinity(struct domain *d)
 {
     unsigned int cpu = smp_processor_id();
-    struct vcpu *v;
+    struct sched_unit *unit;
 
     ASSERT(system_state == SYS_STATE_resume);
 
-    for_each_vcpu ( d, v )
+    rcu_read_lock(&sched_res_rculock);
+
+    for_each_sched_unit ( d, unit )
     {
         spinlock_t *lock;
-        unsigned int old_cpu = v->processor;
+        unsigned int old_cpu = sched_unit_master(unit);
+        struct sched_resource *res;
 
-        ASSERT(!vcpu_runnable(v));
-
-        lock = vcpu_schedule_lock_irq(v);
-
-        if ( v->affinity_broken )
-        {
-            sched_set_affinity(v, v->cpu_hard_affinity_saved, NULL);
-            v->affinity_broken = 0;
-
-        }
+        ASSERT(!unit_runnable(unit));
 
         /*
-         * During suspend (in cpu_disable_scheduler()), we moved every vCPU
-         * to BSP (which, as of now, is pCPU 0), as a temporary measure to
-         * allow the nonboot processors to have their data structure freed
-         * and go to sleep. But nothing guardantees that the BSP is a valid
-         * pCPU for a particular domain.
+         * Re-assign the initial processor as after resume we have no
+         * guarantee the old processor has come back to life again.
          *
          * Therefore, here, before actually unpausing the domains, we should
          * set v->processor of each of their vCPUs to something that will
          * make sense for the scheduler of the cpupool in which they are in.
          */
-        cpumask_and(cpumask_scratch_cpu(cpu), v->cpu_hard_affinity,
-                    cpupool_domain_cpumask(v->domain));
-        v->processor = cpumask_any(cpumask_scratch_cpu(cpu));
+        lock = unit_schedule_lock_irq(unit);
+
+        cpumask_and(cpumask_scratch_cpu(cpu), unit->cpu_hard_affinity,
+                    cpupool_domain_master_cpumask(d));
+        if ( cpumask_empty(cpumask_scratch_cpu(cpu)) )
+        {
+            if ( sched_check_affinity_broken(unit) )
+            {
+                sched_set_affinity(unit, unit->cpu_hard_affinity_saved, NULL);
+                sched_reset_affinity_broken(unit);
+                cpumask_and(cpumask_scratch_cpu(cpu), unit->cpu_hard_affinity,
+                            cpupool_domain_master_cpumask(d));
+            }
+
+            if ( cpumask_empty(cpumask_scratch_cpu(cpu)) )
+            {
+                /* Affinity settings of one vcpu are for the complete unit. */
+                printk(XENLOG_DEBUG "Breaking affinity for %pv\n",
+                       unit->vcpu_list);
+                sched_set_affinity(unit, &cpumask_all, NULL);
+                cpumask_and(cpumask_scratch_cpu(cpu), unit->cpu_hard_affinity,
+                            cpupool_domain_master_cpumask(d));
+            }
+        }
+
+        res = get_sched_res(cpumask_any(cpumask_scratch_cpu(cpu)));
+        sched_set_res(unit, res);
 
         spin_unlock_irq(lock);
 
-        lock = vcpu_schedule_lock_irq(v);
-        v->processor = SCHED_OP(vcpu_scheduler(v), pick_cpu, v);
+        /* v->processor might have changed, so reacquire the lock. */
+        lock = unit_schedule_lock_irq(unit);
+        res = sched_pick_resource(unit_scheduler(unit), unit);
+        sched_set_res(unit, res);
         spin_unlock_irq(lock);
 
-        if ( old_cpu != v->processor )
-            sched_move_irqs(v);
+        if ( old_cpu != sched_unit_master(unit) )
+            sched_move_irqs(unit);
     }
+
+    rcu_read_unlock(&sched_res_rculock);
 
     domain_update_node_affinity(d);
 }
 
 /*
- * This function is used by cpu_hotplug code from stop_machine context
+ * This function is used by cpu_hotplug code via cpu notifier chain
  * and from cpupools to switch schedulers on a cpu.
+ * Caller must get domlist_read_lock.
  */
 int cpu_disable_scheduler(unsigned int cpu)
 {
     struct domain *d;
-    struct vcpu *v;
     struct cpupool *c;
     cpumask_t online_affinity;
-    unsigned int new_cpu;
     int ret = 0;
 
-    c = per_cpu(cpupool, cpu);
-    if ( c == NULL )
-        return ret;
+    rcu_read_lock(&sched_res_rculock);
 
-    /*
-     * We'd need the domain RCU lock, but:
-     *  - when we are called from cpupool code, it's acquired there already;
-     *  - when we are called for CPU teardown, we're in stop-machine context,
-     *    so that's not be a problem.
-     */
+    c = get_sched_res(cpu)->cpupool;
+    if ( c == NULL )
+        goto out;
+
     for_each_domain_in_cpupool ( d, c )
     {
-        for_each_vcpu ( d, v )
+        struct sched_unit *unit;
+
+        for_each_sched_unit ( d, unit )
         {
             unsigned long flags;
-            spinlock_t *lock = vcpu_schedule_lock_irqsave(v, &flags);
+            spinlock_t *lock = unit_schedule_lock_irqsave(unit, &flags);
 
-            cpumask_and(&online_affinity, v->cpu_hard_affinity, c->cpu_valid);
+            cpumask_and(&online_affinity, unit->cpu_hard_affinity, c->cpu_valid);
             if ( cpumask_empty(&online_affinity) &&
-                 cpumask_test_cpu(cpu, v->cpu_hard_affinity) )
+                 cpumask_test_cpu(cpu, unit->cpu_hard_affinity) )
             {
-                if ( v->affinity_broken )
+                if ( sched_check_affinity_broken(unit) )
                 {
-                    /* The vcpu is temporarily pinned, can't move it. */
-                    vcpu_schedule_unlock_irqrestore(lock, flags, v);
+                    /* The unit is temporarily pinned, can't move it. */
+                    unit_schedule_unlock_irqrestore(lock, flags, unit);
                     ret = -EADDRINUSE;
                     break;
                 }
 
-                if (system_state == SYS_STATE_suspend)
-                {
-                    cpumask_copy(v->cpu_hard_affinity_saved,
-                                 v->cpu_hard_affinity);
-                    v->affinity_broken = 1;
-                }
-                else
-                    printk(XENLOG_DEBUG "Breaking affinity for %pv\n", v);
+                printk(XENLOG_DEBUG "Breaking affinity for %pv\n",
+                       unit->vcpu_list);
 
-                sched_set_affinity(v, &cpumask_all, NULL);
+                sched_set_affinity(unit, &cpumask_all, NULL);
             }
 
-            if ( v->processor != cpu )
+            if ( unit->res != get_sched_res(cpu) )
             {
-                /* The vcpu is not on this cpu, so we can move on. */
-                vcpu_schedule_unlock_irqrestore(lock, flags, v);
+                /* The unit is not on this cpu, so we can move on. */
+                unit_schedule_unlock_irqrestore(lock, flags, unit);
                 continue;
             }
 
-            /* If it is on this cpu, we must send it away. */
-            if ( unlikely(system_state == SYS_STATE_suspend) )
-            {
-                vcpu_schedule_unlock_irqrestore(lock, flags, v);
+            /* If it is on this cpu, we must send it away.
+             * We are doing some cpupool manipulations:
+             *  * we want to call the scheduler, and let it re-evaluation
+             *    the placement of the vcpu, taking into account the new
+             *    cpupool configuration;
+             *  * the scheduler will always find a suitable solution, or
+             *    things would have failed before getting in here.
+             */
+            sched_unit_migrate_start(unit);
+            unit_schedule_unlock_irqrestore(lock, flags, unit);
+            sched_unit_migrate_finish(unit);
 
-                /*
-                 * If we are doing a shutdown/suspend, it is not necessary to
-                 * ask the scheduler to chime in. In fact:
-                 *  * there is no reason for it: the end result we are after
-                 *    is just 'all the vcpus on the boot pcpu, and no vcpu
-                 *    anywhere else', so let's just go for it;
-                 *  * it's wrong, for cpupools with only non-boot pcpus, as
-                 *    the scheduler would always fail to send the vcpus away
-                 *    from the last online (non boot) pcpu!
-                 *
-                 * Therefore, in the shutdown/suspend case, we just pick up
-                 * one (still) online pcpu. Note that, at this stage, all
-                 * domains (including dom0) have been paused already, so we
-                 * do not expect any vcpu activity at all.
-                 */
-                cpumask_andnot(&online_affinity, &cpu_online_map,
-                               cpumask_of(cpu));
-                BUG_ON(cpumask_empty(&online_affinity));
-                /*
-                 * As boot cpu is, usually, pcpu #0, using cpumask_first()
-                 * will make us converge quicker.
-                 */
-                new_cpu = cpumask_first(&online_affinity);
-                vcpu_move_nosched(v, new_cpu);
-            }
-            else
-            {
-                /*
-                 * OTOH, if the system is still live, and we are here because
-                 * we are doing some cpupool manipulations:
-                 *  * we want to call the scheduler, and let it re-evaluation
-                 *    the placement of the vcpu, taking into account the new
-                 *    cpupool configuration;
-                 *  * the scheduler will always fine a suitable solution, or
-                 *    things would have failed before getting in here.
-                 */
-                vcpu_migrate_start(v);
-                vcpu_schedule_unlock_irqrestore(lock, flags, v);
-
-                vcpu_migrate_finish(v);
-
-                /*
-                 * The only caveat, in this case, is that if a vcpu active in
-                 * the hypervisor isn't migratable. In this case, the caller
-                 * should try again after releasing and reaquiring all locks.
-                 */
-                if ( v->processor == cpu )
-                    ret = -EAGAIN;
-            }
+            /*
+             * The only caveat, in this case, is that if a vcpu active in
+             * the hypervisor isn't migratable. In this case, the caller
+             * should try again after releasing and reaquiring all locks.
+             */
+            if ( unit->res == get_sched_res(cpu) )
+                ret = -EAGAIN;
         }
     }
 
+out:
+    rcu_read_unlock(&sched_res_rculock);
+
     return ret;
+}
+
+static int cpu_disable_scheduler_check(unsigned int cpu)
+{
+    struct domain *d;
+    struct vcpu *v;
+    struct cpupool *c;
+
+    c = get_sched_res(cpu)->cpupool;
+    if ( c == NULL )
+        return 0;
+
+    for_each_domain_in_cpupool ( d, c )
+        for_each_vcpu ( d, v )
+            if ( v->affinity_broken )
+                return -EADDRINUSE;
+
+    return 0;
 }
 
 /*
@@ -898,31 +1270,36 @@ int cpu_disable_scheduler(unsigned int cpu)
  * adjust_affinity hook may want to modify the vCPU state. However, when the
  * vCPU is being initialized (either for dom0 or domU) there is no risk of
  * races, and it's fine to not take the look (we're talking about
- * dom0_setup_vcpu() an sched_init_vcpu()).
+ * sched_setup_dom0_vcpus() an sched_init_vcpu()).
  */
-void sched_set_affinity(
-    struct vcpu *v, const cpumask_t *hard, const cpumask_t *soft)
+static void sched_set_affinity(
+    struct sched_unit *unit, const cpumask_t *hard, const cpumask_t *soft)
 {
-    SCHED_OP(dom_scheduler(v->domain), adjust_affinity, v, hard, soft);
+    rcu_read_lock(&sched_res_rculock);
+    sched_adjust_affinity(dom_scheduler(unit->domain), unit, hard, soft);
+    rcu_read_unlock(&sched_res_rculock);
 
     if ( hard )
-        cpumask_copy(v->cpu_hard_affinity, hard);
+        cpumask_copy(unit->cpu_hard_affinity, hard);
     if ( soft )
-        cpumask_copy(v->cpu_soft_affinity, soft);
+        cpumask_copy(unit->cpu_soft_affinity, soft);
 
-    v->soft_aff_effective = !cpumask_subset(v->cpu_hard_affinity,
-                                            v->cpu_soft_affinity) &&
-                            cpumask_intersects(v->cpu_soft_affinity,
-                                               v->cpu_hard_affinity);
+    unit->soft_aff_effective = !cpumask_subset(unit->cpu_hard_affinity,
+                                               unit->cpu_soft_affinity) &&
+                               cpumask_intersects(unit->cpu_soft_affinity,
+                                                  unit->cpu_hard_affinity);
 }
 
 static int vcpu_set_affinity(
     struct vcpu *v, const cpumask_t *affinity, const cpumask_t *which)
 {
+    struct sched_unit *unit = v->sched_unit;
     spinlock_t *lock;
     int ret = 0;
 
-    lock = vcpu_schedule_lock_irq(v);
+    rcu_read_lock(&sched_res_rculock);
+
+    lock = unit_schedule_lock_irq(unit);
 
     if ( v->affinity_broken )
         ret = -EBUSY;
@@ -932,23 +1309,25 @@ static int vcpu_set_affinity(
          * Tell the scheduler we changes something about affinity,
          * and ask to re-evaluate vcpu placement.
          */
-        if ( which == v->cpu_hard_affinity )
+        if ( which == unit->cpu_hard_affinity )
         {
-            sched_set_affinity(v, affinity, NULL);
+            sched_set_affinity(unit, affinity, NULL);
         }
         else
         {
-            ASSERT(which == v->cpu_soft_affinity);
-            sched_set_affinity(v, NULL, affinity);
+            ASSERT(which == unit->cpu_soft_affinity);
+            sched_set_affinity(unit, NULL, affinity);
         }
-        vcpu_migrate_start(v);
+        sched_unit_migrate_start(unit);
     }
 
-    vcpu_schedule_unlock_irq(lock, v);
+    unit_schedule_unlock_irq(lock, unit);
 
     domain_update_node_affinity(v->domain);
 
-    vcpu_migrate_finish(v);
+    sched_unit_migrate_finish(unit);
+
+    rcu_read_unlock(&sched_res_rculock);
 
     return ret;
 }
@@ -958,20 +1337,17 @@ int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity)
     cpumask_t online_affinity;
     cpumask_t *online;
 
-    if ( v->domain->is_pinned )
-        return -EINVAL;
-
     online = VCPU2ONLINE(v);
     cpumask_and(&online_affinity, affinity, online);
     if ( cpumask_empty(&online_affinity) )
         return -EINVAL;
 
-    return vcpu_set_affinity(v, affinity, v->cpu_hard_affinity);
+    return vcpu_set_affinity(v, affinity, v->sched_unit->cpu_hard_affinity);
 }
 
 int vcpu_set_soft_affinity(struct vcpu *v, const cpumask_t *affinity)
 {
-    return vcpu_set_affinity(v, affinity, v->cpu_soft_affinity);
+    return vcpu_set_affinity(v, affinity, v->sched_unit->cpu_soft_affinity);
 }
 
 /* Block the currently-executing domain until a pertinent event occurs. */
@@ -1079,10 +1455,15 @@ static long do_poll(struct sched_poll *sched_poll)
 long vcpu_yield(void)
 {
     struct vcpu * v=current;
-    spinlock_t *lock = vcpu_schedule_lock_irq(v);
+    spinlock_t *lock;
 
-    SCHED_OP(vcpu_scheduler(v), yield, v);
-    vcpu_schedule_unlock_irq(lock, v);
+    rcu_read_lock(&sched_res_rculock);
+
+    lock = unit_schedule_lock_irq(v->sched_unit);
+    sched_yield(vcpu_scheduler(v), v->sched_unit);
+    unit_schedule_unlock_irq(lock, v->sched_unit);
+
+    rcu_read_unlock(&sched_res_rculock);
 
     SCHED_STAT_CRANK(vcpu_yield);
 
@@ -1163,43 +1544,65 @@ void watchdog_domain_destroy(struct domain *d)
         kill_timer(&d->watchdog_timer[i]);
 }
 
-int vcpu_pin_override(struct vcpu *v, int cpu)
+/*
+ * Pin a vcpu temporarily to a specific CPU (or restore old pinning state if
+ * cpu is NR_CPUS).
+ * Temporary pinning can be done due to two reasons, which may be nested:
+ * - VCPU_AFFINITY_OVERRIDE (requested by guest): is allowed to fail in case
+ *   of a conflict (e.g. in case cpupool doesn't include requested CPU, or
+ *   another conflicting temporary pinning is already in effect.
+ * - VCPU_AFFINITY_WAIT (called by wait_event()): only used to pin vcpu to the
+ *   CPU it is just running on. Can't fail if used properly.
+ */
+int vcpu_temporary_affinity(struct vcpu *v, unsigned int cpu, uint8_t reason)
 {
+    struct sched_unit *unit = v->sched_unit;
     spinlock_t *lock;
     int ret = -EINVAL;
+    bool migrate;
 
-    lock = vcpu_schedule_lock_irq(v);
+    rcu_read_lock(&sched_res_rculock);
 
-    if ( cpu < 0 )
+    lock = unit_schedule_lock_irq(unit);
+
+    if ( cpu == NR_CPUS )
     {
-        if ( v->affinity_broken )
+        if ( v->affinity_broken & reason )
         {
-            sched_set_affinity(v, v->cpu_hard_affinity_saved, NULL);
-            v->affinity_broken = 0;
             ret = 0;
+            v->affinity_broken &= ~reason;
         }
+        if ( !ret && !sched_check_affinity_broken(unit) )
+            sched_set_affinity(unit, unit->cpu_hard_affinity_saved, NULL);
     }
     else if ( cpu < nr_cpu_ids )
     {
-        if ( v->affinity_broken )
+        if ( (v->affinity_broken & reason) ||
+             (sched_check_affinity_broken(unit) && v->processor != cpu) )
             ret = -EBUSY;
         else if ( cpumask_test_cpu(cpu, VCPU2ONLINE(v)) )
         {
-            cpumask_copy(v->cpu_hard_affinity_saved, v->cpu_hard_affinity);
-            v->affinity_broken = 1;
-            sched_set_affinity(v, cpumask_of(cpu), NULL);
+            if ( !sched_check_affinity_broken(unit) )
+            {
+                cpumask_copy(unit->cpu_hard_affinity_saved,
+                             unit->cpu_hard_affinity);
+                sched_set_affinity(unit, cpumask_of(cpu), NULL);
+            }
+            v->affinity_broken |= reason;
             ret = 0;
         }
     }
 
-    if ( ret == 0 )
-        vcpu_migrate_start(v);
+    migrate = !ret && !cpumask_test_cpu(v->processor, unit->cpu_hard_affinity);
+    if ( migrate )
+        sched_unit_migrate_start(unit);
 
-    vcpu_schedule_unlock_irq(lock, v);
+    unit_schedule_unlock_irq(lock, unit);
 
-    domain_update_node_affinity(v->domain);
+    if ( migrate )
+        sched_unit_migrate_finish(unit);
 
-    vcpu_migrate_finish(v);
+    rcu_read_unlock(&sched_res_rculock);
 
     return ret;
 }
@@ -1315,6 +1718,7 @@ ret_t do_sched_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case SCHEDOP_pin_override:
     {
         struct sched_pin_override sched_pin_override;
+        unsigned int cpu;
 
         ret = -EPERM;
         if ( !is_hardware_domain(current->domain) )
@@ -1324,7 +1728,12 @@ ret_t do_sched_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( copy_from_guest(&sched_pin_override, arg, 1) )
             break;
 
-        ret = vcpu_pin_override(current, sched_pin_override.pcpu);
+        ret = -EINVAL;
+        if ( sched_pin_override.pcpu >= NR_CPUS )
+           break;
+
+        cpu = sched_pin_override.pcpu < 0 ? NR_CPUS : sched_pin_override.pcpu;
+        ret = vcpu_temporary_affinity(current, cpu, VCPU_AFFINITY_OVERRIDE);
 
         break;
     }
@@ -1406,8 +1815,12 @@ long sched_adjust(struct domain *d, struct xen_domctl_scheduler_op *op)
 
     /* NB: the pluggable scheduler code needs to take care
      * of locking by itself. */
-    if ( (ret = SCHED_OP(dom_scheduler(d), adjust, d, op)) == 0 )
+    rcu_read_lock(&sched_res_rculock);
+
+    if ( (ret = sched_adjust_dom(dom_scheduler(d), d, op)) == 0 )
         TRACE_1D(TRC_SCHED_ADJDOM, d->domain_id);
+
+    rcu_read_unlock(&sched_res_rculock);
 
     return ret;
 }
@@ -1429,22 +1842,24 @@ long sched_adjust_global(struct xen_sysctl_scheduler_op *op)
     if ( pool == NULL )
         return -ESRCH;
 
+    rcu_read_lock(&sched_res_rculock);
+
     rc = ((op->sched_id == pool->sched->sched_id)
-          ? SCHED_OP(pool->sched, adjust_global, op) : -EINVAL);
+          ? sched_adjust_cpupool(pool->sched, op) : -EINVAL);
+
+    rcu_read_unlock(&sched_res_rculock);
 
     cpupool_put(pool);
 
     return rc;
 }
 
-static void vcpu_periodic_timer_work(struct vcpu *v)
+static void vcpu_periodic_timer_work_locked(struct vcpu *v)
 {
-    s_time_t now = NOW();
+    s_time_t now;
     s_time_t periodic_next_event;
 
-    if ( v->periodic_period == 0 )
-        return;
-
+    now = NOW();
     periodic_next_event = v->periodic_last_event + v->periodic_period;
 
     if ( now >= periodic_next_event )
@@ -1454,8 +1869,485 @@ static void vcpu_periodic_timer_work(struct vcpu *v)
         periodic_next_event = now + v->periodic_period;
     }
 
-    migrate_timer(&v->periodic_timer, smp_processor_id());
+    migrate_timer(&v->periodic_timer, v->processor);
     set_timer(&v->periodic_timer, periodic_next_event);
+}
+
+static void vcpu_periodic_timer_work(struct vcpu *v)
+{
+    if ( v->periodic_period == 0 )
+        return;
+
+    spin_lock(&v->periodic_timer_lock);
+    if ( v->periodic_period )
+        vcpu_periodic_timer_work_locked(v);
+    spin_unlock(&v->periodic_timer_lock);
+}
+
+/*
+ * Set the periodic timer of a vcpu.
+ */
+void vcpu_set_periodic_timer(struct vcpu *v, s_time_t value)
+{
+    spin_lock(&v->periodic_timer_lock);
+
+    stop_timer(&v->periodic_timer);
+
+    v->periodic_period = value;
+    if ( value )
+        vcpu_periodic_timer_work_locked(v);
+
+    spin_unlock(&v->periodic_timer_lock);
+}
+
+static void sched_switch_units(struct sched_resource *sr,
+                               struct sched_unit *next, struct sched_unit *prev,
+                               s_time_t now)
+{
+    unsigned int cpu;
+
+    ASSERT(unit_running(prev));
+
+    if ( prev != next )
+    {
+        sr->curr = next;
+        sr->prev = prev;
+
+        TRACE_3D(TRC_SCHED_SWITCH_INFPREV, prev->domain->domain_id,
+                 prev->unit_id, now - prev->state_entry_time);
+        TRACE_4D(TRC_SCHED_SWITCH_INFNEXT, next->domain->domain_id,
+                 next->unit_id,
+                 (next->vcpu_list->runstate.state == RUNSTATE_runnable) ?
+                 (now - next->state_entry_time) : 0, prev->next_time);
+        TRACE_4D(TRC_SCHED_SWITCH, prev->domain->domain_id, prev->unit_id,
+                 next->domain->domain_id, next->unit_id);
+
+        ASSERT(!unit_running(next));
+
+        /*
+         * NB. Don't add any trace records from here until the actual context
+         * switch, else lost_records resume will not work properly.
+         */
+
+        ASSERT(!next->is_running);
+        next->is_running = true;
+        next->state_entry_time = now;
+
+        if ( is_idle_unit(prev) )
+        {
+            prev->runstate_cnt[RUNSTATE_running] = 0;
+            prev->runstate_cnt[RUNSTATE_runnable] = sr->granularity;
+        }
+        if ( is_idle_unit(next) )
+        {
+            next->runstate_cnt[RUNSTATE_running] = sr->granularity;
+            next->runstate_cnt[RUNSTATE_runnable] = 0;
+        }
+    }
+
+    for_each_cpu ( cpu, sr->cpus )
+    {
+        struct vcpu *vprev = get_cpu_current(cpu);
+        struct vcpu *vnext = sched_unit2vcpu_cpu(next, cpu);
+
+        if ( vprev != vnext || vprev->runstate.state != vnext->new_state )
+        {
+            vcpu_runstate_change(vprev,
+                ((vprev->pause_flags & VPF_blocked) ? RUNSTATE_blocked :
+                 (vcpu_runnable(vprev) ? RUNSTATE_runnable : RUNSTATE_offline)),
+                now);
+            vcpu_runstate_change(vnext, vnext->new_state, now);
+        }
+
+        vnext->is_running = 1;
+
+        if ( is_idle_vcpu(vnext) )
+            vnext->sched_unit = next;
+    }
+}
+
+static bool sched_tasklet_check_cpu(unsigned int cpu)
+{
+    unsigned long *tasklet_work = &per_cpu(tasklet_work_to_do, cpu);
+
+    switch ( *tasklet_work )
+    {
+    case TASKLET_enqueued:
+        set_bit(_TASKLET_scheduled, tasklet_work);
+        /* fallthrough */
+    case TASKLET_enqueued|TASKLET_scheduled:
+        return true;
+        break;
+    case TASKLET_scheduled:
+        clear_bit(_TASKLET_scheduled, tasklet_work);
+        /* fallthrough */
+    case 0:
+        /* return false; */
+        break;
+    default:
+        BUG();
+    }
+
+    return false;
+}
+
+static bool sched_tasklet_check(unsigned int cpu)
+{
+    bool tasklet_work_scheduled = false;
+    const cpumask_t *mask = get_sched_res(cpu)->cpus;
+    unsigned int cpu_iter;
+
+    for_each_cpu ( cpu_iter, mask )
+        if ( sched_tasklet_check_cpu(cpu_iter) )
+            tasklet_work_scheduled = true;
+
+    return tasklet_work_scheduled;
+}
+
+static struct sched_unit *do_schedule(struct sched_unit *prev, s_time_t now,
+                                      unsigned int cpu)
+{
+    struct sched_resource *sr = get_sched_res(cpu);
+    struct scheduler *sched = sr->scheduler;
+    struct sched_unit *next;
+
+    /* get policy-specific decision on scheduling... */
+    sched->do_schedule(sched, prev, now, sched_tasklet_check(cpu));
+
+    next = prev->next_task;
+
+    if ( prev->next_time >= 0 ) /* -ve means no limit */
+        set_timer(&sr->s_timer, now + prev->next_time);
+
+    sched_switch_units(sr, next, prev, now);
+
+    return next;
+}
+
+static void vcpu_context_saved(struct vcpu *vprev, struct vcpu *vnext)
+{
+    /* Clear running flag /after/ writing context to memory. */
+    smp_wmb();
+
+    if ( vprev != vnext )
+        vprev->is_running = 0;
+}
+
+static void unit_context_saved(struct sched_resource *sr)
+{
+    struct sched_unit *unit = sr->prev;
+
+    if ( !unit )
+        return;
+
+    unit->is_running = false;
+    unit->state_entry_time = NOW();
+    sr->prev = NULL;
+
+    /* Check for migration request /after/ clearing running flag. */
+    smp_mb();
+
+    sched_context_saved(unit_scheduler(unit), unit);
+
+    /* Idle never migrates and idle vcpus might belong to other units. */
+    if ( !is_idle_unit(unit) )
+        sched_unit_migrate_finish(unit);
+}
+
+/*
+ * Rendezvous on end of context switch.
+ * As no lock is protecting this rendezvous function we need to use atomic
+ * access functions on the counter.
+ * The counter will be 0 in case no rendezvous is needed. For the rendezvous
+ * case it is initialised to the number of cpus to rendezvous plus 1. Each
+ * member entering decrements the counter. The last one will decrement it to
+ * 1 and perform the final needed action in that case (call of
+ * unit_context_saved()), and then set the counter to zero. The other members
+ * will wait until the counter becomes zero until they proceed.
+ */
+void sched_context_switched(struct vcpu *vprev, struct vcpu *vnext)
+{
+    struct sched_unit *next = vnext->sched_unit;
+    struct sched_resource *sr;
+
+    rcu_read_lock(&sched_res_rculock);
+
+    sr = get_sched_res(smp_processor_id());
+
+    if ( atomic_read(&next->rendezvous_out_cnt) )
+    {
+        int cnt = atomic_dec_return(&next->rendezvous_out_cnt);
+
+        vcpu_context_saved(vprev, vnext);
+
+        /* Call unit_context_saved() before releasing other waiters. */
+        if ( cnt == 1 )
+        {
+            unit_context_saved(sr);
+            atomic_set(&next->rendezvous_out_cnt, 0);
+        }
+        else
+            while ( atomic_read(&next->rendezvous_out_cnt) )
+                cpu_relax();
+    }
+    else
+    {
+        vcpu_context_saved(vprev, vnext);
+        if ( sr->granularity == 1 )
+            unit_context_saved(sr);
+    }
+
+    if ( is_idle_vcpu(vprev) && vprev != vnext )
+        vprev->sched_unit = sr->sched_unit_idle;
+
+    rcu_read_unlock(&sched_res_rculock);
+}
+
+static void sched_context_switch(struct vcpu *vprev, struct vcpu *vnext,
+                                 bool reset_idle_unit, s_time_t now)
+{
+    if ( unlikely(vprev == vnext) )
+    {
+        TRACE_4D(TRC_SCHED_SWITCH_INFCONT,
+                 vnext->domain->domain_id, vnext->sched_unit->unit_id,
+                 now - vprev->runstate.state_entry_time,
+                 vprev->sched_unit->next_time);
+        sched_context_switched(vprev, vnext);
+
+        /*
+         * We are switching from a non-idle to an idle unit.
+         * A vcpu of the idle unit might have been running before due to
+         * the guest vcpu being blocked. We must adjust the unit of the idle
+         * vcpu which might have been set to the guest's one.
+         */
+        if ( reset_idle_unit )
+            vnext->sched_unit =
+                get_sched_res(smp_processor_id())->sched_unit_idle;
+
+        rcu_read_unlock(&sched_res_rculock);
+
+        trace_continue_running(vnext);
+        return continue_running(vprev);
+    }
+
+    SCHED_STAT_CRANK(sched_ctx);
+
+    stop_timer(&vprev->periodic_timer);
+
+    if ( vnext->sched_unit->migrated )
+        vcpu_move_irqs(vnext);
+
+    vcpu_periodic_timer_work(vnext);
+
+    rcu_read_unlock(&sched_res_rculock);
+
+    context_switch(vprev, vnext);
+}
+
+/*
+ * Force a context switch of a single vcpu of an unit.
+ * Might be called either if a vcpu of an already running unit is woken up
+ * or if a vcpu of a running unit is put asleep with other vcpus of the same
+ * unit still running.
+ * Returns either NULL if v is already in the correct state or the vcpu to
+ * run next.
+ */
+static struct vcpu *sched_force_context_switch(struct vcpu *vprev,
+                                               struct vcpu *v,
+                                               unsigned int cpu, s_time_t now)
+{
+    v->force_context_switch = false;
+
+    if ( vcpu_runnable(v) == v->is_running )
+        return NULL;
+
+    if ( vcpu_runnable(v) )
+    {
+        if ( is_idle_vcpu(vprev) )
+        {
+            vcpu_runstate_change(vprev, RUNSTATE_runnable, now);
+            vprev->sched_unit = get_sched_res(cpu)->sched_unit_idle;
+        }
+        vcpu_runstate_change(v, RUNSTATE_running, now);
+    }
+    else
+    {
+        /* Make sure not to switch last vcpu of an unit away. */
+        if ( unit_running(v->sched_unit) == 1 )
+            return NULL;
+
+        v->new_state = vcpu_runstate_blocked(v);
+        vcpu_runstate_change(v, v->new_state, now);
+        v = sched_unit2vcpu_cpu(vprev->sched_unit, cpu);
+        if ( v != vprev )
+        {
+            if ( is_idle_vcpu(vprev) )
+            {
+                vcpu_runstate_change(vprev, RUNSTATE_runnable, now);
+                vprev->sched_unit = get_sched_res(cpu)->sched_unit_idle;
+            }
+            else
+            {
+                v->sched_unit = vprev->sched_unit;
+                vcpu_runstate_change(v, RUNSTATE_running, now);
+            }
+        }
+    }
+
+    /* This vcpu will be switched to. */
+    v->is_running = true;
+
+    /* Make sure not to loose another slave call. */
+    raise_softirq(SCHED_SLAVE_SOFTIRQ);
+
+    return v;
+}
+
+/*
+ * Rendezvous before taking a scheduling decision.
+ * Called with schedule lock held, so all accesses to the rendezvous counter
+ * can be normal ones (no atomic accesses needed).
+ * The counter is initialized to the number of cpus to rendezvous initially.
+ * Each cpu entering will decrement the counter. In case the counter becomes
+ * zero do_schedule() is called and the rendezvous counter for leaving
+ * context_switch() is set. All other members will wait until the counter is
+ * becoming zero, dropping the schedule lock in between.
+ */
+static struct sched_unit *sched_wait_rendezvous_in(struct sched_unit *prev,
+                                                   spinlock_t **lock, int cpu,
+                                                   s_time_t now)
+{
+    struct sched_unit *next;
+    struct vcpu *v;
+    unsigned int gran = get_sched_res(cpu)->granularity;
+
+    if ( !--prev->rendezvous_in_cnt )
+    {
+        next = do_schedule(prev, now, cpu);
+        atomic_set(&next->rendezvous_out_cnt, gran + 1);
+        return next;
+    }
+
+    v = unit2vcpu_cpu(prev, cpu);
+    while ( prev->rendezvous_in_cnt )
+    {
+        if ( v && v->force_context_switch )
+        {
+            struct vcpu *vprev = current;
+
+            v = sched_force_context_switch(vprev, v, cpu, now);
+
+            if ( v )
+            {
+                /* We'll come back another time, so adjust rendezvous_in_cnt. */
+                prev->rendezvous_in_cnt++;
+                atomic_set(&prev->rendezvous_out_cnt, 0);
+
+                pcpu_schedule_unlock_irq(*lock, cpu);
+
+                sched_context_switch(vprev, v, false, now);
+
+                return NULL;     /* ARM only. */
+            }
+
+            v = unit2vcpu_cpu(prev, cpu);
+        }
+        /*
+         * Coming from idle might need to do tasklet work.
+         * In order to avoid deadlocks we can't do that here, but have to
+         * continue the idle loop.
+         * Undo the rendezvous_in_cnt decrement and schedule another call of
+         * sched_slave().
+         */
+        if ( is_idle_unit(prev) && sched_tasklet_check_cpu(cpu) )
+        {
+            struct vcpu *vprev = current;
+
+            prev->rendezvous_in_cnt++;
+            atomic_set(&prev->rendezvous_out_cnt, 0);
+
+            pcpu_schedule_unlock_irq(*lock, cpu);
+
+            raise_softirq(SCHED_SLAVE_SOFTIRQ);
+            sched_context_switch(vprev, vprev, false, now);
+
+            return NULL;         /* ARM only. */
+        }
+
+        pcpu_schedule_unlock_irq(*lock, cpu);
+
+        cpu_relax();
+
+        *lock = pcpu_schedule_lock_irq(cpu);
+
+        if ( unlikely(!scheduler_active) )
+        {
+            ASSERT(is_idle_unit(prev));
+            atomic_set(&prev->next_task->rendezvous_out_cnt, 0);
+            prev->rendezvous_in_cnt = 0;
+        }
+    }
+
+    return prev->next_task;
+}
+
+static void sched_slave(void)
+{
+    struct vcpu          *v, *vprev = current;
+    struct sched_unit    *prev = vprev->sched_unit, *next;
+    s_time_t              now;
+    spinlock_t           *lock;
+    bool                  do_softirq = false;
+    unsigned int          cpu = smp_processor_id();
+
+    ASSERT_NOT_IN_ATOMIC();
+
+    rcu_read_lock(&sched_res_rculock);
+
+    lock = pcpu_schedule_lock_irq(cpu);
+
+    now = NOW();
+
+    v = unit2vcpu_cpu(prev, cpu);
+    if ( v && v->force_context_switch )
+    {
+        v = sched_force_context_switch(vprev, v, cpu, now);
+
+        if ( v )
+        {
+            pcpu_schedule_unlock_irq(lock, cpu);
+
+            sched_context_switch(vprev, v, false, now);
+
+            return;
+        }
+
+        do_softirq = true;
+    }
+
+    if ( !prev->rendezvous_in_cnt )
+    {
+        pcpu_schedule_unlock_irq(lock, cpu);
+
+        rcu_read_unlock(&sched_res_rculock);
+
+        /* Check for failed forced context switch. */
+        if ( do_softirq )
+            raise_softirq(SCHEDULE_SOFTIRQ);
+
+        return;
+    }
+
+    stop_timer(&get_sched_res(cpu)->s_timer);
+
+    next = sched_wait_rendezvous_in(prev, &lock, cpu, now);
+    if ( !next )
+        return;
+
+    pcpu_schedule_unlock_irq(lock, cpu);
+
+    sched_context_switch(vprev, sched_unit2vcpu_cpu(next, cpu),
+                         is_idle_unit(next) && !is_idle_unit(prev), now);
 }
 
 /*
@@ -1465,128 +2357,66 @@ static void vcpu_periodic_timer_work(struct vcpu *v)
  */
 static void schedule(void)
 {
-    struct vcpu          *prev = current, *next = NULL;
+    struct vcpu          *vnext, *vprev = current;
+    struct sched_unit    *prev = vprev->sched_unit, *next = NULL;
     s_time_t              now;
-    struct scheduler     *sched;
-    unsigned long        *tasklet_work = &this_cpu(tasklet_work_to_do);
-    bool_t                tasklet_work_scheduled = 0;
-    struct schedule_data *sd;
+    struct sched_resource *sr;
     spinlock_t           *lock;
-    struct task_slice     next_slice;
     int cpu = smp_processor_id();
+    unsigned int          gran;
 
     ASSERT_NOT_IN_ATOMIC();
 
     SCHED_STAT_CRANK(sched_run);
 
-    sd = &this_cpu(schedule_data);
+    rcu_read_lock(&sched_res_rculock);
 
-    /* Update tasklet scheduling status. */
-    switch ( *tasklet_work )
-    {
-    case TASKLET_enqueued:
-        set_bit(_TASKLET_scheduled, tasklet_work);
-        /* fallthrough */
-    case TASKLET_enqueued|TASKLET_scheduled:
-        tasklet_work_scheduled = 1;
-        break;
-    case TASKLET_scheduled:
-        clear_bit(_TASKLET_scheduled, tasklet_work);
-    case 0:
-        /*tasklet_work_scheduled = 0;*/
-        break;
-    default:
-        BUG();
-    }
+    sr = get_sched_res(cpu);
+    gran = sr->granularity;
 
     lock = pcpu_schedule_lock_irq(cpu);
 
-    now = NOW();
-
-    stop_timer(&sd->s_timer);
-
-    /* get policy-specific decision on scheduling... */
-    sched = this_cpu(scheduler);
-    next_slice = sched->do_schedule(sched, now, tasklet_work_scheduled);
-
-    next = next_slice.task;
-
-    sd->curr = next;
-
-    if ( next_slice.time >= 0 ) /* -ve means no limit */
-        set_timer(&sd->s_timer, now + next_slice.time);
-
-    if ( unlikely(prev == next) )
+    if ( prev->rendezvous_in_cnt )
     {
+        /*
+         * We have a race: sched_slave() should be called, so raise a softirq
+         * in order to re-enter schedule() later and call sched_slave() now.
+         */
         pcpu_schedule_unlock_irq(lock, cpu);
-        TRACE_4D(TRC_SCHED_SWITCH_INFCONT,
-                 next->domain->domain_id, next->vcpu_id,
-                 now - prev->runstate.state_entry_time,
-                 next_slice.time);
-        trace_continue_running(next);
-        return continue_running(prev);
+
+        rcu_read_unlock(&sched_res_rculock);
+
+        raise_softirq(SCHEDULE_SOFTIRQ);
+        return sched_slave();
     }
 
-    TRACE_3D(TRC_SCHED_SWITCH_INFPREV,
-             prev->domain->domain_id, prev->vcpu_id,
-             now - prev->runstate.state_entry_time);
-    TRACE_4D(TRC_SCHED_SWITCH_INFNEXT,
-             next->domain->domain_id, next->vcpu_id,
-             (next->runstate.state == RUNSTATE_runnable) ?
-             (now - next->runstate.state_entry_time) : 0,
-             next_slice.time);
+    stop_timer(&sr->s_timer);
 
-    ASSERT(prev->runstate.state == RUNSTATE_running);
+    now = NOW();
 
-    TRACE_4D(TRC_SCHED_SWITCH,
-             prev->domain->domain_id, prev->vcpu_id,
-             next->domain->domain_id, next->vcpu_id);
+    if ( gran > 1 )
+    {
+        cpumask_t mask;
 
-    vcpu_runstate_change(
-        prev,
-        ((prev->pause_flags & VPF_blocked) ? RUNSTATE_blocked :
-         (vcpu_runnable(prev) ? RUNSTATE_runnable : RUNSTATE_offline)),
-        now);
-    prev->last_run_time = now;
-
-    ASSERT(next->runstate.state != RUNSTATE_running);
-    vcpu_runstate_change(next, RUNSTATE_running, now);
-
-    /*
-     * NB. Don't add any trace records from here until the actual context
-     * switch, else lost_records resume will not work properly.
-     */
-
-    ASSERT(!next->is_running);
-    next->is_running = 1;
+        prev->rendezvous_in_cnt = gran;
+        cpumask_andnot(&mask, sr->cpus, cpumask_of(cpu));
+        cpumask_raise_softirq(&mask, SCHED_SLAVE_SOFTIRQ);
+        next = sched_wait_rendezvous_in(prev, &lock, cpu, now);
+        if ( !next )
+            return;
+    }
+    else
+    {
+        prev->rendezvous_in_cnt = 0;
+        next = do_schedule(prev, now, cpu);
+        atomic_set(&next->rendezvous_out_cnt, 0);
+    }
 
     pcpu_schedule_unlock_irq(lock, cpu);
 
-    SCHED_STAT_CRANK(sched_ctx);
-
-    stop_timer(&prev->periodic_timer);
-
-    if ( next_slice.migrated )
-        sched_move_irqs(next);
-
-    vcpu_periodic_timer_work(next);
-
-    context_switch(prev, next);
-}
-
-void context_saved(struct vcpu *prev)
-{
-    /* Clear running flag /after/ writing context to memory. */
-    smp_wmb();
-
-    prev->is_running = 0;
-
-    /* Check for migration request /after/ clearing running flag. */
-    smp_mb();
-
-    SCHED_OP(vcpu_scheduler(prev), context_saved, prev);
-
-    vcpu_migrate_finish(prev);
+    vnext = sched_unit2vcpu_cpu(next, cpu);
+    sched_context_switch(vprev, vnext,
+                         !is_idle_unit(prev) && is_idle_unit(next), now);
 }
 
 /* The scheduler timer: force a run through the scheduler */
@@ -1619,133 +2449,168 @@ static void poll_timer_fn(void *data)
         vcpu_unblock(v);
 }
 
+static struct sched_resource *sched_alloc_res(void)
+{
+    struct sched_resource *sr;
+
+    sr = xzalloc(struct sched_resource);
+    if ( sr == NULL )
+        return NULL;
+    if ( !zalloc_cpumask_var(&sr->cpus) )
+    {
+        xfree(sr);
+        return NULL;
+    }
+    return sr;
+}
+
 static int cpu_schedule_up(unsigned int cpu)
 {
-    struct schedule_data *sd = &per_cpu(schedule_data, cpu);
-    void *sched_priv;
+    struct sched_resource *sr;
 
-    per_cpu(scheduler, cpu) = &ops;
-    spin_lock_init(&sd->_lock);
-    sd->schedule_lock = &sd->_lock;
-    sd->curr = idle_vcpu[cpu];
-    init_timer(&sd->s_timer, s_timer_fn, NULL, cpu);
-    atomic_set(&sd->urgent_count, 0);
+    sr = sched_alloc_res();
+    if ( sr == NULL )
+        return -ENOMEM;
 
-    /* Boot CPU is dealt with later in schedule_init(). */
+    sr->master_cpu = cpu;
+    cpumask_copy(sr->cpus, cpumask_of(cpu));
+    set_sched_res(cpu, sr);
+
+    sr->scheduler = &sched_idle_ops;
+    spin_lock_init(&sr->_lock);
+    sr->schedule_lock = &sched_free_cpu_lock;
+    init_timer(&sr->s_timer, s_timer_fn, NULL, cpu);
+    atomic_set(&per_cpu(sched_urgent_count, cpu), 0);
+
+    /* We start with cpu granularity. */
+    sr->granularity = 1;
+
+    cpumask_set_cpu(cpu, &sched_res_mask);
+
+    /* Boot CPU is dealt with later in scheduler_init(). */
     if ( cpu == 0 )
         return 0;
 
     if ( idle_vcpu[cpu] == NULL )
-        vcpu_create(idle_vcpu[0]->domain, cpu, cpu);
+        vcpu_create(idle_vcpu[0]->domain, cpu);
     else
-    {
-        struct vcpu *idle = idle_vcpu[cpu];
+        idle_vcpu[cpu]->sched_unit->res = sr;
 
-        /*
-         * During (ACPI?) suspend the idle vCPU for this pCPU is not freed,
-         * while its scheduler specific data (what is pointed by sched_priv)
-         * is. Also, at this stage of the resume path, we attach the pCPU
-         * to the default scheduler, no matter in what cpupool it was before
-         * suspend. To avoid inconsistency, let's allocate default scheduler
-         * data for the idle vCPU here. If the pCPU was in a different pool
-         * with a different scheduler, it is schedule_cpu_switch(), invoked
-         * later, that will set things up as appropriate.
-         */
-        ASSERT(idle->sched_priv == NULL);
-
-        idle->sched_priv = SCHED_OP(&ops, alloc_vdata, idle,
-                                    idle->domain->sched_priv);
-        if ( idle->sched_priv == NULL )
-            return -ENOMEM;
-    }
     if ( idle_vcpu[cpu] == NULL )
         return -ENOMEM;
 
-    /*
-     * We don't want to risk calling xfree() on an sd->sched_priv
-     * (e.g., inside free_pdata, from cpu_schedule_down() called
-     * during CPU_UP_CANCELLED) that contains an IS_ERR value.
-     */
-    sched_priv = SCHED_OP(&ops, alloc_pdata, cpu);
-    if ( IS_ERR(sched_priv) )
-        return PTR_ERR(sched_priv);
+    idle_vcpu[cpu]->sched_unit->rendezvous_in_cnt = 0;
 
-    sd->sched_priv = sched_priv;
+    /*
+     * No need to allocate any scheduler data, as cpus coming online are
+     * free initially and the idle scheduler doesn't need any data areas
+     * allocated.
+     */
+
+    sr->curr = idle_vcpu[cpu]->sched_unit;
+    sr->sched_unit_idle = idle_vcpu[cpu]->sched_unit;
+
+    sr->sched_priv = NULL;
 
     return 0;
 }
 
+static void sched_res_free(struct rcu_head *head)
+{
+    struct sched_resource *sr = container_of(head, struct sched_resource, rcu);
+
+    free_cpumask_var(sr->cpus);
+    if ( sr->sched_unit_idle )
+        sched_free_unit_mem(sr->sched_unit_idle);
+    xfree(sr);
+}
+
 static void cpu_schedule_down(unsigned int cpu)
 {
-    struct schedule_data *sd = &per_cpu(schedule_data, cpu);
-    struct scheduler *sched = per_cpu(scheduler, cpu);
+    struct sched_resource *sr;
 
-    SCHED_OP(sched, free_pdata, sd->sched_priv, cpu);
-    SCHED_OP(sched, free_vdata, idle_vcpu[cpu]->sched_priv);
+    rcu_read_lock(&sched_res_rculock);
 
-    idle_vcpu[cpu]->sched_priv = NULL;
-    sd->sched_priv = NULL;
+    sr = get_sched_res(cpu);
 
-    kill_timer(&sd->s_timer);
+    kill_timer(&sr->s_timer);
+
+    cpumask_clear_cpu(cpu, &sched_res_mask);
+    set_sched_res(cpu, NULL);
+
+    /* Keep idle unit. */
+    sr->sched_unit_idle = NULL;
+    call_rcu(&sr->rcu, sched_res_free);
+
+    rcu_read_unlock(&sched_res_rculock);
+}
+
+void sched_rm_cpu(unsigned int cpu)
+{
+    int rc;
+
+    rcu_read_lock(&domlist_read_lock);
+    rc = cpu_disable_scheduler(cpu);
+    BUG_ON(rc);
+    rcu_read_unlock(&domlist_read_lock);
+    cpu_schedule_down(cpu);
 }
 
 static int cpu_schedule_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
     unsigned int cpu = (unsigned long)hcpu;
-    struct scheduler *sched = per_cpu(scheduler, cpu);
-    struct schedule_data *sd = &per_cpu(schedule_data, cpu);
     int rc = 0;
+
+    rcu_read_lock(&sched_res_rculock);
 
     /*
      * From the scheduler perspective, bringing up a pCPU requires
      * allocating and initializing the per-pCPU scheduler specific data,
      * as well as "registering" this pCPU to the scheduler (which may
      * involve modifying some scheduler wide data structures).
-     * This happens by calling the alloc_pdata and init_pdata hooks, in
-     * this order. A scheduler that does not need to allocate any per-pCPU
-     * data can avoid implementing alloc_pdata. init_pdata may, however, be
-     * necessary/useful in this case too (e.g., it can contain the "register
-     * the pCPU to the scheduler" part). alloc_pdata (if present) is called
-     * during CPU_UP_PREPARE. init_pdata (if present) is called during
-     * CPU_STARTING.
+     * As new pCPUs always start as "free" cpus with the minimal idle
+     * scheduler being in charge, we don't need any of that.
      *
      * On the other hand, at teardown, we need to reverse what has been done
-     * during initialization, and then free the per-pCPU specific data. This
-     * happens by calling the deinit_pdata and free_pdata hooks, in this
+     * during initialization, and then free the per-pCPU specific data. A
+     * pCPU brought down is not forced through "free" cpus, so here we need to
+     * use the appropriate hooks.
+     *
+     * This happens by calling the deinit_pdata and free_pdata hooks, in this
      * order. If no per-pCPU memory was allocated, there is no need to
      * provide an implementation of free_pdata. deinit_pdata may, however,
      * be necessary/useful in this case too (e.g., it can undo something done
      * on scheduler wide data structure during init_pdata). Both deinit_pdata
      * and free_pdata are called during CPU_DEAD.
      *
-     * If someting goes wrong during bringup, we go to CPU_UP_CANCELLED
-     * *before* having called init_pdata. In this case, as there is no
-     * initialization needing undoing, only free_pdata should be called.
-     * This means it is possible to call free_pdata just after alloc_pdata,
-     * without a init_pdata/deinit_pdata "cycle" in between the two.
-     *
-     * So, in summary, the usage pattern should look either
-     *  - alloc_pdata-->init_pdata-->deinit_pdata-->free_pdata, or
-     *  - alloc_pdata-->free_pdata.
+     * If someting goes wrong during bringup, we go to CPU_UP_CANCELLED.
      */
     switch ( action )
     {
-    case CPU_STARTING:
-        SCHED_OP(sched, init_pdata, sd->sched_priv, cpu);
-        break;
     case CPU_UP_PREPARE:
-        rc = cpu_schedule_up(cpu);
+        if ( system_state != SYS_STATE_resume )
+            rc = cpu_schedule_up(cpu);
+        break;
+    case CPU_DOWN_PREPARE:
+        rcu_read_lock(&domlist_read_lock);
+        rc = cpu_disable_scheduler_check(cpu);
+        rcu_read_unlock(&domlist_read_lock);
         break;
     case CPU_DEAD:
-        SCHED_OP(sched, deinit_pdata, sd->sched_priv, cpu);
-        /* Fallthrough */
+        if ( system_state == SYS_STATE_suspend )
+            break;
+        sched_rm_cpu(cpu);
+        break;
     case CPU_UP_CANCELED:
-        cpu_schedule_down(cpu);
+        if ( system_state != SYS_STATE_resume )
+            cpu_schedule_down(cpu);
         break;
     default:
         break;
     }
+
+    rcu_read_unlock(&sched_res_rculock);
 
     return !rc ? NOTIFY_DONE : notifier_from_errno(rc);
 }
@@ -1754,19 +2619,85 @@ static struct notifier_block cpu_schedule_nfb = {
     .notifier_call = cpu_schedule_callback
 };
 
+const cpumask_t *sched_get_opt_cpumask(enum sched_gran opt, unsigned int cpu)
+{
+    const cpumask_t *mask;
+
+    switch ( opt )
+    {
+    case SCHED_GRAN_cpu:
+        mask = cpumask_of(cpu);
+        break;
+    case SCHED_GRAN_core:
+        mask = per_cpu(cpu_sibling_mask, cpu);
+        break;
+    case SCHED_GRAN_socket:
+        mask = per_cpu(cpu_core_mask, cpu);
+        break;
+    default:
+        ASSERT_UNREACHABLE();
+        return NULL;
+    }
+
+    return mask;
+}
+
+static void schedule_dummy(void)
+{
+    sched_tasklet_check_cpu(smp_processor_id());
+}
+
+void scheduler_disable(void)
+{
+    scheduler_active = false;
+    open_softirq(SCHEDULE_SOFTIRQ, schedule_dummy);
+    open_softirq(SCHED_SLAVE_SOFTIRQ, schedule_dummy);
+}
+
+void scheduler_enable(void)
+{
+    open_softirq(SCHEDULE_SOFTIRQ, schedule);
+    open_softirq(SCHED_SLAVE_SOFTIRQ, sched_slave);
+    scheduler_active = true;
+}
+
 /* Initialise the data structures. */
 void __init scheduler_init(void)
 {
     struct domain *idle_domain;
     int i;
 
-    open_softirq(SCHEDULE_SOFTIRQ, schedule);
+    scheduler_enable();
 
     for ( i = 0; i < NUM_SCHEDULERS; i++)
     {
+#define sched_test_func(f)                               \
+        if ( !schedulers[i]->f )                         \
+        {                                                \
+            printk("scheduler %s misses .%s, dropped\n", \
+                   schedulers[i]->opt_name, #f);         \
+            schedulers[i] = NULL;                        \
+        }
+
+        sched_test_func(init);
+        sched_test_func(deinit);
+        sched_test_func(pick_resource);
+        sched_test_func(alloc_udata);
+        sched_test_func(free_udata);
+        sched_test_func(switch_sched);
+        sched_test_func(do_schedule);
+
+#undef sched_test_func
+
         if ( schedulers[i]->global_init && schedulers[i]->global_init() < 0 )
+        {
+            printk("scheduler %s failed initialization, dropped\n",
+                   schedulers[i]->opt_name);
             schedulers[i] = NULL;
-        else if ( !ops.name && !strcmp(schedulers[i]->opt_name, opt_sched) )
+        }
+
+        if ( schedulers[i] && !ops.name &&
+             !strcmp(schedulers[i]->opt_name, opt_sched) )
             ops = *schedulers[i];
     }
 
@@ -1789,7 +2720,7 @@ void __init scheduler_init(void)
     register_cpu_notifier(&cpu_schedule_nfb);
 
     printk("Using scheduler: %s (%s)\n", ops.name, ops.opt_name);
-    if ( SCHED_OP(&ops, init) )
+    if ( sched_init(&ops) )
         panic("scheduler returned error on init\n");
 
     if ( sched_ratelimit_us &&
@@ -1809,109 +2740,270 @@ void __init scheduler_init(void)
     BUG_ON(nr_cpu_ids > ARRAY_SIZE(idle_vcpu));
     idle_domain->vcpu = idle_vcpu;
     idle_domain->max_vcpus = nr_cpu_ids;
-    if ( vcpu_create(idle_domain, 0, 0) == NULL )
+    if ( vcpu_create(idle_domain, 0) == NULL )
         BUG();
-    this_cpu(schedule_data).sched_priv = SCHED_OP(&ops, alloc_pdata, 0);
-    BUG_ON(IS_ERR(this_cpu(schedule_data).sched_priv));
-    SCHED_OP(&ops, init_pdata, this_cpu(schedule_data).sched_priv, 0);
+
+    rcu_read_lock(&sched_res_rculock);
+
+    get_sched_res(0)->curr = idle_vcpu[0]->sched_unit;
+    get_sched_res(0)->sched_unit_idle = idle_vcpu[0]->sched_unit;
+
+    rcu_read_unlock(&sched_res_rculock);
 }
 
 /*
- * Move a pCPU outside of the influence of the scheduler of its current
- * cpupool, or subject it to the scheduler of a new cpupool.
- *
- * For the pCPUs that are removed from their cpupool, their scheduler becomes
- * &ops (the default scheduler, selected at boot, which also services the
- * default cpupool). However, as these pCPUs are not really part of any pool,
- * there won't be any scheduling event on them, not even from the default
- * scheduler. Basically, they will just sit idle until they are explicitly
- * added back to a cpupool.
+ * Move a pCPU from free cpus (running the idle scheduler) to a cpupool
+ * using any "real" scheduler.
+ * The cpu is still marked as "free" and not yet valid for its cpupool.
  */
-int schedule_cpu_switch(unsigned int cpu, struct cpupool *c)
+int schedule_cpu_add(unsigned int cpu, struct cpupool *c)
 {
     struct vcpu *idle;
-    void *ppriv, *ppriv_old, *vpriv, *vpriv_old;
-    struct scheduler *old_ops = per_cpu(scheduler, cpu);
-    struct scheduler *new_ops = (c == NULL) ? &ops : c->sched;
-    struct cpupool *old_pool = per_cpu(cpupool, cpu);
-    spinlock_t * old_lock;
+    void *ppriv, *vpriv;
+    struct scheduler *new_ops = c->sched;
+    struct sched_resource *sr;
+    spinlock_t *old_lock, *new_lock;
+    unsigned long flags;
+    int ret = 0;
 
-    /*
-     * pCPUs only move from a valid cpupool to free (i.e., out of any pool),
-     * or from free to a valid cpupool. In the former case (which happens when
-     * c is NULL), we want the CPU to have been marked as free already, as
-     * well as to not be valid for the source pool any longer, when we get to
-     * here. In the latter case (which happens when c is a valid cpupool), we
-     * want the CPU to still be marked as free, as well as to not yet be valid
-     * for the destination pool.
-     */
-    ASSERT(c != old_pool && (c != NULL || old_pool != NULL));
+    rcu_read_lock(&sched_res_rculock);
+
+    sr = get_sched_res(cpu);
+
     ASSERT(cpumask_test_cpu(cpu, &cpupool_free_cpus));
-    ASSERT((c == NULL && !cpumask_test_cpu(cpu, old_pool->cpu_valid)) ||
-           (c != NULL && !cpumask_test_cpu(cpu, c->cpu_valid)));
-
-    if ( old_ops == new_ops )
-        goto out;
+    ASSERT(!cpumask_test_cpu(cpu, c->cpu_valid));
+    ASSERT(get_sched_res(cpu)->cpupool == NULL);
 
     /*
      * To setup the cpu for the new scheduler we need:
      *  - a valid instance of per-CPU scheduler specific data, as it is
-     *    allocated by SCHED_OP(alloc_pdata). Note that we do not want to
-     *    initialize it yet (i.e., we are not calling SCHED_OP(init_pdata)).
-     *    That will be done by the target scheduler, in SCHED_OP(switch_sched),
+     *    allocated by sched_alloc_pdata(). Note that we do not want to
+     *    initialize it yet (i.e., we are not calling sched_init_pdata()).
+     *    That will be done by the target scheduler, in sched_switch_sched(),
      *    in proper ordering and with locking.
      *  - a valid instance of per-vCPU scheduler specific data, for the idle
      *    vCPU of cpu. That is what the target scheduler will use for the
      *    sched_priv field of the per-vCPU info of the idle domain.
      */
     idle = idle_vcpu[cpu];
-    ppriv = SCHED_OP(new_ops, alloc_pdata, cpu);
+    ppriv = sched_alloc_pdata(new_ops, cpu);
     if ( IS_ERR(ppriv) )
-        return PTR_ERR(ppriv);
-    vpriv = SCHED_OP(new_ops, alloc_vdata, idle, idle->domain->sched_priv);
-    if ( vpriv == NULL )
     {
-        SCHED_OP(new_ops, free_pdata, ppriv, cpu);
-        return -ENOMEM;
+        ret = PTR_ERR(ppriv);
+        goto out;
     }
 
-    SCHED_OP(old_ops, tick_suspend, cpu);
+    vpriv = sched_alloc_udata(new_ops, idle->sched_unit,
+                              idle->domain->sched_priv);
+    if ( vpriv == NULL )
+    {
+        sched_free_pdata(new_ops, ppriv, cpu);
+        ret = -ENOMEM;
+        goto out;
+    }
 
     /*
-     * The actual switch, including (if necessary) the rerouting of the
-     * scheduler lock to whatever new_ops prefers,  needs to happen in one
-     * critical section, protected by old_ops' lock, or races are possible.
-     * It is, in fact, the lock of another scheduler that we are taking (the
-     * scheduler of the cpupool that cpu still belongs to). But that is ok
-     * as, anyone trying to schedule on this cpu will spin until when we
-     * release that lock (bottom of this function). When he'll get the lock
-     * --thanks to the loop inside *_schedule_lock() functions-- he'll notice
-     * that the lock itself changed, and retry acquiring the new one (which
-     * will be the correct, remapped one, at that point).
+     * The actual switch, including the rerouting of the scheduler lock to
+     * whatever new_ops prefers, needs to happen in one critical section,
+     * protected by old_ops' lock, or races are possible.
+     * It is, in fact, the lock of the idle scheduler that we are taking.
+     * But that is ok as anyone trying to schedule on this cpu will spin until
+     * when we release that lock (bottom of this function). When he'll get the
+     * lock --thanks to the loop inside *_schedule_lock() functions-- he'll
+     * notice that the lock itself changed, and retry acquiring the new one
+     * (which will be the correct, remapped one, at that point).
      */
-    old_lock = pcpu_schedule_lock_irq(cpu);
+    old_lock = pcpu_schedule_lock_irqsave(cpu, &flags);
 
-    vpriv_old = idle->sched_priv;
-    ppriv_old = per_cpu(schedule_data, cpu).sched_priv;
-    SCHED_OP(new_ops, switch_sched, cpu, ppriv, vpriv);
+    if ( cpupool_get_granularity(c) > 1 )
+    {
+        const cpumask_t *mask;
+        unsigned int cpu_iter, idx = 0;
+        struct sched_unit *old_unit, *master_unit;
+        struct sched_resource *sr_old;
+
+        /*
+         * We need to merge multiple idle_vcpu units and sched_resource structs
+         * into one. As the free cpus all share the same lock we are fine doing
+         * that now. The worst which could happen would be someone waiting for
+         * the lock, thus dereferencing sched_res->schedule_lock. This is the
+         * reason we are freeing struct sched_res via call_rcu() to avoid the
+         * lock pointer suddenly disappearing.
+         */
+        mask = sched_get_opt_cpumask(c->gran, cpu);
+        master_unit = idle_vcpu[cpu]->sched_unit;
+
+        for_each_cpu ( cpu_iter, mask )
+        {
+            if ( idx )
+                cpumask_clear_cpu(cpu_iter, &sched_res_mask);
+
+            per_cpu(sched_res_idx, cpu_iter) = idx++;
+
+            if ( cpu == cpu_iter )
+                continue;
+
+            old_unit = idle_vcpu[cpu_iter]->sched_unit;
+            sr_old = get_sched_res(cpu_iter);
+            kill_timer(&sr_old->s_timer);
+            idle_vcpu[cpu_iter]->sched_unit = master_unit;
+            master_unit->runstate_cnt[RUNSTATE_running]++;
+            set_sched_res(cpu_iter, sr);
+            cpumask_set_cpu(cpu_iter, sr->cpus);
+
+            call_rcu(&sr_old->rcu, sched_res_free);
+        }
+    }
+
+    new_lock = sched_switch_sched(new_ops, cpu, ppriv, vpriv);
+
+    sr->scheduler = new_ops;
+    sr->sched_priv = ppriv;
+
+    /*
+     * Reroute the lock to the per pCPU lock as /last/ thing. In fact,
+     * if it is free (and it can be) we want that anyone that manages
+     * taking it, finds all the initializations we've done above in place.
+     */
+    smp_wmb();
+    sr->schedule_lock = new_lock;
+
+    /* _Not_ pcpu_schedule_unlock(): schedule_lock has changed! */
+    spin_unlock_irqrestore(old_lock, flags);
+
+    sr->granularity = cpupool_get_granularity(c);
+    sr->cpupool = c;
+    /* The  cpu is added to a pool, trigger it to go pick up some work */
+    cpu_raise_softirq(cpu, SCHEDULE_SOFTIRQ);
+
+out:
+    rcu_read_unlock(&sched_res_rculock);
+
+    return ret;
+}
+
+/*
+ * Remove a pCPU from its cpupool. Its scheduler becomes &sched_idle_ops
+ * (the idle scheduler).
+ * The cpu is already marked as "free" and not valid any longer for its
+ * cpupool.
+ */
+int schedule_cpu_rm(unsigned int cpu)
+{
+    void *ppriv_old, *vpriv_old;
+    struct sched_resource *sr, **sr_new = NULL;
+    struct sched_unit *unit;
+    struct scheduler *old_ops;
+    spinlock_t *old_lock;
+    unsigned long flags;
+    int idx, ret = -ENOMEM;
+    unsigned int cpu_iter;
+
+    rcu_read_lock(&sched_res_rculock);
+
+    sr = get_sched_res(cpu);
+    old_ops = sr->scheduler;
+
+    if ( sr->granularity > 1 )
+    {
+        sr_new = xmalloc_array(struct sched_resource *, sr->granularity - 1);
+        if ( !sr_new )
+            goto out;
+        for ( idx = 0; idx < sr->granularity - 1; idx++ )
+        {
+            sr_new[idx] = sched_alloc_res();
+            if ( sr_new[idx] )
+            {
+                sr_new[idx]->sched_unit_idle = sched_alloc_unit_mem();
+                if ( !sr_new[idx]->sched_unit_idle )
+                {
+                    sched_res_free(&sr_new[idx]->rcu);
+                    sr_new[idx] = NULL;
+                }
+            }
+            if ( !sr_new[idx] )
+            {
+                for ( idx--; idx >= 0; idx-- )
+                    sched_res_free(&sr_new[idx]->rcu);
+                goto out;
+            }
+            sr_new[idx]->curr = sr_new[idx]->sched_unit_idle;
+            sr_new[idx]->scheduler = &sched_idle_ops;
+            sr_new[idx]->granularity = 1;
+
+            /* We want the lock not to change when replacing the resource. */
+            sr_new[idx]->schedule_lock = sr->schedule_lock;
+        }
+    }
+
+    ret = 0;
+    ASSERT(sr->cpupool != NULL);
+    ASSERT(cpumask_test_cpu(cpu, &cpupool_free_cpus));
+    ASSERT(!cpumask_test_cpu(cpu, sr->cpupool->cpu_valid));
+
+    /* See comment in schedule_cpu_add() regarding lock switching. */
+    old_lock = pcpu_schedule_lock_irqsave(cpu, &flags);
+
+    vpriv_old = idle_vcpu[cpu]->sched_unit->priv;
+    ppriv_old = sr->sched_priv;
+
+    idx = 0;
+    for_each_cpu ( cpu_iter, sr->cpus )
+    {
+        per_cpu(sched_res_idx, cpu_iter) = 0;
+        if ( cpu_iter == cpu )
+        {
+            idle_vcpu[cpu_iter]->sched_unit->priv = NULL;
+        }
+        else
+        {
+            /* Initialize unit. */
+            unit = sr_new[idx]->sched_unit_idle;
+            unit->res = sr_new[idx];
+            unit->is_running = true;
+            sched_unit_add_vcpu(unit, idle_vcpu[cpu_iter]);
+            sched_domain_insert_unit(unit, idle_vcpu[cpu_iter]->domain);
+
+            /* Adjust cpu masks of resources (old and new). */
+            cpumask_clear_cpu(cpu_iter, sr->cpus);
+            cpumask_set_cpu(cpu_iter, sr_new[idx]->cpus);
+
+            /* Init timer. */
+            init_timer(&sr_new[idx]->s_timer, s_timer_fn, NULL, cpu_iter);
+
+            /* Last resource initializations and insert resource pointer. */
+            sr_new[idx]->master_cpu = cpu_iter;
+            set_sched_res(cpu_iter, sr_new[idx]);
+
+            /* Last action: set the new lock pointer. */
+            smp_mb();
+            sr_new[idx]->schedule_lock = &sched_free_cpu_lock;
+
+            idx++;
+        }
+    }
+    sr->scheduler = &sched_idle_ops;
+    sr->sched_priv = NULL;
+
+    smp_mb();
+    sr->schedule_lock = &sched_free_cpu_lock;
 
     /* _Not_ pcpu_schedule_unlock(): schedule_lock may have changed! */
-    spin_unlock_irq(old_lock);
+    spin_unlock_irqrestore(old_lock, flags);
 
-    SCHED_OP(new_ops, tick_resume, cpu);
+    sched_deinit_pdata(old_ops, ppriv_old, cpu);
 
-    SCHED_OP(old_ops, deinit_pdata, ppriv_old, cpu);
+    sched_free_udata(old_ops, vpriv_old);
+    sched_free_pdata(old_ops, ppriv_old, cpu);
 
-    SCHED_OP(old_ops, free_vdata, vpriv_old);
-    SCHED_OP(old_ops, free_pdata, ppriv_old, cpu);
+    sr->granularity = 1;
+    sr->cpupool = NULL;
 
- out:
-    per_cpu(cpupool, cpu) = c;
-    /* When a cpu is added to a pool, trigger it to go pick up some work */
-    if ( c != NULL )
-        cpu_raise_softirq(cpu, SCHEDULE_SOFTIRQ);
+out:
+    rcu_read_unlock(&sched_res_rculock);
+    xfree(sr_new);
 
-    return 0;
+    return ret;
 }
 
 struct scheduler *scheduler_get_default(void)
@@ -1935,7 +3027,7 @@ struct scheduler *scheduler_alloc(unsigned int sched_id, int *perr)
     if ( (sched = xmalloc(struct scheduler)) == NULL )
         return NULL;
     memcpy(sched, schedulers[i], sizeof(*sched));
-    if ( (*perr = SCHED_OP(sched, init)) != 0 )
+    if ( (*perr = sched_init(sched)) != 0 )
     {
         xfree(sched);
         sched = NULL;
@@ -1947,7 +3039,7 @@ struct scheduler *scheduler_alloc(unsigned int sched_id, int *perr)
 void scheduler_free(struct scheduler *sched)
 {
     BUG_ON(sched == &ops);
-    SCHED_OP(sched, deinit);
+    sched_deinit(sched);
     xfree(sched);
 }
 
@@ -1959,12 +3051,14 @@ void schedule_dump(struct cpupool *c)
 
     /* Locking, if necessary, must be handled withing each scheduler */
 
+    rcu_read_lock(&sched_res_rculock);
+
     if ( c != NULL )
     {
         sched = c->sched;
         cpus = c->cpu_valid;
         printk("Scheduler: %s (%s)\n", sched->name, sched->opt_name);
-        SCHED_OP(sched, dump_settings);
+        sched_dump_settings(sched);
     }
     else
     {
@@ -1976,36 +3070,59 @@ void schedule_dump(struct cpupool *c)
     {
         printk("CPUs info:\n");
         for_each_cpu (i, cpus)
-            SCHED_OP(sched, dump_cpu_state, i);
+            sched_dump_cpu_state(sched, i);
     }
+
+    rcu_read_unlock(&sched_res_rculock);
 }
 
 void sched_tick_suspend(void)
 {
-    struct scheduler *sched;
-    unsigned int cpu = smp_processor_id();
-
-    sched = per_cpu(scheduler, cpu);
-    SCHED_OP(sched, tick_suspend, cpu);
-    rcu_idle_enter(cpu);
+    rcu_idle_enter(smp_processor_id());
     rcu_idle_timer_start();
 }
 
 void sched_tick_resume(void)
 {
-    struct scheduler *sched;
-    unsigned int cpu = smp_processor_id();
-
     rcu_idle_timer_stop();
-    rcu_idle_exit(cpu);
-    sched = per_cpu(scheduler, cpu);
-    SCHED_OP(sched, tick_resume, cpu);
+    rcu_idle_exit(smp_processor_id());
 }
 
 void wait(void)
 {
     schedule();
 }
+
+#ifdef CONFIG_X86
+void __init sched_setup_dom0_vcpus(struct domain *d)
+{
+    unsigned int i;
+    struct sched_unit *unit;
+
+    for ( i = 1; i < d->max_vcpus; i++ )
+        vcpu_create(d, i);
+
+    /*
+     * PV-shim: vcpus are pinned 1:1.
+     * Initially only 1 cpu is online, others will be dealt with when
+     * onlining them. This avoids pinning a vcpu to a not yet online cpu here.
+     */
+    if ( pv_shim )
+        sched_set_affinity(d->vcpu[0]->sched_unit,
+                           cpumask_of(0), cpumask_of(0));
+    else
+    {
+        for_each_sched_unit ( d, unit )
+        {
+            if ( !opt_dom0_vcpus_pin && !dom0_affinity_relaxed )
+                sched_set_affinity(unit, &dom0_cpus, NULL);
+            sched_set_affinity(unit, NULL, &dom0_cpus);
+        }
+    }
+
+    domain_update_node_affinity(d);
+}
+#endif
 
 #ifdef CONFIG_COMPAT
 #include "compat/schedule.c"

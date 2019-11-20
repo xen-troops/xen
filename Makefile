@@ -54,6 +54,10 @@ build: $(TARGS_BUILD)
 build-xen:
 	$(MAKE) -C xen build
 
+.PHONY: %_defconfig
+%_defconfig:
+	$(MAKE) -C xen $@
+
 .PHONY: build-tools
 build-tools: build-tools-public-headers
 	$(MAKE) -C tools build
@@ -75,6 +79,9 @@ build-docs:
 .PHONY: test
 test:
 	$(MAKE) -C tools/python test
+
+run-tests-%: build-tools-public-headers tools/tests/%/
+	$(MAKE) -C tools/tests/$* run
 
 # For most targets here,
 #   make COMPONENT-TARGET
@@ -127,7 +134,7 @@ install-tools: install-tools-public-headers
 	$(MAKE) -C tools install
 
 .PHONY: install-stubdom
-install-stubdom: mini-os-dir install-tools-public-headers
+install-stubdom: mini-os-dir install-tools
 	$(MAKE) -C stubdom install
 ifeq (x86_64,$(XEN_TARGET_ARCH))
 	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom install-grub

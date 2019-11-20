@@ -1,0 +1,115 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Data::Dumper;
+
+our %enums;
+
+# Usage: abi-check C-file Ocaml-file
+# Writes out a BUILD_BUG_ON() list to be included back into C.
+#
+# Ocaml-file should be the .ml file.  The ocaml compiler will check
+# that any declarations in a .mli correspond.  We check the .ml
+# rather than the .mli in case there are private types in future.
+
+@ARGV == 2 or die;
+our ($c, $o) = @ARGV;
+
+open C_FILE, "<", $c or die $!;
+
+our $cline = -1;
+our $ei;
+
+# Parse the C file looking for calls to:
+#   c_bitmap_to_ocaml_list()
+#   ocaml_list_to_c_bitmap()
+#
+# followed by anotations of the following form:
+#   /* ! OType OPrefix Mangle */
+#   /* ! CPrefix CFinal CFinalHow */
+# or, for subsequent invocations for the same OType, just
+#   /* ! OType */
+#
+# The function definitions use /* ! */ which simply skips that instance.
+while (<C_FILE>) {
+    if ($cline == -1) {
+        if (m/c_bitmap_to_ocaml_list|ocaml_list_to_c_bitmap/) {
+            $cline = 0;
+            $ei = { };
+        }
+    } else {
+        $cline++;
+        m{^\s+/\* \s+ ! \s+ (.*?) \s* \*/\s*$}x or
+            die "at line $cline of annotation, did not expect $_ ?";
+        my @vals = split /\s+/, $1;
+        if ($cline == 1 && !@vals) {
+            $cline = -1;
+        } elsif ($cline == 1 && @vals == 1) {
+            my ($otype) = @vals;
+            die "reference to undefined OType $otype" unless $enums{$otype};
+            $cline = -1;
+        } elsif ($cline == 1 && @vals == 3) {
+            $ei->{$_} = shift @vals foreach qw(OType OPrefix Mangle);
+        } elsif ($cline == 2 && @vals == 3) {
+            $ei->{$_} = shift @vals foreach qw(CPrefix CFinal CFinalHow);
+            die "redefining OType $ei->{OType}" if $enums{ $ei->{OType} };
+            $enums{ $ei->{OType} } = $ei;
+            $cline = -1;
+        } else {
+            die "$_ ?";
+        }
+    }
+}
+
+sub expect ($$) {
+    printf "BUILD_BUG_ON( %-30s != %-10s );\n", @_ or die $!;
+}
+
+open OCAML_FILE, "<", $o or die $!;
+my $cval;
+$ei = undef;
+my $bitnum = 0;
+while (<OCAML_FILE>) {
+    if ($ei) {
+        if (m{^\s+ \| \s* $ei->{OPrefix} (\w+) \s*$}x) {
+            $cval = $1;
+            if ($ei->{Mangle} eq 'lc') {
+                $cval = lc $cval;
+            } elsif ($ei->{Mangle} eq 'none') {
+            } else {
+                die;
+            }
+            $cval = $ei->{CPrefix}.$cval;
+            expect($cval, "(1u << $bitnum)");
+            $bitnum++;
+        } elsif (m/^\w|\{/) {
+            if ($ei->{CFinalHow} eq 'max') {
+                expect($ei->{CFinal}, "(1u << ".($bitnum-1).")");
+            } elsif ($ei->{CFinalHow} eq 'all') {
+                expect($ei->{CFinal}, "(1u << $bitnum)-1u");
+            } else {
+                die Dumper($ei)." ?";
+            }
+            $ei->{Checked} = 1;
+            $ei = undef;
+        } elsif (!m{\S}) {
+        } else {
+            die "$_ ?";
+        }
+    }
+    if (!$ei) {
+        if (m{^type \s+ (\w+) \s* \= \s* $}x && $enums{$1}) {
+            print "// found ocaml type $1 at $o:$.\n" or die $!;
+            $ei = $enums{$1};
+            $cval = '';
+            $bitnum = 0;
+        }
+    }
+}
+
+foreach $ei (values %enums) {
+    next if $ei->{Checked};
+    die "did not find ocaml type definition for $ei->{OType} in $o";
+}
+
+close STDOUT or die $!;

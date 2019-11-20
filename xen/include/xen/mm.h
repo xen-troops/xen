@@ -206,10 +206,9 @@ unsigned long avail_domheap_pages(void);
 unsigned long avail_node_heap_pages(unsigned int);
 #define alloc_domheap_page(d,f) (alloc_domheap_pages(d,0,f))
 #define free_domheap_page(p)  (free_domheap_pages(p,0))
-unsigned int online_page(unsigned long mfn, uint32_t *status);
-int offline_page(unsigned long mfn, int broken, uint32_t *status);
-int query_page_offline(unsigned long mfn, uint32_t *status);
-unsigned long total_free_pages(void);
+unsigned int online_page(mfn_t mfn, uint32_t *status);
+int offline_page(mfn_t mfn, int broken, uint32_t *status);
+int query_page_offline(mfn_t mfn, uint32_t *status);
 
 void heap_init_late(void);
 
@@ -249,8 +248,6 @@ struct npfec {
 #define  MEMF_no_refcount (1U<<_MEMF_no_refcount)
 #define _MEMF_populate_on_demand 1
 #define  MEMF_populate_on_demand (1U<<_MEMF_populate_on_demand)
-#define _MEMF_tmem        2
-#define  MEMF_tmem        (1U<<_MEMF_tmem)
 #define _MEMF_no_dma      3
 #define  MEMF_no_dma      (1U<<_MEMF_no_dma)
 #define _MEMF_exact_node  4
@@ -274,6 +271,14 @@ struct npfec {
 #define MAX_ORDER CONFIG_PAGEALLOC_MAX_ORDER
 #else
 #define MAX_ORDER 20 /* 2^20 contiguous pages */
+#endif
+
+/* Private domain structs for DOMID_XEN, DOMID_IO, etc. */
+extern struct domain *dom_xen, *dom_io;
+#ifdef CONFIG_MEM_SHARING
+extern struct domain *dom_cow;
+#else
+# define dom_cow NULL
 #endif
 
 #define page_list_entry list_head
@@ -656,6 +661,26 @@ static inline void share_xen_page_with_privileged_guests(
     struct page_info *page, enum XENSHARE_flags flags)
 {
     share_xen_page_with_guest(page, dom_xen, flags);
+}
+
+static inline void put_page_alloc_ref(struct page_info *page)
+{
+    /*
+     * Whenever a page is assigned to a domain then the _PGC_allocated
+     * bit is set and the reference count is set to at least 1. This
+     * function clears that 'allocation reference' but it is unsafe to
+     * do so to domheap pages without the caller holding an additional
+     * reference. I.e. the allocation reference must never be the last
+     * reference held.
+     *
+     * (It's safe for xenheap pages, because put_page() will not cause
+     * them to be freed.)
+     */
+    if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
+    {
+        BUG_ON((page->count_info & (PGC_xen_heap | PGC_count_mask)) <= 1);
+        put_page(page);
+    }
 }
 
 #endif /* __XEN_MM_H__ */

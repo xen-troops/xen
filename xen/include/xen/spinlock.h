@@ -1,26 +1,36 @@
 #ifndef __SPINLOCK_H__
 #define __SPINLOCK_H__
 
+#include <xen/time.h>
 #include <asm/system.h>
 #include <asm/spinlock.h>
 #include <asm/types.h>
-#include <xen/percpu.h>
 
-#ifndef NDEBUG
-struct lock_debug {
-    s16 irq_safe; /* +1: IRQ-safe; 0: not IRQ-safe; -1: don't know yet */
+#define SPINLOCK_CPU_BITS  12
+
+#ifdef CONFIG_DEBUG_LOCKS
+union lock_debug {
+    uint16_t val;
+#define LOCK_DEBUG_INITVAL 0xffff
+    struct {
+        uint16_t cpu:SPINLOCK_CPU_BITS;
+#define LOCK_DEBUG_PAD_BITS (14 - SPINLOCK_CPU_BITS)
+        uint16_t :LOCK_DEBUG_PAD_BITS;
+        bool irq_safe:1;
+        bool unseen:1;
+    };
 };
-#define _LOCK_DEBUG { -1 }
+#define _LOCK_DEBUG { LOCK_DEBUG_INITVAL }
 void spin_debug_enable(void);
 void spin_debug_disable(void);
 #else
-struct lock_debug { };
+union lock_debug { };
 #define _LOCK_DEBUG { }
 #define spin_debug_enable() ((void)0)
 #define spin_debug_disable() ((void)0)
 #endif
 
-#ifdef CONFIG_LOCK_PROFILE
+#ifdef CONFIG_DEBUG_LOCK_PROFILE
 
 #include <public/sysctl.h>
 
@@ -66,9 +76,9 @@ struct lock_profile {
     struct spinlock     *lock;       /* the lock itself */
     u64                 lock_cnt;    /* # of complete locking ops */
     u64                 block_cnt;   /* # of complete wait for lock */
-    s64                 time_hold;   /* cumulated lock time */
-    s64                 time_block;  /* cumulated wait time */
-    s64                 time_locked; /* system time of last locking */
+    s_time_t            time_hold;   /* cumulated lock time */
+    s_time_t            time_block;  /* cumulated wait time */
+    s_time_t            time_locked; /* system time of last locking */
 };
 
 struct lock_profile_qhead {
@@ -124,6 +134,7 @@ struct lock_profile_qhead { };
 #define spin_lock_init_prof(s, l) spin_lock_init(&((s)->l))
 #define lock_profile_register_struct(type, ptr, idx, print)
 #define lock_profile_deregister_struct(type, ptr)
+#define spinlock_profile_printall(key)
 
 #endif
 
@@ -139,12 +150,13 @@ typedef union {
 
 typedef struct spinlock {
     spinlock_tickets_t tickets;
-    u16 recurse_cpu:12;
-#define SPINLOCK_NO_CPU 0xfffu
-    u16 recurse_cnt:4;
-#define SPINLOCK_MAX_RECURSE 0xfu
-    struct lock_debug debug;
-#ifdef CONFIG_LOCK_PROFILE
+    u16 recurse_cpu:SPINLOCK_CPU_BITS;
+#define SPINLOCK_NO_CPU        ((1u << SPINLOCK_CPU_BITS) - 1)
+#define SPINLOCK_RECURSE_BITS  (16 - SPINLOCK_CPU_BITS)
+    u16 recurse_cnt:SPINLOCK_RECURSE_BITS;
+#define SPINLOCK_MAX_RECURSE   ((1u << SPINLOCK_RECURSE_BITS) - 1)
+    union lock_debug debug;
+#ifdef CONFIG_DEBUG_LOCK_PROFILE
     struct lock_profile *profile;
 #endif
 } spinlock_t;

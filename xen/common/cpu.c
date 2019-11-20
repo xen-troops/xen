@@ -51,16 +51,6 @@ void put_cpu_maps(void)
     spin_unlock_recursive(&cpu_add_remove_lock);
 }
 
-bool_t cpu_hotplug_begin(void)
-{
-    return get_cpu_maps();
-}
-
-void cpu_hotplug_done(void)
-{
-    put_cpu_maps();
-}
-
 static NOTIFIER_HEAD(cpu_chain);
 
 void __init register_cpu_notifier(struct notifier_block *nb)
@@ -71,11 +61,21 @@ void __init register_cpu_notifier(struct notifier_block *nb)
     spin_unlock(&cpu_add_remove_lock);
 }
 
+static int cpu_notifier_call_chain(unsigned int cpu, unsigned long action,
+                                   struct notifier_block **nb, bool nofail)
+{
+    void *hcpu = (void *)(long)cpu;
+    int notifier_rc = notifier_call_chain(&cpu_chain, action, hcpu, nb);
+    int ret = (notifier_rc == NOTIFY_DONE) ? 0 : notifier_to_errno(notifier_rc);
+
+    BUG_ON(ret && nofail);
+
+    return ret;
+}
+
 static void _take_cpu_down(void *unused)
 {
-    void *hcpu = (void *)(long)smp_processor_id();
-    int notifier_rc = notifier_call_chain(&cpu_chain, CPU_DYING, hcpu, NULL);
-    BUG_ON(notifier_rc != NOTIFY_DONE);
+    cpu_notifier_call_chain(smp_processor_id(), CPU_DYING, NULL, true);
     __cpu_disable();
 }
 
@@ -87,76 +87,71 @@ static int take_cpu_down(void *arg)
 
 int cpu_down(unsigned int cpu)
 {
-    int err, notifier_rc;
-    void *hcpu = (void *)(long)cpu;
+    int err;
     struct notifier_block *nb = NULL;
 
     if ( !cpu_hotplug_begin() )
         return -EBUSY;
 
-    if ( (cpu >= nr_cpu_ids) || (cpu == 0) || !cpu_online(cpu) )
-    {
-        cpu_hotplug_done();
-        return -EINVAL;
-    }
+    err = -EINVAL;
+    if ( (cpu >= nr_cpu_ids) || (cpu == 0) )
+        goto out;
 
-    notifier_rc = notifier_call_chain(&cpu_chain, CPU_DOWN_PREPARE, hcpu, &nb);
-    if ( notifier_rc != NOTIFY_DONE )
-    {
-        err = notifier_to_errno(notifier_rc);
+    err = -EEXIST;
+    if ( !cpu_online(cpu) )
+        goto out;
+
+    err = cpu_notifier_call_chain(cpu, CPU_DOWN_PREPARE, &nb, false);
+    if ( err )
         goto fail;
-    }
 
-    if ( unlikely(system_state < SYS_STATE_active) )
+    if ( system_state < SYS_STATE_active || system_state == SYS_STATE_resume )
         on_selected_cpus(cpumask_of(cpu), _take_cpu_down, NULL, true);
     else if ( (err = stop_machine_run(take_cpu_down, NULL, cpu)) < 0 )
         goto fail;
 
     __cpu_die(cpu);
-    BUG_ON(cpu_online(cpu));
+    err = cpu_online(cpu);
+    BUG_ON(err);
 
-    notifier_rc = notifier_call_chain(&cpu_chain, CPU_DEAD, hcpu, NULL);
-    BUG_ON(notifier_rc != NOTIFY_DONE);
+    cpu_notifier_call_chain(cpu, CPU_DEAD, NULL, true);
 
     send_global_virq(VIRQ_PCPU_STATE);
     cpu_hotplug_done();
     return 0;
 
  fail:
-    notifier_rc = notifier_call_chain(&cpu_chain, CPU_DOWN_FAILED, hcpu, &nb);
-    BUG_ON(notifier_rc != NOTIFY_DONE);
+    cpu_notifier_call_chain(cpu, CPU_DOWN_FAILED, &nb, true);
+ out:
     cpu_hotplug_done();
     return err;
 }
 
 int cpu_up(unsigned int cpu)
 {
-    int notifier_rc, err = 0;
-    void *hcpu = (void *)(long)cpu;
+    int err;
     struct notifier_block *nb = NULL;
 
     if ( !cpu_hotplug_begin() )
         return -EBUSY;
 
-    if ( (cpu >= nr_cpu_ids) || cpu_online(cpu) || !cpu_present(cpu) )
-    {
-        cpu_hotplug_done();
-        return -EINVAL;
-    }
+    err = -EINVAL;
+    if ( (cpu >= nr_cpu_ids) || !cpu_present(cpu) )
+        goto out;
 
-    notifier_rc = notifier_call_chain(&cpu_chain, CPU_UP_PREPARE, hcpu, &nb);
-    if ( notifier_rc != NOTIFY_DONE )
-    {
-        err = notifier_to_errno(notifier_rc);
+    err = -EEXIST;
+    if ( cpu_online(cpu) )
+        goto out;
+
+    err = cpu_notifier_call_chain(cpu, CPU_UP_PREPARE, &nb, false);
+    if ( err )
         goto fail;
-    }
 
     err = __cpu_up(cpu);
     if ( err < 0 )
         goto fail;
 
-    notifier_rc = notifier_call_chain(&cpu_chain, CPU_ONLINE, hcpu, NULL);
-    BUG_ON(notifier_rc != NOTIFY_DONE);
+    cpu_notifier_call_chain(cpu, CPU_ONLINE, NULL, true);
 
     send_global_virq(VIRQ_PCPU_STATE);
 
@@ -164,18 +159,15 @@ int cpu_up(unsigned int cpu)
     return 0;
 
  fail:
-    notifier_rc = notifier_call_chain(&cpu_chain, CPU_UP_CANCELED, hcpu, &nb);
-    BUG_ON(notifier_rc != NOTIFY_DONE);
+    cpu_notifier_call_chain(cpu, CPU_UP_CANCELED, &nb, true);
+ out:
     cpu_hotplug_done();
     return err;
 }
 
 void notify_cpu_starting(unsigned int cpu)
 {
-    void *hcpu = (void *)(long)cpu;
-    int notifier_rc = notifier_call_chain(
-        &cpu_chain, CPU_STARTING, hcpu, NULL);
-    BUG_ON(notifier_rc != NOTIFY_DONE);
+    cpu_notifier_call_chain(cpu, CPU_STARTING, NULL, true);
 }
 
 static cpumask_t frozen_cpus;
@@ -215,14 +207,23 @@ void enable_nonboot_cpus(void)
 
     printk("Enabling non-boot CPUs  ...\n");
 
-    for_each_cpu ( cpu, &frozen_cpus )
+    for_each_present_cpu ( cpu )
     {
+        if ( park_offline_cpus ? cpu == smp_processor_id()
+                               : !cpumask_test_cpu(cpu, &frozen_cpus) )
+            continue;
         if ( (error = cpu_up(cpu)) )
         {
             printk("Error bringing CPU%d up: %d\n", cpu, error);
             BUG_ON(error == -EBUSY);
         }
+        else if ( !__cpumask_test_and_clear_cpu(cpu, &frozen_cpus) &&
+                  (error = cpu_down(cpu)) )
+            printk("Error re-offlining CPU%d: %d\n", cpu, error);
     }
+
+    for_each_cpu ( cpu, &frozen_cpus )
+        cpu_notifier_call_chain(cpu, CPU_RESUME_FAILED, NULL, true);
 
     cpumask_clear(&frozen_cpus);
 }

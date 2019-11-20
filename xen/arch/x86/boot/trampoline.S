@@ -38,6 +38,13 @@
 
         .code16
 
+/*
+ * do_boot_cpu() programs the Startup-IPI to point here.  Due to the SIPI
+ * format, the relocated entrypoint must be 4k aligned.
+ *
+ * It is entered in Real Mode, with %cs = trampoline_realmode_entry >> 4 and
+ * %ip = 0.
+ */
 GLOBAL(trampoline_realmode_entry)
         mov     %cs,%ax
         mov     %ax,%ds
@@ -46,39 +53,32 @@ GLOBAL(trampoline_realmode_entry)
         cli
         lidt    bootsym(idt_48)
         lgdt    bootsym(gdt_48)
-        mov     $1,%bl                    # EBX != 0 indicates we are an AP
-        xor     %ax, %ax
-        inc     %ax
-        lmsw    %ax                       # CR0.PE = 1 (enter protected mode)
-        ljmpl   $BOOT_CS32,$bootsym_rel(trampoline_protmode_entry,6)
+        mov     $X86_CR0_PE, %ebx         # EBX != 0 indicates we are an AP
+        mov     %ebx, %cr0                # Alias with CR0.PE for brevity
 
-        .balign 8
-        .word   0
-idt_48: .word   0, 0, 0 # base = limit = 0
-        .word   0
-gdt_48: .word   6*8-1
-        .long   bootsym_rel(trampoline_gdt,4)
+        ljmpl   $BOOT_CS32,$bootsym_rel(trampoline_protmode_entry,6)
 
 trampoline_gdt:
         /* 0x0000: unused */
         .quad   0x0000000000000000
         /* 0x0008: ring 0 code, 32-bit mode */
-        .quad   0x00cf9a000000ffff
+        .quad   0x00cf9b000000ffff
         /* 0x0010: ring 0 code, 64-bit mode */
-        .quad   0x00af9a000000ffff
+        .quad   0x00af9b000000ffff
         /* 0x0018: ring 0 data */
-        .quad   0x00cf92000000ffff
+        .quad   0x00cf93000000ffff
         /* 0x0020: real-mode code @ BOOT_TRAMPOLINE */
         .long   0x0000ffff
-        .long   0x00009a00
+        .long   0x00009b00
         /* 0x0028: real-mode data @ BOOT_TRAMPOLINE */
         .long   0x0000ffff
-        .long   0x00009200
+        .long   0x00009300
         /*
          * 0x0030: ring 0 Xen data, 16 MiB size, base
          * address is computed at runtime.
          */
-        .quad   0x00c0920000000fff
+        .quad   0x00c0930000000fff
+.Ltrampoline_gdt_end:
 
         .pushsection .trampoline_rel, "a"
         .long   trampoline_gdt + BOOT_PSEUDORM_CS + 2 - .
@@ -176,7 +176,15 @@ start64:
 
         jmpq    *%rdi
 
+#include "video.h"
 #include "wakeup.S"
+
+        .balign 8
+        .word   0
+idt_48: .word   0, 0, 0 # base = limit = 0
+        .word   0
+gdt_48: .word   .Ltrampoline_gdt_end - trampoline_gdt - 1
+        .long   bootsym_rel(trampoline_gdt,4)
 
 /* The first page of trampoline is permanent, the rest boot-time only. */
 /* Reuse the boot trampoline on the 1st trampoline page as stack for wakeup. */
@@ -255,9 +263,8 @@ trampoline_boot_cpu_entry:
         lgdt    bootsym(gdt_48)
 
         /* Enter protected mode, and flush insn queue. */
-        xor     %ax,%ax
-        inc     %ax
-        lmsw    %ax                       # CR0.PE = 1 (enter protected mode)
+        mov     $X86_CR0_PE, %eax
+        mov     %eax, %cr0
 
         /* Load proper protected-mode values into all segment registers. */
         ljmpl   $BOOT_CS32,$bootsym_rel(1f,6)
@@ -275,8 +282,6 @@ trampoline_boot_cpu_entry:
 
         /* Jump to the common bootstrap entry point. */
         jmp     trampoline_protmode_entry
-
-#include "video.h"
 
         .align  2
 /* Keep in sync with cmdline.c:early_boot_opts_t type! */

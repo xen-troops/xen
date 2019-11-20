@@ -72,7 +72,9 @@ bool emul_test_init(void)
      * them.
      */
     cp.basic.movbe = true;
+    cp.feat.invpcid = true;
     cp.feat.adx = true;
+    cp.feat.avx512pf = cp.feat.avx512f;
     cp.feat.rdpid = true;
     cp.extd.clzero = true;
 
@@ -135,12 +137,14 @@ int emul_test_cpuid(
         res->c |= 1U << 22;
 
     /*
-     * The emulator doesn't itself use ADCX/ADOX/RDPID, so we can always run
-     * the respective tests.
+     * The emulator doesn't itself use ADCX/ADOX/RDPID nor the S/G prefetch
+     * insns, so we can always run the respective tests.
      */
     if ( leaf == 7 && subleaf == 0 )
     {
-        res->b |= 1U << 19;
+        res->b |= (1U << 10) | (1U << 19);
+        if ( res->b & (1U << 16) )
+            res->b |= 1U << 26;
         res->c |= 1U << 22;
     }
 

@@ -67,10 +67,6 @@ class xen
     lockprof
 # XEN_SYSCTL_cpupool_op
     cpupool_op
-# tmem hypercall (any access)
-    tmem_op
-# XEN_SYSCTL_tmem_op command of tmem (part of sysctl)
-    tmem_control
 # XEN_SYSCTL_scheduler_op with XEN_DOMCTL_SCHEDOP_getinfo, XEN_SYSCTL_sched_id, XEN_DOMCTL_SCHEDOP_getvcpuinfo
     getscheduler
 # XEN_SYSCTL_scheduler_op with XEN_DOMCTL_SCHEDOP_putinfo, XEN_DOMCTL_SCHEDOP_putvcpuinfo
@@ -170,9 +166,9 @@ class domain
     set_target
 # SCHEDOP_remote_shutdown
     shutdown
-# XEN_DOMCTL_set{,_machine}_address_size
+# XEN_DOMCTL_set_address_size
     setaddrsize
-# XEN_DOMCTL_get{,_machine}_address_size
+# XEN_DOMCTL_get_address_size
     getaddrsize
 # XEN_DOMCTL_sendtrigger
     trigger
@@ -180,8 +176,7 @@ class domain
     getpodtarget
 # XENMEM_set_pod_target
     setpodtarget
-# XEN_DOMCTL_subscribe, XEN_DOMCTL_disable_migrate,
-# XEN_DOMCTL_suppress_spurious_page_faults
+# XEN_DOMCTL_subscribe, XEN_DOMCTL_disable_migrate
     set_misc_info
 # XEN_DOMCTL_set_virq_handler
     set_virq_handler
@@ -212,8 +207,8 @@ class domain2
 #  source = the domain making the hypercall
 #  target = the new target domain
     set_as_target
-# XEN_DOMCTL_set_cpuid
-    set_cpuid
+# XEN_DOMCTL_set_cpu_policy
+    set_cpu_policy
 # XEN_DOMCTL_gettscinfo
     gettsc
 # XEN_DOMCTL_settscinfo

@@ -62,7 +62,7 @@ static struct keyhandler {
     KEYHANDLER('P', perfc_reset, "reset performance counters", 0),
 #endif
 
-#ifdef CONFIG_LOCK_PROFILE
+#ifdef CONFIG_DEBUG_LOCK_PROFILE
     KEYHANDLER('l', spinlock_profile_printall, "print lock profile info", 1),
     KEYHANDLER('L', spinlock_profile_reset, "reset lock profile info", 0),
 #endif
@@ -251,6 +251,7 @@ static void reboot_machine(unsigned char key, struct cpu_user_regs *regs)
 static void dump_domains(unsigned char key)
 {
     struct domain *d;
+    const struct sched_unit *unit;
     struct vcpu   *v;
     s_time_t       now = NOW();
 
@@ -272,8 +273,8 @@ static void dump_domains(unsigned char key)
         printk("    nr_pages=%d xenheap_pages=%d shared_pages=%u paged_pages=%u "
                "dirty_cpus={%*pbl} max_pages=%u\n",
                d->tot_pages, d->xenheap_pages, atomic_read(&d->shr_pages),
-               atomic_read(&d->paged_pages), nr_cpu_ids,
-               cpumask_bits(d->dirty_cpumask), d->max_pages);
+               atomic_read(&d->paged_pages), CPUMASK_PR(d->dirty_cpumask),
+               d->max_pages);
         printk("    handle=%02x%02x%02x%02x-%02x%02x-%02x%02x-"
                "%02x%02x-%02x%02x%02x%02x%02x%02x vm_assist=%08lx\n",
                d->handle[ 0], d->handle[ 1], d->handle[ 2], d->handle[ 3],
@@ -293,37 +294,42 @@ static void dump_domains(unsigned char key)
         dump_pageframe_info(d);
 
         printk("NODE affinity for domain %d: [%*pbl]\n",
-               d->domain_id, MAX_NUMNODES, d->node_affinity.bits);
+               d->domain_id, NODEMASK_PR(&d->node_affinity));
 
         printk("VCPU information and callbacks for domain %u:\n",
                d->domain_id);
-        for_each_vcpu ( d, v )
+
+        for_each_sched_unit ( d, unit )
         {
-            if ( !(v->vcpu_id & 0x3f) )
-                process_pending_softirqs();
+            printk("  UNIT%d affinities: hard={%*pbl} soft={%*pbl}\n",
+                   unit->unit_id, CPUMASK_PR(unit->cpu_hard_affinity),
+                   CPUMASK_PR(unit->cpu_soft_affinity));
 
-            printk("    VCPU%d: CPU%d [has=%c] poll=%d "
-                   "upcall_pend=%02x upcall_mask=%02x ",
-                   v->vcpu_id, v->processor,
-                   v->is_running ? 'T':'F', v->poll_evtchn,
-                   vcpu_info(v, evtchn_upcall_pending),
-                   !vcpu_event_delivery_is_enabled(v));
-            if ( vcpu_cpu_dirty(v) )
-                printk("dirty_cpu=%u", v->dirty_cpu);
-            printk("\n");
-            printk("    cpu_hard_affinity={%*pbl} cpu_soft_affinity={%*pbl}\n",
-                   nr_cpu_ids, cpumask_bits(v->cpu_hard_affinity),
-                   nr_cpu_ids, cpumask_bits(v->cpu_soft_affinity));
-            printk("    pause_count=%d pause_flags=%lx\n",
-                   atomic_read(&v->pause_count), v->pause_flags);
-            arch_dump_vcpu_info(v);
+            for_each_sched_unit_vcpu ( unit, v )
+            {
+                if ( !(v->vcpu_id & 0x3f) )
+                    process_pending_softirqs();
 
-            if ( v->periodic_period == 0 )
-                printk("No periodic timer\n");
-            else
-                printk("%"PRI_stime" Hz periodic timer (period %"PRI_stime" ms)\n",
-                       1000000000 / v->periodic_period,
-                       v->periodic_period / 1000000);
+                printk("    VCPU%d: CPU%d [has=%c] poll=%d "
+                       "upcall_pend=%02x upcall_mask=%02x ",
+                       v->vcpu_id, v->processor,
+                       v->is_running ? 'T':'F', v->poll_evtchn,
+                       vcpu_info(v, evtchn_upcall_pending),
+                       !vcpu_event_delivery_is_enabled(v));
+                if ( vcpu_cpu_dirty(v) )
+                    printk("dirty_cpu=%u", v->dirty_cpu);
+                printk("\n");
+                printk("    pause_count=%d pause_flags=%lx\n",
+                       atomic_read(&v->pause_count), v->pause_flags);
+                arch_dump_vcpu_info(v);
+
+                if ( v->periodic_period == 0 )
+                    printk("No periodic timer\n");
+                else
+                    printk("%"PRI_stime" Hz periodic timer (period %"PRI_stime" ms)\n",
+                           1000000000 / v->periodic_period,
+                           v->periodic_period / 1000000);
+            }
         }
     }
 

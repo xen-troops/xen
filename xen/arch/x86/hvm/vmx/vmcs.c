@@ -793,10 +793,10 @@ static void vmx_set_host_env(struct vcpu *v)
     unsigned int cpu = smp_processor_id();
 
     __vmwrite(HOST_GDTR_BASE,
-              (unsigned long)(this_cpu(gdt_table) - FIRST_RESERVED_GDT_ENTRY));
+              (unsigned long)(this_cpu(gdt) - FIRST_RESERVED_GDT_ENTRY));
     __vmwrite(HOST_IDTR_BASE, (unsigned long)idt_tables[cpu]);
 
-    __vmwrite(HOST_TR_BASE, (unsigned long)&per_cpu(init_tss, cpu));
+    __vmwrite(HOST_TR_BASE, (unsigned long)&per_cpu(tss_page, cpu).tss);
 
     __vmwrite(HOST_SYSENTER_ESP, get_stack_bottom());
 
@@ -1087,7 +1087,7 @@ static int construct_vmcs(struct vcpu *v)
         vmx_clear_msr_intercept(v, MSR_IA32_SYSENTER_CS, VMX_MSR_RW);
         vmx_clear_msr_intercept(v, MSR_IA32_SYSENTER_ESP, VMX_MSR_RW);
         vmx_clear_msr_intercept(v, MSR_IA32_SYSENTER_EIP, VMX_MSR_RW);
-        if ( paging_mode_hap(d) && (!iommu_enabled || iommu_snoop) )
+        if ( paging_mode_hap(d) && (!is_iommu_enabled(d) || iommu_snoop) )
             vmx_clear_msr_intercept(v, MSR_IA32_CR_PAT, VMX_MSR_RW);
         if ( (vmexit_ctl & VM_EXIT_CLEAR_BNDCFGS) &&
              (vmentry_ctl & VM_ENTRY_LOAD_BNDCFGS) )
@@ -1128,7 +1128,7 @@ static int construct_vmcs(struct vcpu *v)
     __vmwrite(HOST_GS_SELECTOR, 0);
     __vmwrite(HOST_FS_BASE, 0);
     __vmwrite(HOST_GS_BASE, 0);
-    __vmwrite(HOST_TR_SELECTOR, TSS_ENTRY << 3);
+    __vmwrite(HOST_TR_SELECTOR, TSS_SELECTOR);
 
     /* Host control registers. */
     v->arch.hvm.vmx.host_cr0 = read_cr0() & ~X86_CR0_TS;
@@ -1490,15 +1490,15 @@ int vmx_del_msr(struct vcpu *v, uint32_t msr, enum vmx_msr_list_type type)
     switch ( type )
     {
     case VMX_MSR_HOST:
-        __vmwrite(VM_EXIT_MSR_LOAD_COUNT, vmx->host_msr_count--);
+        __vmwrite(VM_EXIT_MSR_LOAD_COUNT, --vmx->host_msr_count);
         break;
 
     case VMX_MSR_GUEST:
-        __vmwrite(VM_EXIT_MSR_STORE_COUNT, vmx->msr_save_count--);
+        __vmwrite(VM_EXIT_MSR_STORE_COUNT, --vmx->msr_save_count);
 
         /* Fallthrough */
     case VMX_MSR_GUEST_LOADONLY:
-        __vmwrite(VM_ENTRY_MSR_LOAD_COUNT, vmx->msr_load_count--);
+        __vmwrite(VM_ENTRY_MSR_LOAD_COUNT, --vmx->msr_load_count);
         break;
     }
 

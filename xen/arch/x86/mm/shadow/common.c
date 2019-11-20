@@ -46,7 +46,7 @@ static void sh_clean_dirty_bitmap(struct domain *);
 
 /* Set up the shadow-specific parts of a domain struct at start of day.
  * Called for every domain from arch_domain_create() */
-int shadow_domain_init(struct domain *d, unsigned int domcr_flags)
+int shadow_domain_init(struct domain *d)
 {
     static const struct log_dirty_ops sh_ops = {
         .enable  = sh_enable_log_dirty,
@@ -62,7 +62,6 @@ int shadow_domain_init(struct domain *d, unsigned int domcr_flags)
 
 #if (SHADOW_OPTIMIZATIONS & SHOPT_OUT_OF_SYNC)
     d->arch.paging.shadow.oos_active = 0;
-    d->arch.paging.shadow.oos_off = domcr_flags & XEN_DOMCTL_CDF_oos_off;
 #endif
     d->arch.paging.shadow.pagetable_dying_op = 0;
 
@@ -111,105 +110,6 @@ static int __init shadow_audit_key_init(void)
 }
 __initcall(shadow_audit_key_init);
 #endif /* SHADOW_AUDIT */
-
-
-#ifdef CONFIG_HVM
-extern const struct x86_emulate_ops hvm_shadow_emulator_ops;
-extern struct segment_register *hvm_get_seg_reg(
-    enum x86_segment seg, struct sh_emulate_ctxt *sh_ctxt);
-extern int hvm_translate_virtual_addr(
-    enum x86_segment seg,
-    unsigned long offset,
-    unsigned int bytes,
-    enum hvm_access_type access_type,
-    struct sh_emulate_ctxt *sh_ctxt,
-    unsigned long *linear);
-#endif
-
-const struct x86_emulate_ops *shadow_init_emulation(
-    struct sh_emulate_ctxt *sh_ctxt, struct cpu_user_regs *regs,
-    unsigned int pte_size)
-{
-#ifdef CONFIG_HVM
-    struct segment_register *creg, *sreg;
-    struct vcpu *v = current;
-    unsigned long addr;
-
-    ASSERT(is_hvm_vcpu(v));
-
-    memset(sh_ctxt, 0, sizeof(*sh_ctxt));
-
-    sh_ctxt->ctxt.regs = regs;
-    sh_ctxt->ctxt.vendor = v->domain->arch.cpuid->x86_vendor;
-    sh_ctxt->ctxt.lma = hvm_long_mode_active(v);
-
-    /* Segment cache initialisation. Primed with CS. */
-    creg = hvm_get_seg_reg(x86_seg_cs, sh_ctxt);
-
-    /* Work out the emulation mode. */
-    if ( sh_ctxt->ctxt.lma && creg->l )
-        sh_ctxt->ctxt.addr_size = sh_ctxt->ctxt.sp_size = 64;
-    else
-    {
-        sreg = hvm_get_seg_reg(x86_seg_ss, sh_ctxt);
-        sh_ctxt->ctxt.addr_size = creg->db ? 32 : 16;
-        sh_ctxt->ctxt.sp_size   = sreg->db ? 32 : 16;
-    }
-
-    sh_ctxt->pte_size = pte_size;
-
-    /* Attempt to prefetch whole instruction. */
-    sh_ctxt->insn_buf_eip = regs->rip;
-    sh_ctxt->insn_buf_bytes =
-        (!hvm_translate_virtual_addr(
-            x86_seg_cs, regs->rip, sizeof(sh_ctxt->insn_buf),
-            hvm_access_insn_fetch, sh_ctxt, &addr) &&
-         !hvm_copy_from_guest_linear(
-             sh_ctxt->insn_buf, addr, sizeof(sh_ctxt->insn_buf),
-             PFEC_insn_fetch, NULL))
-        ? sizeof(sh_ctxt->insn_buf) : 0;
-
-    return &hvm_shadow_emulator_ops;
-#else
-    BUG();
-    return NULL;
-#endif
-}
-
-/* Update an initialized emulation context to prepare for the next
- * instruction */
-void shadow_continue_emulation(struct sh_emulate_ctxt *sh_ctxt,
-                               struct cpu_user_regs *regs)
-{
-#ifdef CONFIG_HVM
-    struct vcpu *v = current;
-    unsigned long addr, diff;
-
-    ASSERT(is_hvm_vcpu(v));
-
-    /*
-     * We don't refetch the segment bases, because we don't emulate
-     * writes to segment registers
-     */
-    diff = regs->rip - sh_ctxt->insn_buf_eip;
-    if ( diff > sh_ctxt->insn_buf_bytes )
-    {
-        /* Prefetch more bytes. */
-        sh_ctxt->insn_buf_bytes =
-            (!hvm_translate_virtual_addr(
-                x86_seg_cs, regs->rip, sizeof(sh_ctxt->insn_buf),
-                hvm_access_insn_fetch, sh_ctxt, &addr) &&
-             !hvm_copy_from_guest_linear(
-                 sh_ctxt->insn_buf, addr, sizeof(sh_ctxt->insn_buf),
-                 PFEC_insn_fetch, NULL))
-            ? sizeof(sh_ctxt->insn_buf) : 0;
-        sh_ctxt->insn_buf_eip = regs->rip;
-    }
-#else
-    BUG();
-#endif
-}
-
 
 #if (SHADOW_OPTIMIZATIONS & SHOPT_OUT_OF_SYNC)
 /**************************************************************************/
@@ -474,7 +374,8 @@ static inline void trace_resync(int event, mfn_t gmfn)
     if ( tb_init_done )
     {
         /* Convert gmfn to gfn */
-        unsigned long gfn = mfn_to_gfn(current->domain, gmfn);
+        gfn_t gfn = mfn_to_gfn(current->domain, gmfn);
+
         __trace_var(event, 0/*!tsc*/, sizeof(gfn), &gfn);
     }
 }
@@ -985,7 +886,8 @@ static inline void trace_shadow_prealloc_unpin(struct domain *d, mfn_t smfn)
     if ( tb_init_done )
     {
         /* Convert smfn to gfn */
-        unsigned long gfn;
+        gfn_t gfn;
+
         ASSERT(mfn_valid(smfn));
         gfn = mfn_to_gfn(d, backpointer(mfn_to_page(smfn)));
         __trace_var(TRC_SHADOW_PREALLOC_UNPIN, 0/*!tsc*/, sizeof(gfn), &gfn);
@@ -1354,29 +1256,26 @@ static unsigned int sh_min_allocation(const struct domain *d)
      * up of slot zero and an LAPIC page), plus one for HVM's 1-to-1 pagetable.
      */
     return shadow_min_acceptable_pages(d) +
-           max(d->tot_pages / 256,
-               is_hvm_domain(d) ? CONFIG_PAGING_LEVELS + 2 : 0U) +
-           is_hvm_domain(d);
+           max(max(d->tot_pages / 256,
+                   is_hvm_domain(d) ? CONFIG_PAGING_LEVELS + 2 : 0U) +
+               is_hvm_domain(d),
+               d->arch.paging.shadow.p2m_pages);
 }
 
 int shadow_set_allocation(struct domain *d, unsigned int pages, bool *preempted)
 {
     struct page_info *sp;
-    unsigned int lower_bound;
 
     ASSERT(paging_locked_by_me(d));
 
     if ( pages > 0 )
     {
         /* Check for minimum value. */
-        if ( pages < d->arch.paging.shadow.p2m_pages )
-            pages = 0;
-        else
-            pages -= d->arch.paging.shadow.p2m_pages;
+        unsigned int lower_bound = sh_min_allocation(d);
 
-        lower_bound = sh_min_allocation(d);
         if ( pages < lower_bound )
             pages = lower_bound;
+        pages -= d->arch.paging.shadow.p2m_pages;
     }
 
     SHADOW_PRINTK("current %i target %i\n",
@@ -1861,7 +1760,8 @@ static inline void trace_shadow_wrmap_bf(mfn_t gmfn)
     if ( tb_init_done )
     {
         /* Convert gmfn to gfn */
-        unsigned long gfn = mfn_to_gfn(current->domain, gmfn);
+        gfn_t gfn = mfn_to_gfn(current->domain, gmfn);
+
         __trace_var(TRC_SHADOW_WRMAP_BF, 0/*!tsc*/, sizeof(gfn), &gfn);
     }
 }
@@ -1946,7 +1846,7 @@ int sh_remove_write_access(struct domain *d, mfn_t gmfn,
 #if SHADOW_OPTIMIZATIONS & SHOPT_WRITABLE_HEURISTIC
     if ( curr->domain == d )
     {
-        unsigned long gfn;
+        gfn_t gfn;
         /* Heuristic: there is likely to be only one writeable mapping,
          * and that mapping is likely to be in the current pagetable,
          * in the guest's linear map (on non-HIGHPTE linux and windows)*/
@@ -1969,8 +1869,9 @@ int sh_remove_write_access(struct domain *d, mfn_t gmfn,
                 GUESS(0xC0000000UL + (fault_addr >> 10), 1);
 
             /* Linux lowmem: first 896MB is mapped 1-to-1 above 0xC0000000 */
-            if ((gfn = mfn_to_gfn(d, gmfn)) < 0x38000 )
-                GUESS(0xC0000000UL + (gfn << PAGE_SHIFT), 4);
+            gfn = mfn_to_gfn(d, gmfn);
+            if ( gfn_x(gfn) < 0x38000 )
+                GUESS(0xC0000000UL + gfn_to_gaddr(gfn), 4);
 
             /* FreeBSD: Linear map at 0xBFC00000 */
             if ( level == 1 )
@@ -1987,8 +1888,9 @@ int sh_remove_write_access(struct domain *d, mfn_t gmfn,
             }
 
             /* Linux lowmem: first 896MB is mapped 1-to-1 above 0xC0000000 */
-            if ((gfn = mfn_to_gfn(d, gmfn)) < 0x38000 )
-                GUESS(0xC0000000UL + (gfn << PAGE_SHIFT), 4);
+            gfn = mfn_to_gfn(d, gmfn);
+            if ( gfn_x(gfn) < 0x38000 )
+                GUESS(0xC0000000UL + gfn_to_gaddr(gfn), 4);
 
             /* FreeBSD PAE: Linear map at 0xBF800000 */
             switch ( level )
@@ -2016,15 +1918,15 @@ int sh_remove_write_access(struct domain *d, mfn_t gmfn,
              * had it at 0xffff810000000000, and older kernels yet had it
              * at 0x0000010000000000UL */
             gfn = mfn_to_gfn(d, gmfn);
-            GUESS(0xffff880000000000UL + (gfn << PAGE_SHIFT), 4);
-            GUESS(0xffff810000000000UL + (gfn << PAGE_SHIFT), 4);
-            GUESS(0x0000010000000000UL + (gfn << PAGE_SHIFT), 4);
+            GUESS(0xffff880000000000UL + gfn_to_gaddr(gfn), 4);
+            GUESS(0xffff810000000000UL + gfn_to_gaddr(gfn), 4);
+            GUESS(0x0000010000000000UL + gfn_to_gaddr(gfn), 4);
 
             /*
              * 64bit Solaris kernel page map at
              * kpm_vbase; 0xfffffe0000000000UL
              */
-            GUESS(0xfffffe0000000000UL + (gfn << PAGE_SHIFT), 4);
+            GUESS(0xfffffe0000000000UL + gfn_to_gaddr(gfn), 4);
 
              /* FreeBSD 64bit: linear map 0xffff800000000000 */
              switch ( level )
@@ -2037,7 +1939,7 @@ int sh_remove_write_access(struct domain *d, mfn_t gmfn,
                            + ((fault_addr & VADDR_MASK) >> 27), 6); break;
              }
              /* FreeBSD 64bit: direct map at 0xffffff0000000000 */
-             GUESS(0xffffff0000000000 + (gfn << PAGE_SHIFT), 6);
+             GUESS(0xffffff0000000000 + gfn_to_gaddr(gfn), 6);
         }
 
 #undef GUESS
@@ -2622,10 +2524,12 @@ static void sh_update_paging_modes(struct vcpu *v)
 #if (SHADOW_OPTIMIZATIONS & SHOPT_OUT_OF_SYNC)
     /* We need to check that all the vcpus have paging enabled to
      * unsync PTs. */
-    if ( is_hvm_domain(d) && !d->arch.paging.shadow.oos_off )
+    if ( !(d->options & XEN_DOMCTL_CDF_oos_off) )
     {
         int pe = 1;
         struct vcpu *vptr;
+
+        ASSERT(is_hvm_domain(d));
 
         for_each_vcpu(d, vptr)
         {
@@ -2700,7 +2604,7 @@ int shadow_enable(struct domain *d, u32 mode)
 
     /* Init the shadow memory allocation if the user hasn't done so */
     old_pages = d->arch.paging.shadow.total_pages;
-    if ( old_pages < sh_min_allocation(d) + d->arch.paging.shadow.p2m_pages )
+    if ( old_pages < sh_min_allocation(d) )
     {
         paging_lock(d);
         rv = shadow_set_allocation(d, 1024, NULL); /* Use at least 4MB */
@@ -2957,7 +2861,7 @@ static int shadow_one_bit_enable(struct domain *d, u32 mode)
 
     mode |= PG_SH_enable;
 
-    if ( d->arch.paging.shadow.total_pages == 0 )
+    if ( d->arch.paging.shadow.total_pages < sh_min_allocation(d) )
     {
         /* Init the shadow memory allocation if the user hasn't done so */
         if ( shadow_set_allocation(d, 1, NULL) != 0 )

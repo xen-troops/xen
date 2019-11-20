@@ -33,10 +33,33 @@
 
 uint32_t system_reset_counter = 1;
 
-static char __initdata opt_acpi_sleep[20];
-string_param("acpi_sleep", opt_acpi_sleep);
+static int __init parse_acpi_sleep(const char *s)
+{
+    const char *ss;
+    unsigned int flag = 0;
+    int rc = 0;
 
-static u8 sleep_states[ACPI_S_STATE_COUNT];
+    do {
+        ss = strchr(s, ',');
+        if ( !ss )
+            ss = strchr(s, '\0');
+
+        if ( !cmdline_strcmp(s, "s3_bios") )
+            flag |= 1;
+        else if ( !cmdline_strcmp(s, "s3_mode") )
+            flag |= 2;
+        else
+            rc = -EINVAL;
+
+        s = ss + 1;
+    } while ( *ss );
+
+    acpi_video_flags |= flag;
+
+    return rc;
+}
+custom_param("acpi_sleep", parse_acpi_sleep);
+
 static DEFINE_SPINLOCK(pm_lock);
 
 struct acpi_sleep_info acpi_sinfo;
@@ -122,11 +145,15 @@ static void freeze_domains(void)
     for_each_domain ( d )
         domain_pause(d);
     rcu_read_unlock(&domlist_read_lock);
+
+    scheduler_disable();
 }
 
 static void thaw_domains(void)
 {
     struct domain *d;
+
+    scheduler_enable();
 
     rcu_read_lock(&domlist_read_lock);
     for_each_domain ( d )
@@ -174,6 +201,8 @@ static int enter_state(u32 state)
         return -EBUSY;
 
     BUG_ON(system_state != SYS_STATE_active);
+    BUG_ON(!is_idle_vcpu(current));
+    BUG_ON(smp_processor_id() != 0);
     system_state = SYS_STATE_suspend;
 
     printk(XENLOG_INFO "Preparing system for ACPI S%d state.\n", state);
@@ -253,7 +282,7 @@ static int enter_state(u32 state)
 
     console_end_sync();
 
-    microcode_resume_cpu(0);
+    microcode_update_one(true);
 
     if ( !recheck_cpu_features(0) )
         panic("Missing previously available feature(s)\n");
@@ -275,7 +304,7 @@ static int enter_state(u32 state)
     mtrr_aps_sync_begin();
     enable_nonboot_cpus();
     mtrr_aps_sync_end();
-    adjust_vtd_irq_affinities();
+    iommu_adjust_irq_affinities();
     acpi_dmar_zap();
     thaw_domains();
     system_state = SYS_STATE_active;
@@ -455,36 +484,3 @@ acpi_status acpi_enter_sleep_state(u8 sleep_state)
 
     return_ACPI_STATUS(AE_OK);
 }
-
-static int __init acpi_sleep_init(void)
-{
-    int i;
-    char *p = opt_acpi_sleep;
-
-    while ( (p != NULL) && (*p != '\0') )
-    {
-        if ( !strncmp(p, "s3_bios", 7) )
-            acpi_video_flags |= 1;
-        if ( !strncmp(p, "s3_mode", 7) )
-            acpi_video_flags |= 2;
-        p = strchr(p, ',');
-        if ( p != NULL )
-            p += strspn(p, ", \t");
-    }
-
-    printk(XENLOG_INFO "ACPI sleep modes:");
-    for ( i = 0; i < ACPI_S_STATE_COUNT; i++ )
-    {
-        if ( i == ACPI_STATE_S3 )
-        {
-            sleep_states[i] = 1;
-            printk(" S%d", i);
-        }
-        else
-            sleep_states[i] = 0;
-    }
-    printk("\n");
-
-    return 0;
-}
-__initcall(acpi_sleep_init);

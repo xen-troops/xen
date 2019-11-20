@@ -26,6 +26,7 @@
 
 #include <asm/debugreg.h>
 #include <asm/msr.h>
+#include <asm/setup.h>
 
 DEFINE_PER_CPU(uint32_t, tsc_aux);
 
@@ -51,7 +52,7 @@ static void __init calculate_host_policy(void)
 
     /* 0x000000ce  MSR_INTEL_PLATFORM_INFO */
     /* probe_cpuid_faulting() sanity checks presence of MISC_FEATURES_ENABLES */
-    mp->plaform_info.cpuid_faulting = cpu_has_cpuid_faulting;
+    mp->platform_info.cpuid_faulting = cpu_has_cpuid_faulting;
 }
 
 static void __init calculate_hvm_max_policy(void)
@@ -64,7 +65,7 @@ static void __init calculate_hvm_max_policy(void)
     *mp = host_msr_policy;
 
     /* It's always possible to emulate CPUID faulting for HVM guests */
-    mp->plaform_info.cpuid_faulting = true;
+    mp->platform_info.cpuid_faulting = true;
 }
 
 static void __init calculate_pv_max_policy(void)
@@ -91,9 +92,9 @@ int init_domain_msr_policy(struct domain *d)
     if ( !mp )
         return -ENOMEM;
 
-    /* See comment in intel_ctxt_switch_levelling() */
-    if ( is_control_domain(d) )
-        mp->plaform_info.cpuid_faulting = false;
+    /* See comment in ctxt_switch_levelling() */
+    if ( !opt_dom0_cpuid_faulting && is_control_domain(d) && is_pv_domain(d) )
+        mp->platform_info.cpuid_faulting = false;
 
     d->arch.msr = mp;
 
@@ -115,7 +116,7 @@ int init_vcpu_msr_policy(struct vcpu *v)
     return 0;
 }
 
-int guest_rdmsr(const struct vcpu *v, uint32_t msr, uint64_t *val)
+int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
 {
     const struct vcpu *curr = current;
     const struct domain *d = v->domain;
@@ -132,8 +133,31 @@ int guest_rdmsr(const struct vcpu *v, uint32_t msr, uint64_t *val)
     case MSR_FLUSH_CMD:
         /* Write-only */
     case MSR_TSX_FORCE_ABORT:
+    case MSR_AMD64_LWP_CFG:
+    case MSR_AMD64_LWP_CBADDR:
         /* Not offered to guests. */
         goto gp_fault;
+
+    case MSR_AMD_PATCHLEVEL:
+        BUILD_BUG_ON(MSR_IA32_UCODE_REV != MSR_AMD_PATCHLEVEL);
+        /*
+         * AMD and Intel use the same MSR for the current microcode version.
+         *
+         * There is no need to jump through the SDM-provided hoops for Intel.
+         * A guest might itself perform the "write 0, CPUID, read" sequence,
+         * but servicing the CPUID for the guest typically wont result in
+         * actually executing a CPUID instruction.
+         *
+         * As a guest can't influence the value of this MSR, the value will be
+         * from Xen's last microcode load, which can be forwarded straight to
+         * the guest.
+         */
+        if ( !(cp->x86_vendor & (X86_VENDOR_INTEL | X86_VENDOR_AMD)) ||
+             !(boot_cpu_data.x86_vendor &
+               (X86_VENDOR_INTEL | X86_VENDOR_AMD)) ||
+             rdmsr_safe(MSR_AMD_PATCHLEVEL, *val) )
+            goto gp_fault;
+        break;
 
     case MSR_SPEC_CTRL:
         if ( !cp->feat.ibrsb )
@@ -142,7 +166,7 @@ int guest_rdmsr(const struct vcpu *v, uint32_t msr, uint64_t *val)
         break;
 
     case MSR_INTEL_PLATFORM_INFO:
-        *val = mp->plaform_info.raw;
+        *val = mp->platform_info.raw;
         break;
 
     case MSR_ARCH_CAPABILITIES:
@@ -158,6 +182,19 @@ int guest_rdmsr(const struct vcpu *v, uint32_t msr, uint64_t *val)
             goto gp_fault;
 
         ret = guest_rdmsr_x2apic(v, msr, val);
+        break;
+
+    case MSR_IA32_BNDCFGS:
+        if ( !cp->feat.mpx || !is_hvm_domain(d) ||
+             !hvm_get_guest_bndcfgs(v, val) )
+            goto gp_fault;
+        break;
+
+    case MSR_IA32_XSS:
+        if ( !cp->xstate.xsaves )
+            goto gp_fault;
+
+        *val = msrs->xss.raw;
         break;
 
     case 0x40000000 ... 0x400001ff:
@@ -200,6 +237,10 @@ int guest_rdmsr(const struct vcpu *v, uint32_t msr, uint64_t *val)
                                    ARRAY_SIZE(msrs->dr_mask))];
         break;
 
+        /*
+         * TODO: Implement when we have better topology representation.
+    case MSR_INTEL_CORE_THREAD_COUNT:
+         */
     default:
         return X86EMUL_UNHANDLEABLE;
     }
@@ -229,12 +270,28 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
     {
         uint64_t rsvd;
 
+    case MSR_INTEL_CORE_THREAD_COUNT:
     case MSR_INTEL_PLATFORM_INFO:
     case MSR_ARCH_CAPABILITIES:
         /* Read-only */
     case MSR_TSX_FORCE_ABORT:
+    case MSR_AMD64_LWP_CFG:
+    case MSR_AMD64_LWP_CBADDR:
         /* Not offered to guests. */
         goto gp_fault;
+
+    case MSR_AMD_PATCHLEVEL:
+        BUILD_BUG_ON(MSR_IA32_UCODE_REV != MSR_AMD_PATCHLEVEL);
+        /*
+         * AMD and Intel use the same MSR for the current microcode version.
+         *
+         * Both document it as read-only.  However Intel also document that,
+         * for backwards compatiblity, the OS should write 0 to it before
+         * trying to access the current microcode version.
+         */
+        if ( d->arch.cpuid->x86_vendor != X86_VENDOR_INTEL || val != 0 )
+            goto gp_fault;
+        break;
 
     case MSR_AMD_PATCHLOADER:
         /*
@@ -302,7 +359,7 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
         bool old_cpuid_faulting = msrs->misc_features_enables.cpuid_faulting;
 
         rsvd = ~0ull;
-        if ( mp->plaform_info.cpuid_faulting )
+        if ( mp->platform_info.cpuid_faulting )
             rsvd &= ~MSR_MISC_FEATURES_CPUID_FAULTING;
 
         if ( val & rsvd )
@@ -321,6 +378,23 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
             goto gp_fault;
 
         ret = guest_wrmsr_x2apic(v, msr, val);
+        break;
+
+    case MSR_IA32_BNDCFGS:
+        if ( !cp->feat.mpx || !is_hvm_domain(d) ||
+             !hvm_set_guest_bndcfgs(v, val) )
+            goto gp_fault;
+        break;
+
+    case MSR_IA32_XSS:
+        if ( !cp->xstate.xsaves )
+            goto gp_fault;
+
+        /* No XSS features currently supported for guests */
+        if ( val != 0 )
+            goto gp_fault;
+
+        msrs->xss.raw = val;
         break;
 
     case 0x40000000 ... 0x400001ff:

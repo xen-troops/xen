@@ -34,9 +34,12 @@
 #define PCI_DEVFN2(bdf) ((bdf) & 0xff)
 #define PCI_BDF(b,d,f)  ((((b) & 0xff) << 8) | PCI_DEVFN(d,f))
 #define PCI_BDF2(b,df)  ((((b) & 0xff) << 8) | ((df) & 0xff))
-#define PCI_SBDF(s,b,d,f) ((((s) & 0xffff) << 16) | PCI_BDF(b,d,f))
-#define PCI_SBDF2(s,bdf) ((((s) & 0xffff) << 16) | ((bdf) & 0xffff))
-#define PCI_SBDF3(s,b,df) ((((s) & 0xffff) << 16) | PCI_BDF2(b, df))
+#define PCI_SBDF(s,b,d,f) \
+    ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | PCI_BDF(b, d, f) })
+#define PCI_SBDF2(s,bdf) \
+    ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | ((bdf) & 0xffff) })
+#define PCI_SBDF3(s,b,df) \
+    ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | PCI_BDF2(b, df) })
 
 typedef union {
     uint32_t sbdf;
@@ -46,10 +49,11 @@ typedef union {
             struct {
                 union {
                     struct {
-                        uint8_t func : 3,
+                        uint8_t fn   : 3,
                                 dev  : 5;
                     };
-                    uint8_t     extfunc;
+                    uint8_t     devfn,
+                                extfunc;
                 };
                 uint8_t         bus;
             };
@@ -80,13 +84,23 @@ struct pci_dev {
     struct arch_msix *msix;
 
     struct domain *domain;
-    const u16 seg;
-    const u8 bus;
-    const u8 devfn;
 
-    u8 phantom_stride;
+    const union {
+        struct {
+            uint8_t devfn;
+            uint8_t bus;
+            uint16_t seg;
+        };
+        pci_sbdf_t sbdf;
+    };
+
+    uint8_t msi_maxvec;
+    uint8_t phantom_stride;
 
     nodeid_t node; /* NUMA node */
+
+    /* Device to be quarantined, don't automatically re-assign to dom0 */
+    bool quarantine;
 
     /* Device with errata, ignore the BARs. */
     bool ignore_bars;
@@ -121,7 +135,9 @@ struct pci_dev {
 };
 
 #define for_each_pdev(domain, pdev) \
-    list_for_each_entry(pdev, &(domain->arch.pdev_list), domain_list)
+    list_for_each_entry(pdev, &(domain)->pdev_list, domain_list)
+
+#define has_arch_pdevs(d) (!list_empty(&(d)->pdev_list))
 
 /*
  * The pcidevs_lock protect alldevs_list, and the assignment for the 
@@ -160,24 +176,12 @@ struct pci_dev *pci_get_pdev_by_domain(const struct domain *, int seg,
                                        int bus, int devfn);
 void pci_check_disable_device(u16 seg, u8 bus, u8 devfn);
 
-uint8_t pci_conf_read8(
-    unsigned int seg, unsigned int bus, unsigned int dev, unsigned int func,
-    unsigned int reg);
-uint16_t pci_conf_read16(
-    unsigned int seg, unsigned int bus, unsigned int dev, unsigned int func,
-    unsigned int reg);
-uint32_t pci_conf_read32(
-    unsigned int seg, unsigned int bus, unsigned int dev, unsigned int func,
-    unsigned int reg);
-void pci_conf_write8(
-    unsigned int seg, unsigned int bus, unsigned int dev, unsigned int func,
-    unsigned int reg, uint8_t data);
-void pci_conf_write16(
-    unsigned int seg, unsigned int bus, unsigned int dev, unsigned int func,
-    unsigned int reg, uint16_t data);
-void pci_conf_write32(
-    unsigned int seg, unsigned int bus, unsigned int dev, unsigned int func,
-    unsigned int reg, uint32_t data);
+uint8_t pci_conf_read8(pci_sbdf_t sbdf, unsigned int reg);
+uint16_t pci_conf_read16(pci_sbdf_t sbdf, unsigned int reg);
+uint32_t pci_conf_read32(pci_sbdf_t sbdf, unsigned int reg);
+void pci_conf_write8(pci_sbdf_t sbdf, unsigned int reg, uint8_t data);
+void pci_conf_write16(pci_sbdf_t sbdf, unsigned int reg, uint16_t data);
+void pci_conf_write32(pci_sbdf_t sbdf, unsigned int reg, uint32_t data);
 uint32_t pci_conf_read(uint32_t cf8, uint8_t offset, uint8_t bytes);
 void pci_conf_write(uint32_t cf8, uint8_t offset, uint8_t bytes, uint32_t data);
 int pci_mmcfg_read(unsigned int seg, unsigned int bus,

@@ -29,7 +29,7 @@
 #include <asm/io_apic.h>
 
 /* Disable vt-d protected memory registers. */
-void disable_pmr(struct iommu *iommu)
+void disable_pmr(struct vtd_iommu *iommu)
 {
     u32 val;
     unsigned long flags;
@@ -51,7 +51,7 @@ void disable_pmr(struct iommu *iommu)
 
 void print_iommu_regs(struct acpi_drhd_unit *drhd)
 {
-    struct iommu *iommu = drhd->iommu;
+    struct vtd_iommu *iommu = drhd->iommu;
     u64 cap;
 
     printk("---- print_iommu_regs ----\n");
@@ -87,7 +87,7 @@ static u32 get_level_index(unsigned long gmfn, int level)
     return gmfn & LEVEL_MASK;
 }
 
-void print_vtd_entries(struct iommu *iommu, int bus, int devfn, u64 gmfn)
+void print_vtd_entries(struct vtd_iommu *iommu, int bus, int devfn, u64 gmfn)
 {
     struct context_entry *ctxt_entry;
     struct root_entry *root_entry;
@@ -96,7 +96,7 @@ void print_vtd_entries(struct iommu *iommu, int bus, int devfn, u64 gmfn)
     u32 l_index, level;
 
     printk("print_vtd_entries: iommu #%u dev %04x:%02x:%02x.%u gmfn %"PRI_gfn"\n",
-           iommu->index, iommu->intel->drhd->segment, bus,
+           iommu->index, iommu->drhd->segment, bus,
            PCI_SLOT(devfn), PCI_FUNC(devfn), gmfn);
 
     if ( iommu->root_maddr == 0 )
@@ -175,7 +175,7 @@ void print_vtd_entries(struct iommu *iommu, int bus, int devfn, u64 gmfn)
 void vtd_dump_iommu_info(unsigned char key)
 {
     struct acpi_drhd_unit *drhd;
-    struct iommu *iommu;
+    struct vtd_iommu *iommu;
     int i;
 
     for_each_drhd_unit ( drhd )
@@ -208,7 +208,7 @@ void vtd_dump_iommu_info(unsigned char key)
             uint64_t iremap_maddr = irta & PAGE_MASK;
             unsigned int nr_entry = 1 << ((irta & 0xF) + 1);
             struct iremap_entry *iremap_entries = NULL;
-            int print_cnt = 0;
+            unsigned int print_cnt = 0;
 
             printk("  Interrupt remapping table (nr_entry=%#x. "
                 "Only dump P=1 entries here):\n", nr_entry);
@@ -251,9 +251,9 @@ void vtd_dump_iommu_info(unsigned char key)
             }
             if ( iremap_entries )
                 unmap_vtd_domain_page(iremap_entries);
-            if ( iommu_ir_ctrl(iommu)->iremap_num != print_cnt )
-                printk("Warning: Print %d IRTE (actually have %d)!\n",
-                        print_cnt, iommu_ir_ctrl(iommu)->iremap_num);
+            if ( iommu->intremap.num != print_cnt )
+                printk("Warning: Print %u IRTE (actually have %u)!\n",
+                        print_cnt, iommu->intremap.num);
 
         }
     }
@@ -264,13 +264,12 @@ void vtd_dump_iommu_info(unsigned char key)
         int apic;
         union IO_APIC_reg_01 reg_01;
         struct IO_APIC_route_remap_entry *remap;
-        struct ir_ctrl *ir_ctrl;
 
         for ( apic = 0; apic < nr_ioapics; apic++ )
         {
             iommu = ioapic_to_iommu(mp_ioapics[apic].mpc_apicid);
-            ir_ctrl = iommu_ir_ctrl(iommu);
-            if ( !ir_ctrl || !ir_ctrl->iremap_maddr || !ir_ctrl->iremap_num )
+
+            if ( !iommu->intremap.maddr || !iommu->intremap.num )
                 continue;
 
             printk( "\nRedirection table of IOAPIC %x:\n", apic);

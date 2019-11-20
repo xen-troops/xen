@@ -1634,8 +1634,10 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                         nics[i].colo_compare_out &&
                         nics[i].colo_compare_notify_dev) {
                         flexarray_append(dm_args, "-object");
+                        flexarray_append(dm_args, "iothread,id=colo-compare-iothread-1");
+                        flexarray_append(dm_args, "-object");
                         flexarray_append(dm_args,
-                           GCSPRINTF("colo-compare,id=c1,primary_in=%s,secondary_in=%s,outdev=%s,notify_dev=%s",
+                           GCSPRINTF("colo-compare,id=c1,primary_in=%s,secondary_in=%s,outdev=%s,notify_dev=%s,iothread=colo-compare-iothread-1",
                                      nics[i].colo_compare_pri_in,
                                      nics[i].colo_compare_sec_in,
                                      nics[i].colo_compare_out,
@@ -1812,20 +1814,9 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                     continue;
                 }
 
-                /*
-                 * We can't call libxl__blktap_devpath from
-                 * libxl__device_disk_find_local_path for now because
-                 * the bootloader is called before the disks are set
-                 * up, so this function would set up a blktap node,
-                 * but there's no TAP tear-down on error conditions in
-                 * the bootloader path.
-                 */
-                if (disks[i].backend == LIBXL_DISK_BACKEND_TAP)
-                    target_path = libxl__blktap_devpath(gc, disks[i].pdev_path,
-                                                        disks[i].format);
-                else
-                    target_path = libxl__device_disk_find_local_path(gc,
-                                                 guest_domid, &disks[i], true);
+                assert(disks[i].backend != LIBXL_DISK_BACKEND_TAP);
+                target_path = libxl__device_disk_find_local_path(gc,
+                                    guest_domid, &disks[i], true);
 
                 if (!target_path) {
                     LOGD(WARN, guest_domid, "No way to get local access disk to image: %s\n"
@@ -2072,11 +2063,13 @@ retry_transaction:
 static void dmss_init(libxl__dm_spawn_state *dmss)
 {
     libxl__ev_qmp_init(&dmss->qmp);
+    libxl__ev_time_init(&dmss->timeout);
 }
 
 static void dmss_dispose(libxl__gc *gc, libxl__dm_spawn_state *dmss)
 {
     libxl__ev_qmp_dispose(gc, &dmss->qmp);
+    libxl__ev_time_deregister(gc, &dmss->timeout);
 }
 
 static void spawn_stubdom_pvqemu_cb(libxl__egc *egc,
@@ -2089,6 +2082,9 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
 static void stubdom_pvqemu_cb(libxl__egc *egc,
                               libxl__multidev *aodevs,
                               int rc);
+static void stubdom_pvqemu_unpaused(libxl__egc *egc,
+                                    libxl__dm_resume_state *dmrs,
+                                    int rc);
 
 static void stubdom_xswait_cb(libxl__egc *egc, libxl__xswait_state *xswait,
                               int rc, const char *p);
@@ -2116,8 +2112,11 @@ void libxl__spawn_stub_dm(libxl__egc *egc, libxl__stub_dm_spawn_state *sdss)
     libxl__domain_build_state *const d_state = sdss->dm.build_state;
     libxl__domain_build_state *const stubdom_state = &sdss->dm_state;
 
+    /* Initialise private part of sdss */
     libxl__domain_build_state_init(stubdom_state);
     dmss_init(&sdss->dm);
+    dmss_init(&sdss->pvqemu);
+    libxl__xswait_init(&sdss->xswait);
 
     if (guest_config->b_info.device_model_version !=
         LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL) {
@@ -2142,6 +2141,7 @@ void libxl__spawn_stub_dm(libxl__egc *egc, libxl__stub_dm_spawn_state *sdss)
     libxl_domain_build_info_init(&dm_config->b_info);
     libxl_domain_build_info_init_type(&dm_config->b_info, LIBXL_DOMAIN_TYPE_PV);
 
+    dm_config->b_info.shadow_memkb = 0;
     dm_config->b_info.max_vcpus = 1;
     dm_config->b_info.max_memkb = 28 * 1024 +
         guest_config->b_info.video_memkb;
@@ -2168,9 +2168,7 @@ void libxl__spawn_stub_dm(libxl__egc *egc, libxl__stub_dm_spawn_state *sdss)
     dm_config->c_info.run_hotplug_scripts =
         guest_config->c_info.run_hotplug_scripts;
 
-    ret = libxl__domain_create_info_setdefault(gc, &dm_config->c_info);
-    if (ret) goto out;
-    ret = libxl__domain_build_info_setdefault(gc, &dm_config->b_info);
+    ret = libxl__domain_config_setdefault(gc, dm_config, guest_domid);
     if (ret) goto out;
 
     if (libxl_defbool_val(guest_config->b_info.u.hvm.vnc.enable)
@@ -2402,15 +2400,30 @@ static void stubdom_pvqemu_cb(libxl__egc *egc,
     STATE_AO_GC(sdss->dm.spawn.ao);
     uint32_t dm_domid = sdss->pvqemu.guest_domid;
 
-    libxl__xswait_init(&sdss->xswait);
-
     if (rc) {
         LOGED(ERROR, sdss->dm.guest_domid,
               "error connecting nics devices");
         goto out;
     }
 
-    rc = libxl_domain_unpause(CTX, dm_domid);
+    sdss->pvqemu.dmrs.ao = ao;
+    sdss->pvqemu.dmrs.domid = dm_domid;
+    sdss->pvqemu.dmrs.callback = stubdom_pvqemu_unpaused;
+    libxl__domain_unpause(egc, &sdss->pvqemu.dmrs); /* must be last */
+    return;
+out:
+    stubdom_pvqemu_unpaused(egc, &sdss->pvqemu.dmrs, rc);
+}
+
+static void stubdom_pvqemu_unpaused(libxl__egc *egc,
+                                    libxl__dm_resume_state *dmrs,
+                                    int rc)
+{
+    libxl__stub_dm_spawn_state *sdss =
+        CONTAINER_OF(dmrs, *sdss, pvqemu.dmrs);
+    STATE_AO_GC(sdss->dm.spawn.ao);
+    uint32_t dm_domid = sdss->pvqemu.guest_domid;
+
     if (rc) goto out;
 
     sdss->xswait.ao = ao;
@@ -2450,6 +2463,7 @@ static void stubdom_xswait_cb(libxl__egc *egc, libxl__xswait_state *xswait,
     libxl__domain_build_state_dispose(&sdss->dm_state);
     libxl__xswait_stop(gc, xswait);
     dmss_dispose(gc, &sdss->dm);
+    dmss_dispose(gc, &sdss->pvqemu);
     sdss->callback(egc, &sdss->dm, rc);
 }
 
@@ -2469,6 +2483,16 @@ static void device_model_qmp_cb(libxl__egc *egc, libxl__ev_qmp *ev,
 static void device_model_spawn_outcome(libxl__egc *egc,
                                        libxl__dm_spawn_state *dmss,
                                        int rc);
+static void device_model_postconfig_chardev(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *response, int rc);
+static void device_model_postconfig_vnc(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *response, int rc);
+static void device_model_postconfig_vnc_passwd(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *response, int rc);
+static void devise_model_postconfig_timeout(libxl__egc *egc,
+    libxl__ev_time *ev, const struct timeval *requested_abs, int rc);
+static void device_model_postconfig_done(libxl__egc *egc,
+    libxl__dm_spawn_state *dmss, int rc);
 
 void libxl__spawn_local_dm(libxl__egc *egc, libxl__dm_spawn_state *dmss)
 {
@@ -2751,6 +2775,9 @@ static void device_model_spawn_outcome(libxl__egc *egc,
     STATE_AO_GC(dmss->spawn.ao);
     int ret2;
 
+    /* Convenience aliases */
+    libxl_domain_config *const d_config = dmss->guest_config;
+
     if (rc)
         LOGD(ERROR, dmss->guest_domid,
              "%s: spawn failed (rc=%d)", dmss->spawn.what, rc);
@@ -2767,7 +2794,209 @@ static void device_model_spawn_outcome(libxl__egc *egc,
         }
     }
 
+    /* Check if spawn failed */
+    if (rc) goto out;
+
+    if (d_config->b_info.device_model_version
+            == LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN) {
+        rc = libxl__ev_time_register_rel(ao, &dmss->timeout,
+                                         devise_model_postconfig_timeout,
+                                         LIBXL_QMP_CMD_TIMEOUT * 1000);
+        if (rc) goto out;
+        dmss->qmp.ao = ao;
+        dmss->qmp.domid = dmss->guest_domid;
+        dmss->qmp.payload_fd = -1;
+        dmss->qmp.callback = device_model_postconfig_chardev;
+        rc = libxl__ev_qmp_send(gc, &dmss->qmp, "query-chardev", NULL);
+        if (rc) goto out;
+        return;
+    }
+
  out:
+    device_model_postconfig_done(egc, dmss, rc); /* must be last */
+}
+
+static void device_model_postconfig_chardev(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *response, int rc)
+{
+    EGC_GC;
+    libxl__dm_spawn_state *dmss = CONTAINER_OF(qmp, *dmss, qmp);
+    const libxl__json_object *item = NULL;
+    const libxl__json_object *o = NULL;
+    int i = 0;
+    const char *label;
+    const char *filename;
+    int port;
+    char *endptr;
+    const char *dompath;
+    const char serial[] = "serial";
+    const size_t seriall = sizeof(serial) - 1;
+    const char pty[] = "pty:";
+    const size_t ptyl = sizeof(pty) - 1;
+
+    if (rc) goto out;
+
+    /*
+     * query-chardev response:
+     * [{ 'label': 'str',
+     *    'filename': 'str',
+     *    'frontend-open': 'bool' }, ...]
+     */
+
+    for (i = 0; (item = libxl__json_array_get(response, i)); i++) {
+        o = libxl__json_map_get("label", item, JSON_STRING);
+        if (!o) goto protocol_error;
+        label = libxl__json_object_get_string(o);
+
+        /* Check if the "label" start with "serial". */
+        if (!label || strncmp(label, serial, seriall))
+            continue;
+        port = strtol(label + seriall, &endptr, 10);
+        if (*(label + seriall) == '\0' || *endptr != '\0') {
+            LOGD(ERROR, qmp->domid,
+                 "Invalid serial port number: %s", label);
+            rc = ERROR_QEMU_API;
+            goto out;
+        }
+
+        o = libxl__json_map_get("filename", item, JSON_STRING);
+        if (!o) goto protocol_error;
+        filename = libxl__json_object_get_string(o);
+
+        /* Check if filename start with "pty:" */
+        if (!filename || strncmp(filename, pty, ptyl))
+            continue;
+
+        dompath = libxl__xs_get_dompath(gc, qmp->domid);
+        if (!dompath) {
+            rc = ERROR_FAIL;
+            goto out;
+        }
+        rc = libxl__xs_printf(gc, XBT_NULL,
+                              GCSPRINTF("%s/serial/%d/tty", dompath, port),
+                              "%s", filename + ptyl);
+        if (rc) goto out;
+    }
+
+    qmp->callback = device_model_postconfig_vnc;
+    rc = libxl__ev_qmp_send(gc, qmp, "query-vnc", NULL);
+    if (rc) goto out;
+    return;
+
+protocol_error:
+    rc = ERROR_QEMU_API;
+    LOGD(ERROR, qmp->domid,
+         "unexpected response to QMP cmd 'query-chardev', received:\n%s",
+         JSON(response));
+out:
+    device_model_postconfig_done(egc, dmss, rc); /* must be last */
+}
+
+static void device_model_postconfig_vnc(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *response, int rc)
+{
+    EGC_GC;
+    libxl__dm_spawn_state *dmss = CONTAINER_OF(qmp, *dmss, qmp);
+    const libxl_vnc_info *vnc = libxl__dm_vnc(dmss->guest_config);
+    const libxl__json_object *o;
+    libxl__json_object *args = NULL;
+
+    if (rc) goto out;
+
+    /*
+     * query-vnc response:
+     * { 'enabled': 'bool', '*host': 'str', '*service': 'str' }
+     */
+
+    o = libxl__json_map_get("enabled", response, JSON_BOOL);
+    if (!o) goto protocol_error;
+    if (libxl__json_object_get_bool(o)) {
+        const char *addr, *port;
+        const char *dompath;
+
+        o = libxl__json_map_get("host", response, JSON_STRING);
+        if (!o) goto protocol_error;
+        addr = libxl__json_object_get_string(o);
+        o = libxl__json_map_get("service", response, JSON_STRING);
+        if (!o) goto protocol_error;
+        port = libxl__json_object_get_string(o);
+
+        dompath = libxl__xs_get_dompath(gc, qmp->domid);
+        if (!dompath) {
+            rc = ERROR_FAIL;
+            goto out;
+        }
+        rc = libxl__xs_printf(gc, XBT_NULL,
+                              GCSPRINTF("%s/console/vnc-listen", dompath),
+                              "%s", addr);
+        if (rc) goto out;
+        rc = libxl__xs_printf(gc, XBT_NULL,
+                              GCSPRINTF("%s/console/vnc-port", dompath),
+                              "%s", port);
+        if (rc) goto out;
+    }
+
+    if (vnc && vnc->passwd) {
+        qmp->callback = device_model_postconfig_vnc_passwd;
+        libxl__qmp_param_add_string(gc, &args, "password", vnc->passwd);
+        rc = libxl__ev_qmp_send(gc, qmp, "change-vnc-password", args);
+        if (rc) goto out;
+        return;
+    }
+
+    rc = 0;
+    goto out;
+
+protocol_error:
+    rc = ERROR_QEMU_API;
+    LOGD(ERROR, qmp->domid,
+         "unexpected response to QMP cmd 'query-vnc', received:\n%s",
+         JSON(response));
+out:
+    device_model_postconfig_done(egc, dmss, rc); /* must be last */
+}
+
+static void device_model_postconfig_vnc_passwd(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *response, int rc)
+{
+    EGC_GC;
+    libxl__dm_spawn_state *dmss = CONTAINER_OF(qmp, *dmss, qmp);
+    const libxl_vnc_info *vnc = libxl__dm_vnc(dmss->guest_config);
+    const char *dompath;
+
+    if (rc) goto out;
+
+    dompath = libxl__xs_get_dompath(gc, qmp->domid);
+    if (!dompath) {
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    rc = libxl__xs_printf(gc, XBT_NULL,
+                          GCSPRINTF("%s/console/vnc-pass", dompath),
+                          "%s", vnc->passwd);
+
+out:
+    device_model_postconfig_done(egc, dmss, rc); /* must be last */
+}
+
+void devise_model_postconfig_timeout(libxl__egc *egc, libxl__ev_time *ev,
+                                     const struct timeval *requested_abs,
+                                     int rc)
+{
+    libxl__dm_spawn_state *dmss = CONTAINER_OF(ev, *dmss, timeout);
+    device_model_postconfig_done(egc, dmss, rc); /* must be last */
+}
+
+
+static void device_model_postconfig_done(libxl__egc *egc,
+                                         libxl__dm_spawn_state *dmss,
+                                         int rc)
+{
+    EGC_GC;
+
+    if (rc)
+        LOGD(ERROR, dmss->guest_domid,
+             "Post DM startup configs failed, rc=%d", rc);
     dmss_dispose(gc, dmss);
     dmss->callback(egc, dmss, rc);
 }
@@ -3179,7 +3408,7 @@ int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
 {
     int idx, i, ret, num;
     uint32_t domid;
-    const struct libxl_device_type *dt;
+    const libxl__device_type *dt;
 
     ret = libxl__get_domid(gc, &domid);
     if (ret) {

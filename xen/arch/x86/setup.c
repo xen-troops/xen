@@ -3,7 +3,6 @@
 #include <xen/err.h>
 #include <xen/grant_table.h>
 #include <xen/sched.h>
-#include <xen/sched-if.h>
 #include <xen/domain.h>
 #include <xen/serial.h>
 #include <xen/softirq.h>
@@ -16,7 +15,6 @@
 #include <xen/domain_page.h>
 #include <xen/version.h>
 #include <xen/gdbstub.h>
-#include <xen/percpu.h>
 #include <xen/hypercall.h>
 #include <xen/keyhandler.h>
 #include <xen/numa.h>
@@ -25,7 +23,6 @@
 #include <xen/dmi.h>
 #include <xen/pfn.h>
 #include <xen/nodemask.h>
-#include <xen/tmem_xen.h>
 #include <xen/virtual_region.h>
 #include <xen/watchdog.h>
 #include <public/version.h>
@@ -100,8 +97,6 @@ cpumask_t __read_mostly cpu_present_map;
 unsigned long __read_mostly xen_phys_start;
 
 unsigned long __read_mostly xen_virt_end;
-
-DEFINE_PER_CPU(struct tss_struct, init_tss);
 
 char __section(".bss.stack_aligned") __aligned(STACK_SIZE)
     cpu0_stack[STACK_SIZE];
@@ -673,6 +668,16 @@ static char * __init cmdline_cook(char *p, const char *loader_name)
     return p;
 }
 
+static unsigned int __init copy_bios_e820(struct e820entry *map, unsigned int limit)
+{
+    unsigned int n = min(bootsym(bios_e820nr), limit);
+
+    if ( n )
+        memcpy(map, bootsym(bios_e820map), sizeof(*map) * n);
+
+    return n;
+}
+
 void __init noreturn __start_xen(unsigned long mbi_p)
 {
     char *memmap_type = NULL;
@@ -680,7 +685,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     unsigned int initrdidx, num_parked = 0;
     multiboot_info_t *mbi;
     module_t *mod;
-    unsigned long nr_pages, raw_max_page, modules_headroom, *module_map;
+    unsigned long nr_pages, raw_max_page, modules_headroom, module_map[1];
     int i, j, e820_warn = 0, bytes = 0;
     bool acpi_boot_table_init_done = false, relocated = false;
     int ret;
@@ -690,7 +695,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
         .stop_bits = 1
     };
     struct xen_domctl_createdomain dom0_cfg = {
-        .flags = XEN_DOMCTL_CDF_s3_integrity,
+        .flags = IS_ENABLED(CONFIG_TBOOT) ? XEN_DOMCTL_CDF_s3_integrity : 0,
         .max_evtchn_port = -1,
         .max_grant_frames = opt_max_grant_frames,
         .max_maptrack_frames = opt_max_maptrack_frames,
@@ -839,6 +844,17 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     /* Check that we have at least one Multiboot module. */
     if ( !(mbi->flags & MBI_MODULES) || (mbi->mods_count == 0) )
         panic("dom0 kernel not specified. Check bootloader configuration\n");
+
+    /* Check that we don't have a silly number of modules. */
+    if ( mbi->mods_count > sizeof(module_map) * 8 )
+    {
+        mbi->mods_count = sizeof(module_map) * 8;
+        printk("Excessive multiboot modules - using the first %u only\n",
+               mbi->mods_count);
+    }
+
+    bitmap_fill(module_map, mbi->mods_count);
+    __clear_bit(0, module_map); /* Dom0 kernel is always first */
 
     if ( pvh_boot )
     {
@@ -1485,13 +1501,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
                 s = pfn_to_paddr(limit + 1);
             init_domheap_pages(s, e);
         }
-
-        if ( tmem_enabled() )
-        {
-           printk(XENLOG_WARNING
-                  "TMEM physical RAM limit exceeded, disabling TMEM\n");
-           tmem_disable();
-        }
     }
     else
         end_boot_allocator();
@@ -1529,6 +1538,10 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     mmio_ro_ranges = rangeset_new(NULL, "r/o mmio ranges",
                                   RANGESETF_prettyprint_hex);
+
+    xsm_multiboot_init(module_map, mbi);
+
+    setup_system_domains();
 
     acpi_boot_init();
 
@@ -1577,12 +1590,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     console_init_irq();
 
     init_IRQ();
-
-    module_map = xmalloc_array(unsigned long, BITS_TO_LONGS(mbi->mods_count));
-    bitmap_fill(module_map, mbi->mods_count);
-    __clear_bit(0, module_map); /* Dom0 kernel is always first */
-
-    xsm_multiboot_init(module_map, mbi);
 
     microcode_grab_module(module_map, mbi);
 
@@ -1661,6 +1668,8 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     do_presmp_initcalls();
 
+    alternative_branches();
+
     /*
      * NB: when running as a PV shim VCPUOP_up/down is wired to the shim
      * physical cpu_add/remove functions, so launch the guest with only
@@ -1712,9 +1721,9 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     init_guest_cpuid();
     init_guest_msr_policy();
 
-    if ( dom0_pvh )
+    if ( opt_dom0_pvh )
     {
-        dom0_cfg.flags |= (XEN_DOMCTL_CDF_hvm_guest |
+        dom0_cfg.flags |= (XEN_DOMCTL_CDF_hvm |
                            ((hvm_hap_supported() && !opt_dom0_shadow) ?
                             XEN_DOMCTL_CDF_hap : 0));
 
@@ -1722,6 +1731,9 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             XEN_X86_EMU_LAPIC | XEN_X86_EMU_IOAPIC | XEN_X86_EMU_VPCI;
     }
     dom0_cfg.max_vcpus = dom0_max_vcpus();
+
+    if ( iommu_enabled )
+        dom0_cfg.flags |= XEN_DOMCTL_CDF_iommu;
 
     /* Create initial domain 0. */
     dom0 = domain_create(get_initial_domain_id(), &dom0_cfg, !pv_shim);

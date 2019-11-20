@@ -250,7 +250,7 @@ static void __init noreturn efi_arch_post_exit_boot(void)
                    "mov    %[cr4], %%cr4\n\t"
 #endif
                    "movabs $__start_xen, %[rip]\n\t"
-                   "lgdt   gdt_descr(%%rip)\n\t"
+                   "lgdt   boot_gdtr(%%rip)\n\t"
                    "mov    stack_start(%%rip), %%rsp\n\t"
                    "mov    %[ds], %%ss\n\t"
                    "mov    %[ds], %%ds\n\t"
@@ -528,9 +528,10 @@ static void __init efi_arch_video_init(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop,
         bpp = set_color(mode_info->PixelInformation.BlueMask, bpp,
                         &vga_console_info.u.vesa_lfb.blue_pos,
                         &vga_console_info.u.vesa_lfb.blue_size);
-        bpp = set_color(mode_info->PixelInformation.ReservedMask, bpp,
-                        &vga_console_info.u.vesa_lfb.rsvd_pos,
-                        &vga_console_info.u.vesa_lfb.rsvd_size);
+        if ( mode_info->PixelInformation.ReservedMask )
+            bpp = set_color(mode_info->PixelInformation.ReservedMask, bpp,
+                            &vga_console_info.u.vesa_lfb.rsvd_pos,
+                            &vga_console_info.u.vesa_lfb.rsvd_size);
         if ( bpp > 0 )
             break;
         /* fall through */
@@ -550,6 +551,7 @@ static void __init efi_arch_video_init(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop,
         vga_console_info.u.vesa_lfb.bytes_per_line =
             (mode_info->PixelsPerScanLine * bpp + 7) >> 3;
         vga_console_info.u.vesa_lfb.lfb_base = gop->Mode->FrameBufferBase;
+        vga_console_info.u.vesa_lfb.ext_lfb_base = gop->Mode->FrameBufferBase >> 32;
         vga_console_info.u.vesa_lfb.lfb_size =
             (gop->Mode->FrameBufferSize + 0xffff) >> 16;
     }

@@ -20,13 +20,18 @@ struct arch_iommu
     void *priv;
 };
 
-/* Always share P2M Table between the CPU and the IOMMU */
-#define iommu_use_hap_pt(d) (has_iommu_pt(d))
-
 const struct iommu_ops *iommu_get_ops(void);
 void iommu_set_ops(const struct iommu_ops *ops);
 
-int iommu_hardware_setup(void);
+/*
+ * The mapping helpers below should only be used if P2M Table is shared
+ * between the CPU and the IOMMU.
+ */
+int __must_check arm_iommu_map_page(struct domain *d, dfn_t dfn, mfn_t mfn,
+                                    unsigned int flags,
+                                    unsigned int *flush_flags);
+int __must_check arm_iommu_unmap_page(struct domain *d, dfn_t dfn,
+                                      unsigned int *flush_flags);
 
 #endif /* __ARCH_ARM_IOMMU_H__ */
 

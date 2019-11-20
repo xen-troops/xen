@@ -153,6 +153,7 @@ struct vcpu
 
     struct vcpu     *next_in_list;
 
+    spinlock_t       periodic_timer_lock;
     s_time_t         periodic_period;
     s_time_t         periodic_last_event;
     struct timer     periodic_timer;
@@ -160,7 +161,7 @@ struct vcpu
 
     struct timer     poll_timer;    /* timeout for SCHEDOP_poll */
 
-    void            *sched_priv;    /* scheduler-specific data */
+    struct sched_unit *sched_unit;
 
     struct vcpu_runstate_info runstate;
 #ifndef CONFIG_COMPAT
@@ -173,9 +174,7 @@ struct vcpu
         XEN_GUEST_HANDLE(vcpu_runstate_info_compat_t) compat;
     } runstate_guest; /* guest address */
 #endif
-
-    /* last time when vCPU is scheduled out */
-    uint64_t last_run_time;
+    unsigned int     new_state;
 
     /* Has the FPU been initialised? */
     bool             fpu_initialised;
@@ -187,6 +186,8 @@ struct vcpu
     bool             is_running;
     /* VCPU should wake fast (do not deep sleep the CPU). */
     bool             is_urgent;
+    /* VCPU must context_switch without scheduling unit. */
+    bool             force_context_switch;
 
 #ifdef VCPU_TRAP_LAST
 #define VCPU_TRAP_NONE    0
@@ -203,7 +204,9 @@ struct vcpu
     /* VCPU is paused following shutdown request (d->is_shutting_down)? */
     bool             paused_for_shutdown;
     /* VCPU need affinity restored */
-    bool             affinity_broken;
+    uint8_t          affinity_broken;
+#define VCPU_AFFINITY_OVERRIDE    0x01
+#define VCPU_AFFINITY_WAIT        0x02
 
     /* A hypercall has been preempted. */
     bool             hcall_preempted;
@@ -211,9 +214,6 @@ struct vcpu
     /* A hypercall is using the compat ABI? */
     bool             hcall_compat;
 #endif
-
-    /* Does soft affinity actually play a role (given hard affinity)? */
-    bool             soft_aff_effective;
 
     /* The CPU, if any, which is holding onto this VCPU's state. */
 #define VCPU_CPU_CLEAN (~0u)
@@ -246,16 +246,6 @@ struct vcpu
     evtchn_port_t    virq_to_evtchn[NR_VIRQS];
     spinlock_t       virq_lock;
 
-    /* Bitmask of CPUs on which this VCPU may run. */
-    cpumask_var_t    cpu_hard_affinity;
-    /* Used to change affinity temporarily. */
-    cpumask_var_t    cpu_hard_affinity_tmp;
-    /* Used to restore affinity across S3. */
-    cpumask_var_t    cpu_hard_affinity_saved;
-
-    /* Bitmask of CPUs on which this VCPU prefers to run. */
-    cpumask_var_t    cpu_soft_affinity;
-
     /* Tasklet for continue_hypercall_on_cpu(). */
     struct tasklet   continue_hypercall_tasklet;
 
@@ -275,6 +265,58 @@ struct vcpu
     struct arch_vcpu arch;
 };
 
+struct sched_unit {
+    struct domain         *domain;
+    struct vcpu           *vcpu_list;
+    void                  *priv;      /* scheduler private data */
+    struct sched_unit     *next_in_list;
+    struct sched_resource *res;
+    unsigned int           unit_id;
+
+    /* Currently running on a CPU? */
+    bool                   is_running;
+    /* Does soft affinity actually play a role (given hard affinity)? */
+    bool                   soft_aff_effective;
+    /* Item has been migrated to other cpu(s). */
+    bool                   migrated;
+
+    /* Last time unit got (de-)scheduled. */
+    uint64_t               state_entry_time;
+    /* Vcpu state summary. */
+    unsigned int           runstate_cnt[4];
+
+    /* Bitmask of CPUs on which this VCPU may run. */
+    cpumask_var_t          cpu_hard_affinity;
+    /* Used to save affinity during temporary pinning. */
+    cpumask_var_t          cpu_hard_affinity_saved;
+    /* Bitmask of CPUs on which this VCPU prefers to run. */
+    cpumask_var_t          cpu_soft_affinity;
+
+    /* Next unit to run. */
+    struct sched_unit      *next_task;
+    s_time_t                next_time;
+
+    /* Number of vcpus not yet joined for context switch. */
+    unsigned int            rendezvous_in_cnt;
+
+    /* Number of vcpus not yet finished with context switch. */
+    atomic_t                rendezvous_out_cnt;
+};
+
+#define for_each_sched_unit(d, u)                                         \
+    for ( (u) = (d)->sched_unit_list; (u) != NULL; (u) = (u)->next_in_list )
+
+/*
+ * All vcpus of a domain are in a single linked list with unit->vcpu_list
+ * pointing to the first vcpu of the unit. The loop must be terminated when
+ * a vcpu is hit not being part of the unit to loop over.
+ */
+#define for_each_sched_unit_vcpu(u, v)                                    \
+    for ( (v) = (u)->vcpu_list;                                           \
+          (v) != NULL && (!(u)->next_in_list ||                           \
+                          (v)->vcpu_id < (u)->next_in_list->unit_id);     \
+          (v) = (v)->next_in_list )
+
 /* Per-domain lock can be recursively acquired in fault handlers. */
 #define domain_lock(d) spin_lock_recursive(&(d)->domain_lock)
 #define domain_unlock(d) spin_unlock_recursive(&(d)->domain_lock)
@@ -282,8 +324,7 @@ struct vcpu
 /* VM event */
 struct vm_event_domain
 {
-    /* ring lock */
-    spinlock_t ring_lock;
+    spinlock_t lock;
     /* The ring has 64 entries */
     unsigned char foreign_producers;
     unsigned char target_producers;
@@ -305,10 +346,6 @@ struct vm_event_domain
 };
 
 struct evtchn_port_ops;
-
-enum guest_type {
-    guest_type_pv, guest_type_hvm
-};
 
 struct domain
 {
@@ -333,6 +370,7 @@ struct domain
 
     /* Scheduling. */
     void            *sched_priv;    /* scheduler-specific data */
+    struct sched_unit *sched_unit_list;
     struct cpupool  *cpupool;
 
     struct domain   *next_in_list;
@@ -360,7 +398,7 @@ struct domain
     struct radix_tree_root pirq_tree;
     unsigned int     nr_pirqs;
 
-    enum guest_type guest_type;
+    unsigned int     options;         /* copy of createdomain flags */
 
     /* Is this guest dying (i.e., a zombie)? */
     enum { DOMDYING_alive, DOMDYING_dying, DOMDYING_dead } is_dying;
@@ -369,6 +407,10 @@ struct domain
     int              controller_pause_count;
 
     int64_t          time_offset_seconds;
+
+#ifdef CONFIG_HAS_PCI
+    struct list_head pdev_list;
+#endif
 
 #ifdef CONFIG_HAS_PASSTHROUGH
     struct domain_iommu iommu;
@@ -379,10 +421,6 @@ struct domain
     bool             is_privileged;
     /* Can this guest access the Xen console? */
     bool             is_console;
-    /* Is this a xenstore domain (not dom0)? */
-    bool             is_xenstore;
-    /* Domain's VCPUs are pinned 1:1 to physical CPUs? */
-    bool             is_pinned;
     /* Non-migratable and non-restoreable? */
     bool             disable_migrate;
     /* Is this guest being debugged by dom0? */
@@ -456,15 +494,12 @@ struct domain
      */
     spinlock_t hypercall_deadlock_mutex;
 
-    /* transcendent memory, auto-allocated on first tmem op by each domain */
-    struct client *tmem_client;
-
     struct lock_profile_qhead profile_head;
 
     /* Various vm_events */
 
     /* Memory sharing support */
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
     struct vm_event_domain *vm_event_share;
 #endif
     /* Memory paging support */
@@ -643,7 +678,7 @@ void __domain_crash(struct domain *d);
 void noreturn asm_domain_crash_synchronous(unsigned long addr);
 
 void scheduler_init(void);
-int  sched_init_vcpu(struct vcpu *v, unsigned int processor);
+int  sched_init_vcpu(struct vcpu *v);
 void sched_destroy_vcpu(struct vcpu *v);
 int  sched_init_domain(struct domain *d, int poolid);
 void sched_destroy_domain(struct domain *d);
@@ -670,10 +705,10 @@ void sync_local_execstate(void);
 
 /*
  * Called by the scheduler to switch to another VCPU. This function must
- * call context_saved(@prev) when the local CPU is no longer running in
- * @prev's context, and that context is saved to memory. Alternatively, if
- * implementing lazy context switching, it suffices to ensure that invoking
- * sync_vcpu_execstate() will switch and commit @prev's state.
+ * call sched_context_switched(@prev, @next) when the local CPU is no longer
+ * running in @prev's context, and that context is saved to memory.
+ * Alternatively, if implementing lazy context switching, it suffices to ensure
+ * that invoking sync_vcpu_execstate() will switch and commit @prev's state.
  */
 void context_switch(
     struct vcpu *prev,
@@ -685,7 +720,7 @@ void context_switch(
  * saved to memory. Alternatively, if implementing lazy context switching,
  * ensure that invoking sync_vcpu_execstate() will switch and commit @prev.
  */
-void context_saved(struct vcpu *prev);
+void sched_context_switched(struct vcpu *prev, struct vcpu *vnext);
 
 /* Called by the scheduler to continue running the current VCPU. */
 void continue_running(
@@ -869,24 +904,37 @@ static inline struct vcpu *domain_vcpu(const struct domain *d,
 
 void cpu_init(void);
 
+/*
+ * vcpu is urgent if vcpu is polling event channel
+ *
+ * if urgent vcpu exists, CPU should not enter deep C state
+ */
+DECLARE_PER_CPU(atomic_t, sched_urgent_count);
+static inline bool sched_has_urgent_vcpu(void)
+{
+    return atomic_read(&this_cpu(sched_urgent_count));
+}
+
 struct scheduler;
 
 struct scheduler *scheduler_get_default(void);
 struct scheduler *scheduler_alloc(unsigned int sched_id, int *perr);
 void scheduler_free(struct scheduler *sched);
-int schedule_cpu_switch(unsigned int cpu, struct cpupool *c);
-void vcpu_force_reschedule(struct vcpu *v);
+int schedule_cpu_add(unsigned int cpu, struct cpupool *c);
+int schedule_cpu_rm(unsigned int cpu);
+void vcpu_set_periodic_timer(struct vcpu *v, s_time_t value);
 int cpu_disable_scheduler(unsigned int cpu);
-/* We need it in dom0_setup_vcpu */
-void sched_set_affinity(struct vcpu *v, const cpumask_t *hard,
-                        const cpumask_t *soft);
+void sched_setup_dom0_vcpus(struct domain *d);
+int vcpu_temporary_affinity(struct vcpu *v, unsigned int cpu, uint8_t reason);
 int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity);
 int vcpu_set_soft_affinity(struct vcpu *v, const cpumask_t *affinity);
 void restore_vcpu_affinity(struct domain *d);
-int vcpu_pin_override(struct vcpu *v, int cpu);
 
 void vcpu_runstate_get(struct vcpu *v, struct vcpu_runstate_info *runstate);
 uint64_t get_cpu_idle_time(unsigned int cpu);
+void sched_guest_idle(void (*idle) (void), unsigned int cpu);
+void scheduler_enable(void);
+void scheduler_disable(void);
 
 /*
  * Used by idle loop to decide whether there is work to do:
@@ -913,70 +961,86 @@ void watchdog_domain_destroy(struct domain *d);
  *    (that is, this would not be suitable for a driver domain)
  *  - There is never a reason to deny the hardware domain access to this
  */
-#define is_hardware_domain(_d) ((_d) == hardware_domain)
+#define is_hardware_domain(_d) evaluate_nospec((_d) == hardware_domain)
 
 /* This check is for functionality specific to a control domain */
-#define is_control_domain(_d) ((_d)->is_privileged)
+#define is_control_domain(_d) evaluate_nospec((_d)->is_privileged)
 
 #define VM_ASSIST(d, t) (test_bit(VMASST_TYPE_ ## t, &(d)->vm_assist))
 
-static inline bool is_pv_domain(const struct domain *d)
+static always_inline bool is_pv_domain(const struct domain *d)
 {
-    return IS_ENABLED(CONFIG_PV) ? d->guest_type == guest_type_pv : false;
+    return IS_ENABLED(CONFIG_PV) &&
+        evaluate_nospec(!(d->options & XEN_DOMCTL_CDF_hvm));
 }
 
-static inline bool is_pv_vcpu(const struct vcpu *v)
+static always_inline bool is_pv_vcpu(const struct vcpu *v)
 {
     return is_pv_domain(v->domain);
 }
 
 #ifdef CONFIG_COMPAT
-static inline bool is_pv_32bit_domain(const struct domain *d)
+static always_inline bool is_pv_32bit_domain(const struct domain *d)
 {
     return is_pv_domain(d) && d->arch.is_32bit_pv;
 }
 
-static inline bool is_pv_32bit_vcpu(const struct vcpu *v)
+static always_inline bool is_pv_32bit_vcpu(const struct vcpu *v)
 {
     return is_pv_32bit_domain(v->domain);
 }
 
-static inline bool is_pv_64bit_domain(const struct domain *d)
+static always_inline bool is_pv_64bit_domain(const struct domain *d)
 {
     return is_pv_domain(d) && !d->arch.is_32bit_pv;
 }
 
-static inline bool is_pv_64bit_vcpu(const struct vcpu *v)
+static always_inline bool is_pv_64bit_vcpu(const struct vcpu *v)
 {
     return is_pv_64bit_domain(v->domain);
 }
 #endif
-static inline bool is_hvm_domain(const struct domain *d)
+static always_inline bool is_hvm_domain(const struct domain *d)
 {
-    return IS_ENABLED(CONFIG_HVM) ? d->guest_type == guest_type_hvm : false;
+    return IS_ENABLED(CONFIG_HVM) &&
+        evaluate_nospec(d->options & XEN_DOMCTL_CDF_hvm);
 }
 
-static inline bool is_hvm_vcpu(const struct vcpu *v)
+static always_inline bool is_hvm_vcpu(const struct vcpu *v)
 {
     return is_hvm_domain(v->domain);
 }
 
-#define is_pinned_vcpu(v) ((v)->domain->is_pinned || \
-                           cpumask_weight((v)->cpu_hard_affinity) == 1)
-#ifdef CONFIG_HAS_PASSTHROUGH
-#define has_iommu_pt(d) (dom_iommu(d)->status != IOMMU_STATUS_disabled)
-#define need_iommu_pt_sync(d) (dom_iommu(d)->need_sync)
-#else
-#define has_iommu_pt(d) false
-#define need_iommu_pt_sync(d) false
-#endif
+static always_inline bool hap_enabled(const struct domain *d)
+{
+    /* sanitise_domain_config() rejects HAP && !HVM */
+    return IS_ENABLED(CONFIG_HVM) &&
+        evaluate_nospec(d->options & XEN_DOMCTL_CDF_hap);
+}
+
+static inline bool is_hwdom_pinned_vcpu(const struct vcpu *v)
+{
+    return (is_hardware_domain(v->domain) &&
+            cpumask_weight(v->sched_unit->cpu_hard_affinity) == 1);
+}
 
 static inline bool is_vcpu_online(const struct vcpu *v)
 {
     return !test_bit(_VPF_down, &v->pause_flags);
 }
 
+static inline bool is_xenstore_domain(const struct domain *d)
+{
+    return d->options & XEN_DOMCTL_CDF_xs_domain;
+}
+
+static always_inline bool is_iommu_enabled(const struct domain *d)
+{
+    return evaluate_nospec(d->options & XEN_DOMCTL_CDF_iommu);
+}
+
 extern bool sched_smt_power_savings;
+extern bool sched_disable_smt_switching;
 
 extern enum cpufreq_controller {
     FREQCTL_none, FREQCTL_dom0_kernel, FREQCTL_xen

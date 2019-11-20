@@ -6,6 +6,11 @@
 #endif
 #include <public/arch-arm.h>
 
+/* CTR Cache Type Register */
+#define CTR_L1Ip_MASK       0x3
+#define CTR_L1Ip_SHIFT      14
+#define CTR_L1Ip_AIVIVT     0x1
+
 /* MIDR Main ID Register */
 #define MIDR_REVISION_MASK      0xf
 #define MIDR_RESIVION(midr)     ((midr) & MIDR_REVISION_MASK)
@@ -112,28 +117,79 @@
 #define TTBCR_PD1       (_AC(1,U)<<5)
 
 /* SCTLR System Control Register. */
-/* HSCTLR is a subset of this. */
-#define SCTLR_TE        (_AC(1,U)<<30)
-#define SCTLR_AFE       (_AC(1,U)<<29)
-#define SCTLR_TRE       (_AC(1,U)<<28)
-#define SCTLR_NMFI      (_AC(1,U)<<27)
-#define SCTLR_EE        (_AC(1,U)<<25)
-#define SCTLR_VE        (_AC(1,U)<<24)
-#define SCTLR_U         (_AC(1,U)<<22)
-#define SCTLR_FI        (_AC(1,U)<<21)
-#define SCTLR_WXN       (_AC(1,U)<<19)
-#define SCTLR_HA        (_AC(1,U)<<17)
-#define SCTLR_RR        (_AC(1,U)<<14)
-#define SCTLR_V         (_AC(1,U)<<13)
-#define SCTLR_I         (_AC(1,U)<<12)
-#define SCTLR_Z         (_AC(1,U)<<11)
-#define SCTLR_SW        (_AC(1,U)<<10)
-#define SCTLR_B         (_AC(1,U)<<7)
-#define SCTLR_C         (_AC(1,U)<<2)
-#define SCTLR_A         (_AC(1,U)<<1)
-#define SCTLR_M         (_AC(1,U)<<0)
 
-#define HSCTLR_BASE     _AC(0x30c51878,U)
+/* Bits specific to SCTLR_EL1 for Arm32 */
+
+#define SCTLR_A32_EL1_V     BIT(13, UL)
+
+/* Common bits for SCTLR_ELx for Arm32 */
+
+#define SCTLR_A32_ELx_TE    BIT(30, UL)
+#define SCTLR_A32_ELx_FI    BIT(21, UL)
+
+/* Common bits for SCTLR_ELx for Arm64 */
+#define SCTLR_A64_ELx_SA    BIT(3, UL)
+
+/* Common bits for SCTLR_ELx on all architectures */
+#define SCTLR_Axx_ELx_EE    BIT(25, UL)
+#define SCTLR_Axx_ELx_WXN   BIT(19, UL)
+#define SCTLR_Axx_ELx_I     BIT(12, UL)
+#define SCTLR_Axx_ELx_C     BIT(2, UL)
+#define SCTLR_Axx_ELx_A     BIT(1, UL)
+#define SCTLR_Axx_ELx_M     BIT(0, UL)
+
+#ifdef CONFIG_ARM_32
+
+#define HSCTLR_RES1     (BIT( 3, UL) | BIT( 4, UL) | BIT( 5, UL) |\
+                         BIT( 6, UL) | BIT(11, UL) | BIT(16, UL) |\
+                         BIT(18, UL) | BIT(22, UL) | BIT(23, UL) |\
+                         BIT(28, UL) | BIT(29, UL))
+
+#define HSCTLR_RES0     (BIT(7, UL)  | BIT(8, UL)  | BIT(9, UL)  | BIT(10, UL) |\
+                         BIT(13, UL) | BIT(14, UL) | BIT(15, UL) | BIT(17, UL) |\
+                         BIT(20, UL) | BIT(24, UL) | BIT(26, UL) | BIT(27, UL) |\
+                         BIT(31, UL))
+
+/* Initial value for HSCTLR */
+#define HSCTLR_SET      (HSCTLR_RES1    | SCTLR_Axx_ELx_A   | SCTLR_Axx_ELx_I)
+
+/* Only used a pre-processing time... */
+#define HSCTLR_CLEAR    (HSCTLR_RES0        | SCTLR_Axx_ELx_M   |\
+                         SCTLR_Axx_ELx_C    | SCTLR_Axx_ELx_WXN |\
+                         SCTLR_A32_ELx_FI   | SCTLR_Axx_ELx_EE  |\
+                         SCTLR_A32_ELx_TE)
+
+#if (HSCTLR_SET ^ HSCTLR_CLEAR) != 0xffffffffU
+#error "Inconsistent HSCTLR set/clear bits"
+#endif
+
+#else
+
+#define SCTLR_EL2_RES1  (BIT( 4, UL) | BIT( 5, UL) | BIT(11, UL) |\
+                         BIT(16, UL) | BIT(18, UL) | BIT(22, UL) |\
+                         BIT(23, UL) | BIT(28, UL) | BIT(29, UL))
+
+#define SCTLR_EL2_RES0  (BIT( 6, UL) | BIT( 7, UL) | BIT( 8, UL) |\
+                         BIT( 9, UL) | BIT(10, UL) | BIT(13, UL) |\
+                         BIT(14, UL) | BIT(15, UL) | BIT(17, UL) |\
+                         BIT(20, UL) | BIT(21, UL) | BIT(24, UL) |\
+                         BIT(26, UL) | BIT(27, UL) | BIT(30, UL) |\
+                         BIT(31, UL) | (0xffffffffULL << 32))
+
+/* Initial value for SCTLR_EL2 */
+#define SCTLR_EL2_SET   (SCTLR_EL2_RES1     | SCTLR_A64_ELx_SA  |\
+                         SCTLR_Axx_ELx_I)
+
+/* Only used a pre-processing time... */
+#define SCTLR_EL2_CLEAR (SCTLR_EL2_RES0     | SCTLR_Axx_ELx_M   |\
+                         SCTLR_Axx_ELx_A    | SCTLR_Axx_ELx_C   |\
+                         SCTLR_Axx_ELx_WXN  | SCTLR_Axx_ELx_EE)
+
+#if (SCTLR_EL2_SET ^ SCTLR_EL2_CLEAR) != 0xffffffffffffffffUL
+#error "Inconsistent SCTLR_EL2 set/clear bits"
+#endif
+
+#endif
 
 /* HCR Hyp Configuration Register */
 #define HCR_RW          (_AC(1,UL)<<31) /* Register Width, ARM64 only */
@@ -486,7 +542,7 @@ register_t get_default_hcr_flags(void);
  */
 #define SYNCHRONIZE_SERROR(feat)                                  \
     do {                                                          \
-        ASSERT(!cpus_have_cap(feat) || local_abort_is_enabled()); \
+        ASSERT(local_abort_is_enabled());                         \
         asm volatile(ALTERNATIVE("dsb sy; isb",                   \
                                  "nop; nop", feat)                \
                                  : : : "memory");                 \

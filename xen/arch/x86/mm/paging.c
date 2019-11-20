@@ -209,15 +209,15 @@ static int paging_free_log_dirty_bitmap(struct domain *d, int rc)
     return rc;
 }
 
-int paging_log_dirty_enable(struct domain *d, bool_t log_global)
+int paging_log_dirty_enable(struct domain *d, bool log_global)
 {
     int ret;
 
-    if ( has_iommu_pt(d) && log_global )
+    if ( has_arch_pdevs(d) && log_global )
     {
         /*
          * Refuse to turn on global log-dirty mode
-         * if the domain is using the IOMMU.
+         * if the domain is sharing the P2M with the IOMMU.
          */
         return -EINVAL;
     }
@@ -632,7 +632,7 @@ void paging_log_dirty_init(struct domain *d, const struct log_dirty_ops *ops)
 /*           CODE FOR PAGING SUPPORT            */
 /************************************************/
 /* Domain paging struct initialization. */
-int paging_domain_init(struct domain *d, unsigned int domcr_flags)
+int paging_domain_init(struct domain *d)
 {
     int rc;
 
@@ -653,7 +653,7 @@ int paging_domain_init(struct domain *d, unsigned int domcr_flags)
     if ( hap_enabled(d) )
         hap_domain_init(d);
     else
-        rc = shadow_domain_init(d, domcr_flags);
+        rc = shadow_domain_init(d);
 
     return rc;
 }
@@ -727,7 +727,7 @@ int paging_domctl(struct domain *d, struct xen_domctl_shadow_op *sc,
             break;
         /* Else fall through... */
     case XEN_DOMCTL_SHADOW_OP_ENABLE_LOGDIRTY:
-        return paging_log_dirty_enable(d, 1);
+        return paging_log_dirty_enable(d, true);
 
     case XEN_DOMCTL_SHADOW_OP_OFF:
         if ( (rc = paging_log_dirty_disable(d, resuming)) != 0 )
@@ -837,7 +837,9 @@ int paging_enable(struct domain *d, u32 mode)
     switch ( mode & (PG_external | PG_translate | PG_refcounts) )
     {
     case 0:
+#if PG_external | PG_translate | PG_refcounts
     case PG_external | PG_translate | PG_refcounts:
+#endif
         break;
     default:
         return -EINVAL;
@@ -950,7 +952,9 @@ int paging_write_p2m_entry(struct p2m_domain *p2m, unsigned long gfn,
     return rc;
 }
 
-int paging_set_allocation(struct domain *d, unsigned int pages, bool *preempted)
+#ifdef CONFIG_HVM
+int __init paging_set_allocation(struct domain *d, unsigned int pages,
+                                 bool *preempted)
 {
     int rc;
 
@@ -965,6 +969,7 @@ int paging_set_allocation(struct domain *d, unsigned int pages, bool *preempted)
 
     return rc;
 }
+#endif
 
 /*
  * Local variables:

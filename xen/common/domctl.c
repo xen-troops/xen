@@ -123,14 +123,14 @@ int xenctl_bitmap_to_cpumask(cpumask_var_t *cpumask,
 static int nodemask_to_xenctl_bitmap(struct xenctl_bitmap *xenctl_nodemap,
                                      const nodemask_t *nodemask)
 {
-    return bitmap_to_xenctl_bitmap(xenctl_nodemap, nodes_addr(*nodemask),
+    return bitmap_to_xenctl_bitmap(xenctl_nodemap, nodemask_bits(nodemask),
                                    MAX_NUMNODES);
 }
 
 static int xenctl_bitmap_to_nodemask(nodemask_t *nodemask,
                                      const struct xenctl_bitmap *xenctl_nodemap)
 {
-    return xenctl_bitmap_to_bitmap(nodes_addr(*nodemask), xenctl_nodemap,
+    return xenctl_bitmap_to_bitmap(nodemask_bits(nodemask), xenctl_nodemap,
                                    MAX_NUMNODES);
 }
 
@@ -186,17 +186,9 @@ void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info)
         (d->is_shut_down                ? XEN_DOMINF_shutdown  : 0) |
         (d->controller_pause_count > 0  ? XEN_DOMINF_paused    : 0) |
         (d->debugger_attached           ? XEN_DOMINF_debugged  : 0) |
-        (d->is_xenstore                 ? XEN_DOMINF_xs_domain : 0) |
+        (is_xenstore_domain(d)          ? XEN_DOMINF_xs_domain : 0) |
+        (is_hvm_domain(d)               ? XEN_DOMINF_hvm_guest : 0) |
         d->shutdown_code << XEN_DOMINF_shutdownshift;
-
-    switch ( d->guest_type )
-    {
-    case guest_type_hvm:
-        info->flags |= XEN_DOMINF_hvm_guest;
-        break;
-    default:
-        break;
-    }
 
     xsm_security_domaininfo(d, info);
 
@@ -391,6 +383,16 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     switch ( op->cmd )
     {
+    case XEN_DOMCTL_assign_device:
+    case XEN_DOMCTL_deassign_device:
+        if ( op->domain == DOMID_IO )
+        {
+            d = dom_io;
+            break;
+        }
+        else if ( op->domain == DOMID_INVALID )
+            return -ESRCH;
+        /* fall through */
     case XEN_DOMCTL_test_assign_device:
     case XEN_DOMCTL_vm_event_op:
         if ( op->domain == DOMID_INVALID )
@@ -413,7 +415,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     if ( !domctl_lock_acquire() )
     {
-        if ( d )
+        if ( d && d != dom_io )
             rcu_unlock_domain(d);
         return hypercall_create_continuation(
             __HYPERVISOR_domctl, "h", u_domctl);
@@ -540,8 +542,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     case XEN_DOMCTL_max_vcpus:
     {
-        unsigned int i, max = op->u.max_vcpus.max, cpu;
-        cpumask_t *online;
+        unsigned int i, max = op->u.max_vcpus.max;
 
         ret = -EINVAL;
         if ( (d == current->domain) || /* no domain_pause() */
@@ -552,18 +553,13 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         domain_pause(d);
 
         ret = -ENOMEM;
-        online = cpupool_domain_cpumask(d);
 
         for ( i = 0; i < max; i++ )
         {
             if ( d->vcpu[i] != NULL )
                 continue;
 
-            cpu = (i == 0) ?
-                cpumask_any(online) :
-                cpumask_cycle(d->vcpu[i-1]->processor, online);
-
-            if ( vcpu_create(d, i, cpu) == NULL )
+            if ( vcpu_create(d, i) == NULL )
                 goto maxvcpu_out;
         }
 
@@ -614,6 +610,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     case XEN_DOMCTL_getvcpuaffinity:
     {
         struct vcpu *v;
+        const struct sched_unit *unit;
         struct xen_domctl_vcpuaffinity *vcpuaff = &op->u.vcpuaffinity;
 
         ret = -EINVAL;
@@ -624,6 +621,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         if ( (v = d->vcpu[vcpuaff->vcpu]) == NULL )
             break;
 
+        unit = v->sched_unit;
         ret = -EINVAL;
         if ( vcpuaffinity_params_invalid(vcpuaff) )
             break;
@@ -631,7 +629,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         if ( op->cmd == XEN_DOMCTL_setvcpuaffinity )
         {
             cpumask_var_t new_affinity, old_affinity;
-            cpumask_t *online = cpupool_domain_cpumask(v->domain);
+            cpumask_t *online = cpupool_domain_master_cpumask(v->domain);
 
             /*
              * We want to be able to restore hard affinity if we are trying
@@ -643,7 +641,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                 ret = -ENOMEM;
                 break;
             }
-            cpumask_copy(old_affinity, v->cpu_hard_affinity);
+            cpumask_copy(old_affinity, unit->cpu_hard_affinity);
 
             if ( !alloc_cpumask_var(&new_affinity) )
             {
@@ -654,7 +652,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
             /* Undo a stuck SCHED_pin_override? */
             if ( vcpuaff->flags & XEN_VCPUAFFINITY_FORCE )
-                vcpu_pin_override(v, -1);
+                vcpu_temporary_affinity(v, NR_CPUS, VCPU_AFFINITY_OVERRIDE);
 
             ret = 0;
 
@@ -676,7 +674,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                  * For hard affinity, what we return is the intersection of
                  * cpupool's online mask and the new hard affinity.
                  */
-                cpumask_and(new_affinity, online, v->cpu_hard_affinity);
+                cpumask_and(new_affinity, online, unit->cpu_hard_affinity);
                 ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_hard,
                                                new_affinity);
             }
@@ -705,7 +703,8 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                  * hard affinity.
                  */
                 cpumask_and(new_affinity, new_affinity, online);
-                cpumask_and(new_affinity, new_affinity, v->cpu_hard_affinity);
+                cpumask_and(new_affinity, new_affinity,
+                            unit->cpu_hard_affinity);
                 ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_soft,
                                                new_affinity);
             }
@@ -718,10 +717,10 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         {
             if ( vcpuaff->flags & XEN_VCPUAFFINITY_HARD )
                 ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_hard,
-                                               v->cpu_hard_affinity);
+                                               unit->cpu_hard_affinity);
             if ( vcpuaff->flags & XEN_VCPUAFFINITY_SOFT )
                 ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_soft,
-                                               v->cpu_soft_affinity);
+                                               unit->cpu_soft_affinity);
         }
         break;
     }
@@ -1018,9 +1017,9 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         break;
 
     case XEN_DOMCTL_vm_event_op:
-        ret = vm_event_domctl(d, &op->u.vm_event_op,
-                              guest_handle_cast(u_domctl, void));
-        copyback = 1;
+        ret = vm_event_domctl(d, &op->u.vm_event_op);
+        if ( ret == 0 )
+            copyback = true;
         break;
 
 #ifdef CONFIG_MEM_ACCESS
@@ -1075,7 +1074,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     domctl_lock_release();
 
  domctl_out_unlock_domonly:
-    if ( d )
+    if ( d && d != dom_io )
         rcu_unlock_domain(d);
 
     if ( copyback && __copy_to_guest(u_domctl, op, 1) )

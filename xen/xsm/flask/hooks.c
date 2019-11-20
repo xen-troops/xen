@@ -684,11 +684,9 @@ static int flask_domctl(struct domain *d, int cmd)
         return current_has_perm(d, SECCLASS_HVM, HVM__GETHVMC);
 
     case XEN_DOMCTL_set_address_size:
-    case XEN_DOMCTL_set_machine_address_size:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETADDRSIZE);
 
     case XEN_DOMCTL_get_address_size:
-    case XEN_DOMCTL_get_machine_address_size:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__GETADDRSIZE);
 
     case XEN_DOMCTL_mem_sharing_op:
@@ -712,14 +710,13 @@ static int flask_domctl(struct domain *d, int cmd)
 
     case XEN_DOMCTL_subscribe:
     case XEN_DOMCTL_disable_migrate:
-    case XEN_DOMCTL_suppress_spurious_page_faults:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SET_MISC_INFO);
 
     case XEN_DOMCTL_set_virq_handler:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SET_VIRQ_HANDLER);
 
-    case XEN_DOMCTL_set_cpuid:
-        return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SET_CPUID);
+    case XEN_DOMCTL_set_cpu_policy:
+        return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SET_CPU_POLICY);
 
     case XEN_DOMCTL_gettscinfo:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__GETTSC);
@@ -810,9 +807,6 @@ static int flask_sysctl(int cmd)
         return avc_current_has_perm(SECINITSID_XEN, SECCLASS_XEN2,
                                     XEN2__PSR_ALLOC, NULL);
 
-    case XEN_SYSCTL_tmem_op:
-        return domain_has_xen(current->domain, XEN__TMEM_CONTROL);
-
     case XEN_SYSCTL_get_cpu_levelling_caps:
         return avc_current_has_perm(SECINITSID_XEN, SECCLASS_XEN2,
                                     XEN2__GET_CPU_LEVELLING_CAPS, NULL);
@@ -889,7 +883,7 @@ static int flask_map_domain_msi (struct domain *d, int irq, const void *data,
 #endif
 }
 
-static u32 flask_iommu_resource_use_perm(void)
+static u32 flask_iommu_resource_use_perm(const struct domain *d)
 {
     /* Obtain the permission level required for allowing a domain
      * to use an assigned device.
@@ -902,7 +896,7 @@ static u32 flask_iommu_resource_use_perm(void)
      */
     u32 perm = RESOURCE__USE_NOIOMMU;
 
-    if (iommu_enabled)
+    if ( is_iommu_enabled(d) )
         perm = ( iommu_intremap ? RESOURCE__USE_IOMMU :
                                   RESOURCE__USE_IOMMU_NOINTREMAP );
     return perm;
@@ -913,7 +907,7 @@ static int flask_map_domain_irq (struct domain *d, int irq, const void *data)
     u32 sid, dsid;
     int rc = -EPERM;
     struct avc_audit_data ad;
-    u32 dperm = flask_iommu_resource_use_perm();
+    u32 dperm = flask_iommu_resource_use_perm(d);
 
     if ( irq >= nr_static_irqs && data ) {
         rc = flask_map_domain_msi(d, irq, data, &sid, &ad);
@@ -979,7 +973,7 @@ static int flask_bind_pt_irq (struct domain *d, struct xen_domctl_bind_pt_irq *b
     int rc = -EPERM;
     int irq;
     struct avc_audit_data ad;
-    u32 dperm = flask_iommu_resource_use_perm();
+    u32 dperm = flask_iommu_resource_use_perm(d);
 
     rc = current_has_perm(d, SECCLASS_RESOURCE, RESOURCE__ADD);
     if ( rc )
@@ -1052,7 +1046,7 @@ static int flask_iomem_permission(struct domain *d, uint64_t start, uint64_t end
 
     data.ssid = domain_sid(current->domain);
     data.dsid = domain_sid(d);
-    data.use_perm = flask_iommu_resource_use_perm();
+    data.use_perm = flask_iommu_resource_use_perm(d);
 
     return security_iterate_iomem_sids(start, end, _iomem_has_perm, &data);
 }
@@ -1077,7 +1071,7 @@ static int flask_pci_config_permission(struct domain *d, uint32_t machine_bdf, u
     if ( access && (end >= 0x10 && start < 0x28) )
         perm = RESOURCE__SETUP;
     else
-        perm = flask_iommu_resource_use_perm();
+        perm = flask_iommu_resource_use_perm(d);
 
     AVC_AUDIT_DATA_INIT(&ad, DEV);
     ad.device = (unsigned long) machine_bdf;
@@ -1178,11 +1172,6 @@ static inline int flask_page_offline(uint32_t cmd)
     }
 }
 
-static inline int flask_tmem_op(void)
-{
-    return domain_has_xen(current->domain, XEN__TMEM_OP);
-}
-
 static int flask_add_to_physmap(struct domain *d1, struct domain *d2)
 {
     return domain_has_perm(d1, d2, SECCLASS_MMU, MMU__PHYSMAP);
@@ -1270,7 +1259,7 @@ static int flask_mem_paging(struct domain *d)
 }
 #endif
 
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
 static int flask_mem_sharing(struct domain *d)
 {
     return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__MEM_SHARING);
@@ -1307,10 +1296,12 @@ static int flask_assign_device(struct domain *d, uint32_t machine_bdf)
     u32 dsid, rsid;
     int rc = -EPERM;
     struct avc_audit_data ad;
-    u32 dperm = flask_iommu_resource_use_perm();
+    u32 dperm;
 
     if ( !d )
         return flask_test_assign_device(machine_bdf);
+
+    dperm = flask_iommu_resource_use_perm(d);
 
     rc = current_has_perm(d, SECCLASS_RESOURCE, RESOURCE__ADD);
     if ( rc )
@@ -1366,10 +1357,12 @@ static int flask_assign_dtdevice(struct domain *d, const char *dtpath)
     u32 dsid, rsid;
     int rc = -EPERM;
     struct avc_audit_data ad;
-    u32 dperm = flask_iommu_resource_use_perm();
+    u32 dperm;
 
     if ( !d )
         return flask_test_assign_dtdevice(dtpath);
+
+    dperm = flask_iommu_resource_use_perm(d);
 
     rc = current_has_perm(d, SECCLASS_RESOURCE, RESOURCE__ADD);
     if ( rc )
@@ -1551,7 +1544,7 @@ static int flask_ioport_permission(struct domain *d, uint32_t start, uint32_t en
 
     data.ssid = domain_sid(current->domain);
     data.dsid = domain_sid(d);
-    data.use_perm = flask_iommu_resource_use_perm();
+    data.use_perm = flask_iommu_resource_use_perm(d);
 
     return security_iterate_ioport_sids(start, end, _ioport_has_perm, &data);
 }
@@ -1818,7 +1811,6 @@ static struct xsm_operations flask_ops = {
     .resource_setup_misc = flask_resource_setup_misc,
 
     .page_offline = flask_page_offline,
-    .tmem_op = flask_tmem_op,
     .hvm_param = flask_hvm_param,
     .hvm_control = flask_hvm_param,
     .hvm_param_nested = flask_hvm_param_nested,
@@ -1838,7 +1830,7 @@ static struct xsm_operations flask_ops = {
     .mem_paging = flask_mem_paging,
 #endif
 
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
     .mem_sharing = flask_mem_sharing,
 #endif
 

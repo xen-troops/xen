@@ -12,6 +12,7 @@ config ARM_32
 config ARM_64
 	def_bool y
 	depends on 64BIT
+	select HAS_FAST_MULTIPLY
 
 config ARM
 	def_bool y
@@ -19,6 +20,7 @@ config ARM
 	select HAS_DEVICE_TREE
 	select HAS_PASSTHROUGH
 	select HAS_PDX
+	select IOMMU_FORCE_PT_SHARE
 
 config ARCH_DEFCONFIG
 	string
@@ -104,6 +106,15 @@ config HARDEN_BRANCH_PREDICTOR
 	  firmware.
 
 	  If unsure, say Y.
+
+config TEE
+	bool "Enable TEE mediators support" if EXPERT = "y"
+	default n
+	help
+	  This option enables generic TEE mediators support. It allows guests
+	  to access real TEE via one of TEE mediators implemented in XEN.
+
+source "arch/arm/tee/Kconfig"
 
 endmenu
 

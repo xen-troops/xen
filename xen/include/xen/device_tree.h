@@ -92,6 +92,13 @@ struct dt_device_node {
 
     /* IOMMU specific fields */
     bool is_protected;
+    /*
+     * The main purpose of this list is to link the structure in the list
+     * of devices assigned to domain.
+     *
+     * Boot code (iommu_hardware_setup) re-uses this list to link the structure
+     * in the list of devices for which driver requested deferred probing.
+     */
     struct list_head domain_list;
 
     struct device dev;
@@ -158,9 +165,9 @@ typedef int (*device_tree_node_func)(const void *fdt,
 
 extern const void *device_tree_flattened;
 
-int device_tree_for_each_node(const void *fdt,
-                                     device_tree_node_func func,
-                                     void *data);
+int device_tree_for_each_node(const void *fdt, int node,
+                              device_tree_node_func func,
+                              void *data);
 
 /**
  * dt_unflatten_host_device_tree - Unflatten the host device tree
@@ -737,6 +744,25 @@ int dt_parse_phandle_with_args(const struct dt_device_node *np,
                                const char *list_name,
                                const char *cells_name, int index,
                                struct dt_phandle_args *out_args);
+
+/**
+ * dt_count_phandle_with_args() - Find the number of phandles references in a property
+ * @np: pointer to a device tree node containing a list
+ * @list_name: property name that contains a list
+ * @cells_name: property name that specifies phandles' arguments count
+ *
+ * Returns the number of phandle + argument tuples within a property. It
+ * is a typical pattern to encode a list of phandle and variable
+ * arguments into a single property. The number of arguments is encoded
+ * by a property in the phandle-target node. For example, a gpios
+ * property would contain a list of GPIO specifies consisting of a
+ * phandle and 1 or more arguments. The number of arguments are
+ * determined by the #gpio-cells property in the node pointed to by the
+ * phandle.
+ */
+int dt_count_phandle_with_args(const struct dt_device_node *np,
+                               const char *list_name,
+                               const char *cells_name);
 
 #ifdef CONFIG_DEVICE_TREE_DEBUG
 #define dt_dprintk(fmt, args...)  \

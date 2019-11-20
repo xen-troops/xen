@@ -65,8 +65,8 @@ static DEFINE_PER_CPU(pg_lock_data_t, __pld);
 
 #if MEM_SHARING_AUDIT
 
-static struct list_head shr_audit_list;
-static spinlock_t shr_audit_lock;
+static LIST_HEAD(shr_audit_list);
+static DEFINE_SPINLOCK(shr_audit_lock);
 static DEFINE_RCU_READ_LOCK(shr_audit_read_lock);
 
 /* RCU delayed free of audit list entry */
@@ -112,13 +112,59 @@ static inline void page_sharing_dispose(struct page_info *page)
 
 #endif /* MEM_SHARING_AUDIT */
 
-static inline int mem_sharing_page_lock(struct page_info *pg)
+/*
+ * Private implementations of page_lock/unlock to bypass PV-only
+ * sanity checks not applicable to mem-sharing.
+ *
+ * _page_lock is used in memory sharing to protect addition (share) and removal
+ * (unshare) of (gfn,domain) tupples to a list of gfn's that the shared page is
+ * currently backing.
+ * Nesting may happen when sharing (and locking) two pages.
+ * Deadlock is avoided by locking pages in increasing order.
+ * All memory sharing code paths take the p2m lock of the affected gfn before
+ * taking the lock for the underlying page. We enforce ordering between page_lock
+ * and p2m_lock using an mm-locks.h construct.
+ *
+ * TODO: Investigate if PGT_validated is necessary.
+ */
+static inline bool _page_lock(struct page_info *page)
 {
-    int rc;
+    unsigned long x, nx;
+
+    do {
+        while ( (x = page->u.inuse.type_info) & PGT_locked )
+            cpu_relax();
+        nx = x + (1 | PGT_locked);
+        if ( !(x & PGT_validated) ||
+             !(x & PGT_count_mask) ||
+             !(nx & PGT_count_mask) )
+            return false;
+    } while ( cmpxchg(&page->u.inuse.type_info, x, nx) != x );
+
+    return true;
+}
+
+static inline void _page_unlock(struct page_info *page)
+{
+    unsigned long x, nx, y = page->u.inuse.type_info;
+
+    do {
+        x = y;
+        ASSERT((x & PGT_count_mask) && (x & PGT_locked));
+
+        nx = x - (1 | PGT_locked);
+        /* We must not drop the last reference here. */
+        ASSERT(nx & PGT_count_mask);
+    } while ( (y = cmpxchg(&page->u.inuse.type_info, x, nx)) != x );
+}
+
+static inline bool mem_sharing_page_lock(struct page_info *pg)
+{
+    bool rc;
     pg_lock_data_t *pld = &(this_cpu(__pld));
 
     page_sharing_mm_pre_lock();
-    rc = page_lock(pg);
+    rc = _page_lock(pg);
     if ( rc )
     {
         preempt_disable();
@@ -135,7 +181,7 @@ static inline void mem_sharing_page_unlock(struct page_info *pg)
     page_sharing_mm_unlock(pld->mm_unlock_level, 
                            &pld->recurse_count);
     preempt_enable();
-    page_unlock(pg);
+    _page_unlock(pg);
 }
 
 static inline shr_handle_t get_next_handle(void)
@@ -648,10 +694,6 @@ static int page_make_private(struct domain *d, struct page_info *page)
         return -EBUSY;
     }
 
-    /* We can only change the type if count is one */
-    /* Because we are locking pages individually, we need to drop
-     * the lock here, while the page is typed. We cannot risk the 
-     * race of page_unlock and then put_page_type. */
     expected_type = (PGT_shared_page | PGT_validated | PGT_locked | 2);
     if ( page->u.inuse.type_info != expected_type )
     {
@@ -660,11 +702,10 @@ static int page_make_private(struct domain *d, struct page_info *page)
         return -EEXIST;
     }
 
+    mem_sharing_page_unlock(page);
+
     /* Drop the final typecount */
     put_page_and_type(page);
-
-    /* Now that we've dropped the type, we can unlock */
-    mem_sharing_page_unlock(page);
 
     /* Change the owner */
     ASSERT(page_get_owner(page) == dom_cow);
@@ -900,6 +941,7 @@ static int share_pages(struct domain *sd, gfn_t sgfn, shr_handle_t sh,
     p2m_type_t smfn_type, cmfn_type;
     struct two_gfns tg;
     struct rmap_iterator ri;
+    unsigned long put_count = 0;
 
     get_two_gfns(sd, sgfn, &smfn_type, NULL, &smfn,
                  cd, cgfn, &cmfn_type, NULL, &cmfn, 0, &tg);
@@ -964,15 +1006,6 @@ static int share_pages(struct domain *sd, gfn_t sgfn, shr_handle_t sh,
         goto err_out;
     }
 
-    /* Acquire an extra reference, for the freeing below to be safe. */
-    if ( !get_page(cpage, cd) )
-    {
-        ret = -EOVERFLOW;
-        mem_sharing_page_unlock(secondpg);
-        mem_sharing_page_unlock(firstpg);
-        goto err_out;
-    }
-
     /* Merge the lists together */
     rmap_seed_iterator(cpage, &ri);
     while ( (gfn = rmap_iterate(cpage, &ri)) != NULL)
@@ -984,13 +1017,14 @@ static int share_pages(struct domain *sd, gfn_t sgfn, shr_handle_t sh,
          * Don't change the type of rmap for the client page. */
         rmap_del(gfn, cpage, 0);
         rmap_add(gfn, spage);
-        put_page_and_type(cpage);
+        put_count++;
         d = get_domain_by_id(gfn->domain);
         BUG_ON(!d);
         BUG_ON(set_shared_p2m_entry(d, gfn->gfn, smfn));
         put_domain(d);
     }
     ASSERT(list_empty(&cpage->sharing->gfns));
+    BUG_ON(!put_count);
 
     /* Clear the rest of the shared state */
     page_sharing_dispose(cpage);
@@ -1000,9 +1034,10 @@ static int share_pages(struct domain *sd, gfn_t sgfn, shr_handle_t sh,
     mem_sharing_page_unlock(firstpg);
 
     /* Free the client page */
-    if(test_and_clear_bit(_PGC_allocated, &cpage->count_info))
-        put_page(cpage);
-    put_page(cpage);
+    put_page_alloc_ref(cpage);
+
+    while ( put_count-- )
+        put_page_and_type(cpage);
 
     /* We managed to free a domain page. */
     atomic_dec(&nr_shared_mfns);
@@ -1082,8 +1117,7 @@ int mem_sharing_add_to_physmap(struct domain *sd, unsigned long sgfn, shr_handle
                     ret = -EOVERFLOW;
                     goto err_unlock;
                 }
-                if ( test_and_clear_bit(_PGC_allocated, &cpage->count_info) )
-                    put_page(cpage);
+                put_page_alloc_ref(cpage);
                 put_page(cpage);
             }
         }
@@ -1167,20 +1201,13 @@ int __mem_sharing_unshare_page(struct domain *d,
     {
         if ( !last_gfn )
             mem_sharing_gfn_destroy(page, d, gfn_info);
-        put_page_and_type(page);
+
         mem_sharing_page_unlock(page);
+
         if ( last_gfn )
-        {
-            if ( !get_page(page, d) )
-            {
-                put_gfn(d, gfn);
-                domain_crash(d);
-                return -EOVERFLOW;
-            }
-            if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
-                put_page(page);
-            put_page(page);
-        }
+            put_page_alloc_ref(page);
+
+        put_page_and_type(page);
         put_gfn(d, gfn);
 
         return 0;
@@ -1637,7 +1664,7 @@ int mem_sharing_domctl(struct domain *d, struct xen_domctl_mem_sharing_op *mec)
         case XEN_DOMCTL_MEM_SHARING_CONTROL:
         {
             rc = 0;
-            if ( unlikely(has_iommu_pt(d) && mec->u.enable) )
+            if ( unlikely(is_iommu_enabled(d) && mec->u.enable) )
                 rc = -EXDEV;
             else
                 d->arch.hvm.mem_sharing_enabled = mec->u.enable;
@@ -1650,13 +1677,3 @@ int mem_sharing_domctl(struct domain *d, struct xen_domctl_mem_sharing_op *mec)
 
     return rc;
 }
-
-void __init mem_sharing_init(void)
-{
-    printk("Initing memory sharing.\n");
-#if MEM_SHARING_AUDIT
-    spin_lock_init(&shr_audit_lock);
-    INIT_LIST_HEAD(&shr_audit_list);
-#endif
-}
-
