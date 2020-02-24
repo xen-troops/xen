@@ -1300,8 +1300,10 @@ static int parse_vcamera_format(libxl_vcamera_format *format,
          */
         len = strlen(oparg);
         if ((len != sizeof(uint32_t)) &&
-            (len != sizeof(uint32_t) + strlen(XENCAMERA_FOURCC_BIGENDIAN_STR)))
+            (len != sizeof(uint32_t) + strlen(XENCAMERA_FOURCC_BIGENDIAN_STR))) {
+            fprintf(stderr, "Format must be 4 octets long (or 7 for big endian variants)\n");
             return -1;
+        }
 
         p = oparg;
         while (*p) {
@@ -1315,8 +1317,10 @@ static int parse_vcamera_format(libxl_vcamera_format *format,
              * XENCAMERA_FOURCC_BIGENDIAN_STR then.
              */
             if (strcmp(&oparg[sizeof(uint32_t)],
-                       XENCAMERA_FOURCC_BIGENDIAN_STR))
+                       XENCAMERA_FOURCC_BIGENDIAN_STR)) {
+                fprintf(stderr, "Format for big endian variants must end with 'XENCAMERA_FOURCC_BIGENDIAN_STR' string\n");
                 return -1;
+            }
         }
         format->fourcc = strdup(oparg);
     } else if (MATCH_OPTION("resolution", token, oparg)) {
