@@ -66,14 +66,17 @@ static int libxl__set_xenstore_vcamera(libxl__gc *gc, uint32_t domid,
                                        flexarray_t *back, flexarray_t *front,
                                        flexarray_t *ro_front)
 {
+    char *controls = "";
     int i;
 
     flexarray_append_pair(ro_front, XENCAMERA_FIELD_BE_ALLOC,
                           GCSPRINTF("%d", vcamera->be_alloc));
     flexarray_append_pair(ro_front, XENCAMERA_FIELD_UNIQUE_ID,
                           GCSPRINTF("%s", vcamera->unique_id));
+    if (vcamera->controls)
+        controls = vcamera->controls;
     flexarray_append_pair(ro_front, XENCAMERA_FIELD_CONTROLS,
-                          GCSPRINTF("%s", vcamera->controls));
+                          GCSPRINTF("%s", controls));
     flexarray_append_pair(ro_front, XENCAMERA_FIELD_MAX_BUFFERS,
                           GCSPRINTF("%d", vcamera->max_buffers));
 
