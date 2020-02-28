@@ -82,6 +82,11 @@ static int libxl__set_xenstore_vcamera(libxl__gc *gc, uint32_t domid,
 
     for (i = 0; i < vcamera->num_vcamera_formats; i++)
     {
+        char *frame_rates = "";
+
+        if (vcamera->formats[i].frame_rates)
+            frame_rates = vcamera->formats[i].frame_rates;
+
         flexarray_append_pair(ro_front,
                               GCSPRINTF(XENCAMERA_FIELD_FORMATS "/%s/%d"
                                         XENCAMERA_RESOLUTION_SEPARATOR
@@ -89,7 +94,7 @@ static int libxl__set_xenstore_vcamera(libxl__gc *gc, uint32_t domid,
                                         vcamera->formats[i].fourcc,
                                         vcamera->formats[i].width,
                                         vcamera->formats[i].height),
-                              vcamera->formats[i].frame_rates);
+                                        frame_rates);
     }
     return 0;
 }
