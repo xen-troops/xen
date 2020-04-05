@@ -1222,7 +1222,7 @@ static int acquire_resource(
     if ( rc )
         return rc;
 
-    rc = xsm_domain_resource_map(XSM_DM_PRIV, d);
+    rc = xsm_domain_resource_map(XSM_HOOK, d);
     if ( rc )
         goto out;
 

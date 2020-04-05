@@ -300,7 +300,7 @@ static long evtchn_alloc_unbound(evtchn_alloc_unbound_t *alloc)
         ERROR_EXIT_DOM(port, d);
     chn = evtchn_from_port(d, port);
 
-    rc = xsm_evtchn_unbound(XSM_TARGET, d, chn, alloc->remote_dom);
+    rc = xsm_evtchn_unbound(XSM_HOOK, d, chn, alloc->remote_dom);
     if ( rc )
         goto out;
 
@@ -1375,7 +1375,7 @@ int alloc_unbound_xen_event_channel(
         goto out;
     chn = evtchn_from_port(ld, port);
 
-    rc = xsm_evtchn_unbound(XSM_TARGET, ld, chn, remote_domid);
+    rc = xsm_evtchn_unbound(XSM_HOOK, ld, chn, remote_domid);
     if ( rc )
         goto out;
 

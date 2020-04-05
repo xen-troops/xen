@@ -139,13 +139,18 @@ static XSM_INLINE int xsm_domctl(XSM_DEFAULT_ARG struct domain *d, int cmd)
     XSM_ASSERT_ACTION(XSM_OTHER);
     switch ( cmd )
     {
+    /*
+     * XXX: Emulator running in driver domain tries to get vcpus num.
+     * Probably we could avoid that change by modifying emulator to not use
+     * domctl for getting vcpus num.
+     */
+    case XEN_DOMCTL_getdomaininfo:
+        return xsm_default_action(XSM_HOOK, current->domain, d);
     case XEN_DOMCTL_ioport_mapping:
     case XEN_DOMCTL_memory_mapping:
     case XEN_DOMCTL_bind_pt_irq:
     case XEN_DOMCTL_unbind_pt_irq:
         return xsm_default_action(XSM_DM_PRIV, current->domain, d);
-    case XEN_DOMCTL_getdomaininfo:
-        return xsm_default_action(XSM_XS_PRIV, current->domain, d);
     default:
         return xsm_default_action(XSM_PRIV, current->domain, d);
     }
@@ -275,7 +280,7 @@ static XSM_INLINE int xsm_claim_pages(XSM_DEFAULT_ARG struct domain *d)
 static XSM_INLINE int xsm_evtchn_unbound(XSM_DEFAULT_ARG struct domain *d, struct evtchn *chn,
                                          domid_t id2)
 {
-    XSM_ASSERT_ACTION(XSM_TARGET);
+    XSM_ASSERT_ACTION(XSM_HOOK);
     return xsm_default_action(action, current->domain, d);
 }
 
@@ -535,7 +540,7 @@ static XSM_INLINE int xsm_remove_from_physmap(XSM_DEFAULT_ARG struct domain *d1,
 
 static XSM_INLINE int xsm_map_gmfn_foreign(XSM_DEFAULT_ARG struct domain *d, struct domain *t)
 {
-    XSM_ASSERT_ACTION(XSM_TARGET);
+    XSM_ASSERT_ACTION(XSM_HOOK);
     return xsm_default_action(action, d, t);
 }
 
@@ -711,7 +716,7 @@ static XSM_INLINE int xsm_pmu_op (XSM_DEFAULT_ARG struct domain *d, unsigned int
 
 static XSM_INLINE int xsm_dm_op(XSM_DEFAULT_ARG struct domain *d)
 {
-    XSM_ASSERT_ACTION(XSM_DM_PRIV);
+    XSM_ASSERT_ACTION(XSM_HOOK);
     return xsm_default_action(action, current->domain, d);
 }
 
@@ -767,6 +772,6 @@ static XSM_INLINE int xsm_xen_version (XSM_DEFAULT_ARG uint32_t op)
 
 static XSM_INLINE int xsm_domain_resource_map(XSM_DEFAULT_ARG struct domain *d)
 {
-    XSM_ASSERT_ACTION(XSM_DM_PRIV);
+    XSM_ASSERT_ACTION(XSM_HOOK);
     return xsm_default_action(action, current->domain, d);
 }
