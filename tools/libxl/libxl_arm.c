@@ -69,8 +69,20 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     }
 
 
-    /* XXX: Handle properly virtio */
-    nr_spis = 1;
+    /*
+     * XXX: Handle properly virtio
+     *
+     * JG:
+     * You need an SPIs per virtio backend.
+     * When I did the PoC, the SPI were hardcoded in the backend as well
+     * so the change in the toolstack were matching it.
+     * A proper solution would be the toolstack to allocate the interrupts
+     * used by each virtio backend and let the backend now which one is used
+     */
+    if (libxl_defbool_val(d_config->b_info.arch_arm.virtio)) {
+        LOG(DEBUG, "Use SPI for virtio");
+        nr_spis ++;
+    }
 
     LOG(DEBUG, "Configure the domain");
 
