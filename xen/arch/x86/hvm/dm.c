@@ -370,7 +370,7 @@ int dm_op(const struct dmop_args *op_args)
     if ( !is_hvm_domain(d) )
         goto out;
 
-    rc = xsm_dm_op(XSM_DM_PRIV, d);
+    rc = xsm_dm_op(XSM_HOOK, d);
     if ( rc )
         goto out;
 
