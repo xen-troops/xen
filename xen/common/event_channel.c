@@ -1218,7 +1218,12 @@ int alloc_unbound_xen_event_channel(
     port = rc;
     chn = evtchn_from_port(ld, port);
 
-    rc = xsm_evtchn_unbound(XSM_TARGET, ld, chn, remote_domid);
+    /*
+     * XXX: XSM_TARGET is not functional for emulator in driver domain.
+     * See xsm_default_action for details. Probably XSM_DM_PRIV could work,
+     * but there is a risk to break other users.
+     */
+    rc = xsm_evtchn_unbound(XSM_HOOK, ld, chn, remote_domid);
     if ( rc )
         goto out;
 
