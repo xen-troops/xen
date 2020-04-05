@@ -9,6 +9,10 @@
 #include <assert.h>
 #include <xen/device_tree_defs.h>
 
+#define GUEST_VIRTIO_MMIO_BASE  xen_mk_ullong(0x02000000)
+#define GUEST_VIRTIO_MMIO_SIZE  xen_mk_ullong(0x200)
+#define GUEST_VIRTIO_MMIO_SPI   33
+
 static const char *gicv_to_string(libxl_gic_version gic_version)
 {
     switch (gic_version) {
@@ -27,8 +31,8 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
 {
     uint32_t nr_spis = 0;
     unsigned int i;
-    uint32_t vuart_irq;
-    bool vuart_enabled = false;
+    uint32_t vuart_irq, virtio_irq;
+    bool vuart_enabled = false, virtio_enabled = false;
 
     /*
      * If pl011 vuart is enabled then increment the nr_spis to allow allocation
@@ -38,6 +42,17 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         nr_spis += (GUEST_VPL011_SPI - 32) + 1;
         vuart_irq = GUEST_VPL011_SPI;
         vuart_enabled = true;
+    }
+
+    /*
+     * XXX: Handle properly virtio
+     * A proper solution would be the toolstack to allocate the interrupts
+     * used by each virtio backend and let the backend now which one is used
+     */
+    if (libxl_defbool_val(d_config->b_info.arch_arm.virtio)) {
+        nr_spis += (GUEST_VIRTIO_MMIO_SPI - 32) + 1;
+        virtio_irq = GUEST_VIRTIO_MMIO_SPI;
+        virtio_enabled = true;
     }
 
     for (i = 0; i < d_config->b_info.num_irqs; i++) {
@@ -59,6 +74,12 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
             return ERROR_FAIL;
         }
 
+        /* The same check as for vpl011 */
+        if (virtio_enabled && irq == virtio_irq) {
+            LOG(ERROR, "Physical IRQ %u conflicting with virtio SPI\n", irq);
+            return ERROR_FAIL;
+        }
+
         if (irq < 32)
             continue;
 
@@ -67,10 +88,6 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         if (nr_spis <= spi)
             nr_spis = spi + 1;
     }
-
-
-    /* XXX: Handle properly virtio */
-    nr_spis = 1;
 
     LOG(DEBUG, "Configure the domain");
 
@@ -662,10 +679,6 @@ static int make_vpl011_uart_node(libxl__gc *gc, void *fdt,
 
     return 0;
 }
-
-#define GUEST_VIRTIO_MMIO_BASE  xen_mk_ullong(0x02000000)
-#define GUEST_VIRTIO_MMIO_SIZE  xen_mk_ullong(0x200)
-#define GUEST_VIRTIO_MMIO_SPI   33
 
 static int make_virtio_mmio_node(libxl__gc *gc, void *fdt)
 {
