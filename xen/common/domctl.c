@@ -868,7 +868,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             break;
 
         ret = -EINVAL;
-        if ( (d == e) || (d->target != NULL) )
+        if ( (d == e) || (d->target == e) )
         {
             put_domain(e);
             break;
@@ -884,6 +884,10 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         }
 
         /* Hold reference on @e until we destroy @d. */
+        /*
+         * XXX: Probably we should hold reference on @e until we destroy @e.
+         * Otherwise guest reboot won't work.
+         */
         d->target = e;
         break;
     }

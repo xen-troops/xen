@@ -56,6 +56,7 @@ static int dm_op(const struct dmop_args *op_args)
     if ( !is_hvm_domain(d) )
         goto out;
 
+    /* XXX: XSM_HOOK if XEN_DOMCTL_set_target is not an option ? */
     rc = xsm_dm_op(XSM_DM_PRIV, d);
     if ( rc )
         goto out;

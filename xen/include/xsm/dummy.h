@@ -139,13 +139,22 @@ static XSM_INLINE int xsm_domctl(XSM_DEFAULT_ARG struct domain *d, int cmd)
     XSM_ASSERT_ACTION(XSM_OTHER);
     switch ( cmd )
     {
+    /*
+     * XXX: Probably we could avoid this by modifying emulator to
+     * not use this domctl for getting vcpus num.
+     */
+    case XEN_DOMCTL_getdomaininfo:
+    /*
+     * XXX: XSM_DM_PRIV is not functional for emulator in driver domain without
+     * setting target in advance. See xsm_default_action for details.
+     */
+    case XEN_DOMCTL_set_target:
+        return xsm_default_action(XSM_HOOK, current->domain, d);
     case XEN_DOMCTL_ioport_mapping:
     case XEN_DOMCTL_memory_mapping:
     case XEN_DOMCTL_bind_pt_irq:
     case XEN_DOMCTL_unbind_pt_irq:
         return xsm_default_action(XSM_DM_PRIV, current->domain, d);
-    case XEN_DOMCTL_getdomaininfo:
-        return xsm_default_action(XSM_XS_PRIV, current->domain, d);
     default:
         return xsm_default_action(XSM_PRIV, current->domain, d);
     }
@@ -275,7 +284,7 @@ static XSM_INLINE int xsm_claim_pages(XSM_DEFAULT_ARG struct domain *d)
 static XSM_INLINE int xsm_evtchn_unbound(XSM_DEFAULT_ARG struct domain *d, struct evtchn *chn,
                                          domid_t id2)
 {
-    XSM_ASSERT_ACTION(XSM_TARGET);
+    XSM_ASSERT_ACTION(XSM_HOOK);
     return xsm_default_action(action, current->domain, d);
 }
 
@@ -717,6 +726,7 @@ static XSM_INLINE int xsm_pmu_op (XSM_DEFAULT_ARG struct domain *d, unsigned int
 
 static XSM_INLINE int xsm_dm_op(XSM_DEFAULT_ARG struct domain *d)
 {
+    /* XXX: XSM_HOOK if XEN_DOMCTL_set_target is not an option ? */
     XSM_ASSERT_ACTION(XSM_DM_PRIV);
     return xsm_default_action(action, current->domain, d);
 }
