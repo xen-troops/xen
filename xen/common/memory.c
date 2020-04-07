@@ -1163,6 +1163,8 @@ static int acquire_resource(
         xen_pfn_t gfn_list[ARRAY_SIZE(mfn_list)];
         unsigned int i;
 
+        /* XXX: What is the risk? */
+#if 0
         /*
          * FIXME: Until foreign pages inserted into the P2M are properly
          *        reference counted, it is unsafe to allow mapping of
@@ -1170,6 +1172,7 @@ static int acquire_resource(
          */
         if ( !is_hardware_domain(currd) )
             return -EACCES;
+#endif
 
         if ( copy_from_guest(gfn_list, xmar.frame_list, xmar.nr_frames) )
             rc = -EFAULT;
