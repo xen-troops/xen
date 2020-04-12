@@ -190,7 +190,7 @@ static bool hvm_wait_for_io(struct hvm_ioreq_vcpu *sv, ioreq_t *p)
 {
     unsigned int prev_state = STATE_IOREQ_NONE;
 
-    printk("%s: %pv: addr 0x%lx dir %u\n", __func__, current, p->addr, p->dir);
+    /*printk("%s: %pv: addr 0x%lx dir %u\n", __func__, current, p->addr, p->dir);*/
 
     while ( sv->pending )
     {
@@ -227,12 +227,12 @@ static bool hvm_wait_for_io(struct hvm_ioreq_vcpu *sv, ioreq_t *p)
             break;
         case STATE_IOREQ_READY:  /* IOREQ_{READY,INPROCESS} -> IORESP_READY */
         case STATE_IOREQ_INPROCESS:
-            printk("%pv: Wait on event\n", current);
+            /*printk("%pv: Wait on event\n", current);*/
             wait_on_xen_event_channel(sv->ioreq_evtchn,
                                       ({ state = p->state;
                                          smp_rmb();
                                          state != prev_state; }));
-            printk("%pv: After wait on event\n", current);
+            /*printk("%pv: After wait on event\n", current);*/
             goto recheck;
         default:
             gdprintk(XENLOG_ERR, "Weird HVM iorequest state %u\n", state);
@@ -550,7 +550,7 @@ static void hvm_update_ioreq_evtchn(struct hvm_ioreq_server *s,
     {
         ioreq_t *p = get_ioreq(s, sv->vcpu);
 
-        printk("%s: %pv: evtchn %u\n", __func__, sv->vcpu, sv->ioreq_evtchn);
+        /*printk("%s: %pv: evtchn %u\n", __func__, sv->vcpu, sv->ioreq_evtchn);*/
 
         p->vp_eport = sv->ioreq_evtchn;
     }

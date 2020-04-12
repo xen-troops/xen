@@ -164,8 +164,8 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) arg)
                 goto param_fail;
 
             a.value = d->arch.hvm.params[a.index];
-            printk("d%u: GET %u = %lu\n",
-                   d->domain_id, a.index, a.value);
+            /*printk("d%u: GET %u = %lu\n",
+                   d->domain_id, a.index, a.value);*/
             rc = copy_to_guest(arg, &a, 1) ? -EFAULT : 0;
         }
 

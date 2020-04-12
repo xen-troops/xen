@@ -1090,7 +1090,7 @@ static int acquire_resource(
     xen_pfn_t mfn_list[32];
     int rc;
 
-    printk("%s:%u\n", __FUNCTION__, __LINE__);
+    /*printk("%s:%u\n", __FUNCTION__, __LINE__);*/
 
     if ( copy_from_guest(&xmar, arg, 1) )
         return -EFAULT;
@@ -1098,7 +1098,7 @@ static int acquire_resource(
     if ( xmar.pad != 0 )
         return -EINVAL;
 
-    printk("%s:%u\n", __FUNCTION__, __LINE__);
+    /*printk("%s:%u\n", __FUNCTION__, __LINE__);*/
 
     if ( guest_handle_is_null(xmar.frame_list) )
     {
@@ -1113,24 +1113,24 @@ static int acquire_resource(
         return 0;
     }
 
-    printk("%s:%u\n", __FUNCTION__, __LINE__);
+    /*printk("%s:%u\n", __FUNCTION__, __LINE__);*/
 
     if ( xmar.nr_frames > ARRAY_SIZE(mfn_list) )
         return -E2BIG;
 
-    printk("%s:%u\n", __FUNCTION__, __LINE__);
+    /*printk("%s:%u\n", __FUNCTION__, __LINE__);*/
 
     rc = rcu_lock_remote_domain_by_id(xmar.domid, &d);
     if ( rc )
         return rc;
 
-    printk("%s:%u\n", __FUNCTION__, __LINE__);
+    /*printk("%s:%u\n", __FUNCTION__, __LINE__);*/
 
     rc = xsm_domain_resource_map(XSM_DM_PRIV, d);
     if ( rc )
         goto out;
 
-    printk("%s:%u type %u\n", __FUNCTION__, __LINE__, xmar.type);
+    /*printk("%s:%u type %u\n", __FUNCTION__, __LINE__, xmar.type);*/
 
     switch ( xmar.type )
     {
