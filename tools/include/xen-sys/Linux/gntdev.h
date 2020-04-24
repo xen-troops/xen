@@ -274,4 +274,57 @@ struct ioctl_gntdev_dmabuf_imp_release {
     uint32_t reserved;
 };
 
+/*
+ * Version 2 of the ioctls adds @data_ofs parameter.
+ *
+ * dma-buf is backed by a scatter-gather table and has offset
+ * parameter which tells where the actual data starts.
+ * Relevant ioctls are extended to support that offset:
+ *   - when dma-buf is created (exported) from grant references then
+ *     @data_ofs is used to set the offset field in the scatter list
+ *     of the new dma-buf
+ *   - when dma-buf is imported and grant references are provided then
+ *     @data_ofs is used to report that offset to user-space
+ */
+#define IOCTL_GNTDEV_DMABUF_EXP_FROM_REFS_V2 \
+    _IOC(_IOC_NONE, 'G', 13, \
+         sizeof(struct ioctl_gntdev_dmabuf_exp_from_refs_v2))
+struct ioctl_gntdev_dmabuf_exp_from_refs_v2 {
+    /* IN parameters. */
+    /* Specific options for this dma-buf: see GNTDEV_DMA_FLAG_XXX. */
+    uint32_t flags;
+    /* Number of grant references in @refs array. */
+    uint32_t count;
+    /* Offset of the data in the dma-buf. */
+    uint32_t data_ofs;
+    /* OUT parameters. */
+    /* File descriptor of the dma-buf. */
+    uint32_t fd;
+    /* The domain ID of the grant references to be mapped. */
+    uint32_t domid;
+    /* Variable IN parameter. */
+    /* Array of grant references of size @count. */
+    uint32_t refs[1];
+};
+
+#define IOCTL_GNTDEV_DMABUF_IMP_TO_REFS_V2 \
+    _IOC(_IOC_NONE, 'G', 14, \
+         sizeof(struct ioctl_gntdev_dmabuf_imp_to_refs_v2))
+struct ioctl_gntdev_dmabuf_imp_to_refs_v2 {
+    /* IN parameters. */
+    /* File descriptor of the dma-buf. */
+    uint32_t fd;
+    /* Number of grant references in @refs array. */
+    uint32_t count;
+    /* The domain ID for which references to be granted. */
+    uint32_t domid;
+    /* Reserved - must be zero. */
+    uint32_t reserved;
+    /* OUT parameters. */
+    /* Offset of the data in the dma-buf. */
+    uint32_t data_ofs;
+    /* Array of grant references of size @count. */
+    uint32_t refs[1];
+};
+
 #endif /* __LINUX_PUBLIC_GNTDEV_H__ */

@@ -36,3 +36,9 @@ VERS_1.2 {
 		xengnttab_dmabuf_imp_to_refs;
 		xengnttab_dmabuf_imp_release;
 } VERS_1.1;
+
+VERS_1.3 {
+    global:
+		xengnttab_dmabuf_exp_from_refs_v2;
+		xengnttab_dmabuf_imp_to_refs_v2;
+} VERS_1.2;

@@ -120,6 +120,14 @@ int osdep_gnttab_dmabuf_exp_from_refs(xengnttab_handle *xgt, uint32_t domid,
     return -1;
 }
 
+int osdep_gnttab_dmabuf_exp_from_refs_v2(xengnttab_handle *xgt, uint32_t domid,
+                                         uint32_t flags, uint32_t count,
+                                         const uint32_t *refs, uint32_t *fd,
+                                         uint32_t data_ofs)
+{
+    return -1;
+}
+
 int osdep_gnttab_dmabuf_exp_wait_released(xengnttab_handle *xgt,
                                           uint32_t fd, uint32_t wait_to_ms)
 {
@@ -129,6 +137,13 @@ int osdep_gnttab_dmabuf_exp_wait_released(xengnttab_handle *xgt,
 int osdep_gnttab_dmabuf_imp_to_refs(xengnttab_handle *xgt, uint32_t domid,
                                     uint32_t fd, uint32_t count,
                                     uint32_t *refs)
+{
+    return -1;
+}
+
+int osdep_gnttab_dmabuf_imp_to_refs_v2(xengnttab_handle *xgt, uint32_t domid,
+                                       uint32_t fd, uint32_t count,
+                                       uint32_t *refs, uint32_t *data_ofs)
 {
     return -1;
 }
