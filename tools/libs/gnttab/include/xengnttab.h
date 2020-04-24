@@ -322,11 +322,18 @@ int xengnttab_grant_copy(xengnttab_handle *xgt,
  * Returns 0 if dma-buf was successfully created and the corresponding
  * dma-buf's file descriptor is returned in @fd.
  *
+ * Version 2 also accepts @data_ofs offset of the data in the buffer.
+ *
  * [1] https://elixir.bootlin.com/linux/latest/source/Documentation/driver-api/dma-buf.rst
  */
 int xengnttab_dmabuf_exp_from_refs(xengnttab_handle *xgt, uint32_t domid,
                                    uint32_t flags, uint32_t count,
                                    const uint32_t *refs, uint32_t *fd);
+
+int xengnttab_dmabuf_exp_from_refs_v2(xengnttab_handle *xgt, uint32_t domid,
+                                      uint32_t flags, uint32_t count,
+                                      const uint32_t *refs, uint32_t *fd,
+                                      uint32_t data_ofs);
 
 /*
  * This will block until the dma-buf with the file descriptor @fd is
@@ -345,9 +352,15 @@ int xengnttab_dmabuf_exp_wait_released(xengnttab_handle *xgt, uint32_t fd,
 /*
  * Import a dma-buf with file descriptor @fd and export granted references
  * to the pages of that dma-buf into array @refs of size @count.
+ *
+ * Version 2 also provides @data_ofs offset of the data in the buffer.
  */
 int xengnttab_dmabuf_imp_to_refs(xengnttab_handle *xgt, uint32_t domid,
                                  uint32_t fd, uint32_t count, uint32_t *refs);
+
+int xengnttab_dmabuf_imp_to_refs_v2(xengnttab_handle *xgt, uint32_t domid,
+                                    uint32_t fd, uint32_t count, uint32_t *refs,
+                                    uint32_t *data_ofs);
 
 /*
  * This will close all references to an imported buffer, so it can be
