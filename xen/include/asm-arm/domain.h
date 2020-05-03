@@ -69,6 +69,8 @@ struct hvm_domain
         spinlock_t              lock;
         struct hvm_ioreq_server *server[MAX_NR_IOREQ_SERVERS];
     } ioreq_server;
+
+    bool_t qemu_mapcache_invalidate;
 };
 
 #ifdef CONFIG_ARM_64

@@ -1660,6 +1660,12 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
     }
 
+    /* x86 already does the following in hvm_memory_op(). */
+#ifdef CONFIG_ARM
+    if ( op == XENMEM_decrease_reservation )
+        curr_d->arch.hvm.qemu_mapcache_invalidate = true;
+#endif
+
     return rc;
 }
 

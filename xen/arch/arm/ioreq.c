@@ -1547,6 +1547,20 @@ unsigned int hvm_broadcast_ioreq(ioreq_t *p, bool buffered)
     return failed;
 }
 
+/* Ask ioemu mapcache to invalidate mappings. */
+void send_invalidate_req(void)
+{
+    ioreq_t p = {
+        .type = IOREQ_TYPE_INVALIDATE,
+        .size = 4,
+        .dir = IOREQ_WRITE,
+        .data = ~0UL, /* flush all */
+    };
+
+    if ( hvm_broadcast_ioreq(&p, false) != 0 )
+        gprintk(XENLOG_ERR, "Unsuccessful map-cache invalidate\n");
+}
+
 void hvm_ioreq_init(struct domain *d)
 {
     spin_lock_init(&d->arch.hvm.ioreq_server.lock);
