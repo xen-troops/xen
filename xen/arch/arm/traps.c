@@ -1488,6 +1488,10 @@ static void do_trap_hypercall(struct cpu_user_regs *regs, register_t *nr,
     /* Ensure the hypercall trap instruction is re-executed. */
     if ( current->hcall_preempted )
         regs->pc -= 4;  /* re-execute 'hvc #XEN_HYPERCALL_TAG' */
+
+    if ( unlikely(current->domain->arch.hvm.qemu_mapcache_invalidate) &&
+         test_and_clear_bool(current->domain->arch.hvm.qemu_mapcache_invalidate) )
+        send_invalidate_req();
 }
 
 void arch_hypercall_tasklet_result(struct vcpu *v, long res)

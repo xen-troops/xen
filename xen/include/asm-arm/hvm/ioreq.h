@@ -53,6 +53,8 @@ enum io_state hvm_send_ioreq(struct hvm_ioreq_server *s, ioreq_t *proto_p,
                              bool buffered);
 unsigned int hvm_broadcast_ioreq(ioreq_t *p, bool buffered);
 
+void send_invalidate_req(void);
+
 void hvm_ioreq_init(struct domain *d);
 
 #endif /* __ASM_X86_HVM_IOREQ_H__ */
