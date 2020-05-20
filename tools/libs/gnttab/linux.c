@@ -352,6 +352,51 @@ out:
     return rc;
 }
 
+int osdep_gnttab_dmabuf_exp_from_refs_v2(xengnttab_handle *xgt, uint32_t domid,
+                                         uint32_t flags, uint32_t count,
+                                         const uint32_t *refs,
+                                         uint32_t *dmabuf_fd,
+                                         uint32_t data_ofs)
+{
+    struct ioctl_gntdev_dmabuf_exp_from_refs_v2 *from_refs_v2 = NULL;
+    int rc = -1;
+
+    if ( !count )
+    {
+        errno = EINVAL;
+        goto out;
+    }
+
+    from_refs_v2 = malloc(sizeof(*from_refs_v2) +
+                          (count - 1) * sizeof(from_refs_v2->refs[0]));
+    if ( !from_refs_v2 )
+    {
+        errno = ENOMEM;
+        goto out;
+    }
+
+    from_refs_v2->flags = flags;
+    from_refs_v2->count = count;
+    from_refs_v2->domid = domid;
+    from_refs_v2->data_ofs = data_ofs;
+
+    memcpy(from_refs_v2->refs, refs, count * sizeof(from_refs_v2->refs[0]));
+
+    if ( (rc = ioctl(xgt->fd, IOCTL_GNTDEV_DMABUF_EXP_FROM_REFS_V2,
+                     from_refs_v2)) )
+    {
+        GTERROR(xgt->logger, "ioctl DMABUF_EXP_FROM_REFS_V2 failed");
+        goto out;
+    }
+
+    *dmabuf_fd = from_refs_v2->fd;
+    rc = 0;
+
+out:
+    free(from_refs_v2);
+    return rc;
+}
+
 int osdep_gnttab_dmabuf_exp_wait_released(xengnttab_handle *xgt,
                                           uint32_t fd, uint32_t wait_to_ms)
 {
@@ -410,6 +455,47 @@ int osdep_gnttab_dmabuf_imp_to_refs(xengnttab_handle *xgt, uint32_t domid,
 
 out:
     free(to_refs);
+    return rc;
+}
+
+int osdep_gnttab_dmabuf_imp_to_refs_v2(xengnttab_handle *xgt, uint32_t domid,
+                                       uint32_t fd, uint32_t count,
+                                       uint32_t *refs,
+                                       uint32_t *data_ofs)
+{
+    struct ioctl_gntdev_dmabuf_imp_to_refs_v2 *to_refs_v2 = NULL;
+    int rc = -1;
+
+    if ( !count )
+    {
+        errno = EINVAL;
+        goto out;
+    }
+
+    to_refs_v2 = malloc(sizeof(*to_refs_v2) +
+                        (count - 1) * sizeof(to_refs_v2->refs[0]));
+    if ( !to_refs_v2 )
+    {
+        errno = ENOMEM;
+        goto out;
+    }
+
+    to_refs_v2->fd = fd;
+    to_refs_v2->count = count;
+    to_refs_v2->domid = domid;
+
+    if ( (rc = ioctl(xgt->fd, IOCTL_GNTDEV_DMABUF_IMP_TO_REFS_V2, to_refs_v2)) )
+    {
+        GTERROR(xgt->logger, "ioctl DMABUF_IMP_TO_REFS_V2 failed");
+        goto out;
+    }
+
+    memcpy(refs, to_refs_v2->refs, count * sizeof(*refs));
+    *data_ofs = to_refs_v2->data_ofs;
+    rc = 0;
+
+out:
+    free(to_refs_v2);
     return rc;
 }
 
