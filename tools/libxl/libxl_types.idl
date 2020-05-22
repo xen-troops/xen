@@ -940,6 +940,8 @@ libxl_device_virtio_disk = Struct("device_virtio_disk", [
     ("backend_domname", string),
     ("devid", libxl_devid),
     ("unique_id", string),
+    ("irq", uint32),
+    ("base", uint64),
     ])
 
 libxl_domain_config = Struct("domain_config", [
