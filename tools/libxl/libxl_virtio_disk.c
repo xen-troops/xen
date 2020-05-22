@@ -73,6 +73,12 @@ static int libxl__set_xenstore_virtio_disk(libxl__gc *gc, uint32_t domid,
         if (rc) return rc;
     }
 
+    rc = flexarray_append_pair(front, "base", GCSPRINTF("%lu", virtio_disk->base));
+    if (rc) return rc;
+
+    rc = flexarray_append_pair(front, "irq", GCSPRINTF("%u", virtio_disk->irq));
+    if (rc) return rc;
+
     return 0;
 }
 
