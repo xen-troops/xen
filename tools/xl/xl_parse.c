@@ -1516,20 +1516,62 @@ static void parse_vcamera_list(const XLU_Config *config,
     }
 }
 
+#define MAX_VIRTIO_DISKS 4
+
 static int parse_virtio_disk_config(libxl_device_virtio_disk *virtio_disk, char *token)
 {
     char *oparg;
+    libxl_string_list disks = NULL;
+    int i, rc;
 
     if (MATCH_OPTION("backend", token, oparg)) {
         virtio_disk->backend_domname = strdup(oparg);
-    } else if (MATCH_OPTION("unique-id", token, oparg)) {
-        virtio_disk->unique_id = strdup(oparg);
+    } else if (MATCH_OPTION("disks", token, oparg)) {
+        split_string_into_string_list(oparg, ";", &disks);
+
+        virtio_disk->num_disks = libxl_string_list_length(&disks);
+        if (virtio_disk->num_disks > MAX_VIRTIO_DISKS) {
+            fprintf(stderr, "vdisk: currently only %d disks are supported",
+                    MAX_VIRTIO_DISKS);
+            return 1;
+        }
+        virtio_disk->disks = xcalloc(virtio_disk->num_disks,
+                                     sizeof(*virtio_disk->disks));
+
+        for(i = 0; i < virtio_disk->num_disks; i++) {
+            char *disk_opt;
+
+            rc = split_string_into_pair(disks[i], ":", &disk_opt,
+                                        &virtio_disk->disks[i].filename);
+            if (rc) {
+                fprintf(stderr, "vdisk: failed to split \"%s\" into pair\n",
+                        disks[i]);
+                goto out;
+            }
+
+            if (!strcmp(disk_opt, "ro"))
+                virtio_disk->disks[i].readonly = 1;
+            else if (!strcmp(disk_opt, "rw"))
+                virtio_disk->disks[i].readonly = 0;
+            else {
+                fprintf(stderr, "vdisk: failed to parse \"%s\" disk option\n",
+                        disk_opt);
+                rc = 1;
+            }
+            free(disk_opt);
+
+            if (rc) goto out;
+        }
     } else {
         fprintf(stderr, "Unknown string \"%s\" in vdisk spec\n", token);
-        return -1;
+        rc = 1; goto out;
     }
 
-    return 0;
+    rc = 0;
+
+out:
+    libxl_string_list_dispose(&disks);
+    return rc;
 }
 
 static void parse_virtio_disk_list(const XLU_Config *config,
@@ -1564,6 +1606,11 @@ static void parse_virtio_disk_list(const XLU_Config *config,
             }
 
             entry++;
+
+            if (virtio_disk->num_disks == 0) {
+                fprintf(stderr, "At least one virtio disk should be specified\n");
+                rc = 1; goto out;
+            }
         }
     }
 
