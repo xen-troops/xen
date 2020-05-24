@@ -38,7 +38,6 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     uint32_t nr_spis = 0;
     unsigned int i;
     uint32_t vuart_irq, virtio_irq;
-    uint64_t virtio_base;
     bool vuart_enabled = false, virtio_enabled = false;
 
     /*
@@ -52,27 +51,29 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     }
 
     if (libxl_defbool_val(d_config->b_info.arch_arm.virtio)) {
+        uint64_t virtio_base;
+        libxl_device_virtio_disk *virtio_disk;
+
         virtio_base = GUEST_VIRTIO_MMIO_BASE;
         virtio_irq = GUEST_VIRTIO_MMIO_SPI;
 
-        for (i = 0; i < d_config->num_virtio_disks; i++) {
-            d_config->virtio_disks[i].base = virtio_base;
-            d_config->virtio_disks[i].irq = virtio_irq;
+        if (!d_config->num_virtio_disks) {
+            LOG(ERROR, "Virtio is enabled, but no Virtio devices present\n");
+            return ERROR_FAIL;
+        }
+        virtio_disk = &d_config->virtio_disks[0];
 
-            LOG(DEBUG, "Allocate Virtio MMIO params: IRQ %u BASE %"PRIx64,
+        for (i = 0; i < virtio_disk->num_disks; i++) {
+            virtio_disk->disks[i].base = virtio_base;
+            virtio_disk->disks[i].irq = virtio_irq;
+
+            LOG(DEBUG, "Allocate Virtio MMIO params: IRQ %u BASE 0x%"PRIx64,
                 virtio_irq, virtio_base);
 
             virtio_irq ++;
             virtio_base += GUEST_VIRTIO_MMIO_SIZE;
         }
-
-        if (i)
-            virtio_irq --;
-        else {
-            LOG(ERROR, "Virtio is enabled, but no Virtio devices present\n");
-            return ERROR_FAIL;
-        }
-
+        virtio_irq --;
 
         nr_spis += (virtio_irq - 32) + 1;
         virtio_enabled = true;
@@ -1041,11 +1042,12 @@ next_resize:
         if (libxl_defbool_val(info->arch_arm.virtio)) {
             libxl_domain_config *d_config =
                 container_of(info, libxl_domain_config, b_info);
+            libxl_device_virtio_disk *virtio_disk = &d_config->virtio_disks[0];
             unsigned int i;
 
-            for (i = 0; i < d_config->num_virtio_disks; i++) {
-                uint64_t base = d_config->virtio_disks[i].base;
-                uint32_t irq = d_config->virtio_disks[i].irq;
+            for (i = 0; i < virtio_disk->num_disks; i++) {
+                uint64_t base = virtio_disk->disks[i].base;
+                uint32_t irq = virtio_disk->disks[i].irq;
 
                 FDT( make_virtio_mmio_node(gc, fdt, base, irq) );
             }

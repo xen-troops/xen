@@ -935,13 +935,18 @@ libxl_device_vsnd = Struct("device_vsnd", [
     ("pcms", Array(libxl_vsnd_pcm, "num_vsnd_pcms"))
     ])
 
+libxl_virtio_disk_param = Struct("virtio_disk_param", [
+    ("filename", string),
+    ("readonly", bool),
+    ("irq", uint32),
+    ("base", uint64),
+    ])
+
 libxl_device_virtio_disk = Struct("device_virtio_disk", [
     ("backend_domid", libxl_domid),
     ("backend_domname", string),
     ("devid", libxl_devid),
-    ("unique_id", string),
-    ("irq", uint32),
-    ("base", uint64),
+    ("disks", Array(libxl_virtio_disk_param, "num_disks")),
     ])
 
 libxl_domain_config = Struct("domain_config", [

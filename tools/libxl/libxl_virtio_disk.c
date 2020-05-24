@@ -67,17 +67,25 @@ static int libxl__set_xenstore_virtio_disk(libxl__gc *gc, uint32_t domid,
                                            flexarray_t *ro_front)
 {
     int rc;
+    unsigned int i;
 
-    if (virtio_disk->unique_id) {
-        rc = flexarray_append_pair(front, "unique-id", GCSPRINTF("%s", virtio_disk->unique_id));
+    for (i = 0; i < virtio_disk->num_disks; i++) {
+        rc = flexarray_append_pair(ro_front, GCSPRINTF("%d/filename", i),
+                                   GCSPRINTF("%s", virtio_disk->disks[i].filename));
+        if (rc) return rc;
+
+        rc = flexarray_append_pair(ro_front, GCSPRINTF("%d/readonly", i),
+                                   GCSPRINTF("%d", virtio_disk->disks[i].readonly));
+        if (rc) return rc;
+
+        rc = flexarray_append_pair(ro_front, GCSPRINTF("%d/base", i),
+                                   GCSPRINTF("%lu", virtio_disk->disks[i].base));
+        if (rc) return rc;
+
+        rc = flexarray_append_pair(ro_front, GCSPRINTF("%d/irq", i),
+                                   GCSPRINTF("%u", virtio_disk->disks[i].irq));
         if (rc) return rc;
     }
-
-    rc = flexarray_append_pair(front, "base", GCSPRINTF("%lu", virtio_disk->base));
-    if (rc) return rc;
-
-    rc = flexarray_append_pair(front, "irq", GCSPRINTF("%u", virtio_disk->irq));
-    if (rc) return rc;
 
     return 0;
 }
