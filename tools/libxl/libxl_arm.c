@@ -718,9 +718,11 @@ static int make_virtio_mmio_node(libxl__gc *gc, void *fdt,
 {
     int res;
     gic_interrupt intr;
+    /* Placeholder for virtio@ + a 64-bit number + \0 */
+    char buf[24];
 
-    /* XXX: Add address in the node name */
-    res = fdt_begin_node(fdt, "virtio");
+    snprintf(buf, sizeof(buf), "virtio@%"PRIx64, base);
+    res = fdt_begin_node(fdt, buf);
     if (res) return res;
 
     res = fdt_property_compat(gc, fdt, 1, "virtio,mmio");
