@@ -1269,7 +1269,16 @@ static void parse_virtio_disk_list(const XLU_Config *config,
     int rc;
 
     if (!xlu_cfg_get_list (config, "vdisk", &virtio_disks, 0, 0)) {
+        libxl_domain_build_info *b_info = &d_config->b_info;
         int entry = 0;
+
+        /* XXX Remove an extra property */
+        libxl_defbool_setdefault(&b_info->arch_arm.virtio, false);
+        if (!libxl_defbool_val(b_info->arch_arm.virtio)) {
+            fprintf(stderr, "Virtio device requires Virtio property to be set\n");
+            exit(EXIT_FAILURE);
+        }
+
         while ((item = xlu_cfg_get_listitem(virtio_disks, entry)) != NULL) {
             libxl_device_virtio_disk *virtio_disk;
             char *p;
