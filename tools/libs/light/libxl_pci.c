@@ -1450,6 +1450,7 @@ static void pci_add_dm_done(libxl__egc *egc,
             rc = ERROR_FAIL;
             goto out;
         }
+#if 0
         r = xc_domain_irq_permission(ctx->xch, domid, irq, 1);
         if (r < 0) {
             LOGED(ERROR, domainid,
@@ -1458,6 +1459,7 @@ static void pci_add_dm_done(libxl__egc *egc,
             rc = ERROR_FAIL;
             goto out;
         }
+#endif
     }
     fclose(f);
 
@@ -1559,6 +1561,7 @@ int libxl_device_pci_add(libxl_ctx *ctx, uint32_t domid,
     return AO_INPROGRESS;
 }
 
+#if 0
 static bool libxl_pci_assignable(libxl_ctx *ctx, libxl_device_pci *pci)
 {
     libxl_device_pci *pcis;
@@ -1571,6 +1574,7 @@ static bool libxl_pci_assignable(libxl_ctx *ctx, libxl_device_pci *pci)
 
     return assignable;
 }
+#endif
 
 static void device_pci_add_stubdom_wait(libxl__egc *egc,
     pci_add_state *pas, int rc);
@@ -1628,12 +1632,14 @@ void libxl__device_pci_add(libxl__egc *egc, uint32_t domid,
             goto out;
     }
 
+#if 0
     if (!libxl_pci_assignable(ctx, pci)) {
         LOGD(ERROR, domid, "PCI device %x:%x:%x.%x is not assignable",
              pci->domain, pci->bus, pci->dev, pci->func);
         rc = ERROR_FAIL;
         goto out;
     }
+#endif
 
     rc = pci_info_xs_write(gc, pci, "domid", GCSPRINTF("%u", domid));
     if (rc) goto out;
