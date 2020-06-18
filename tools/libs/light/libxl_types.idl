@@ -260,6 +260,11 @@ libxl_vuart_type = Enumeration("vuart_type", [
     (1, "sbsa_uart"),
     ])
 
+libxl_vpci_type = Enumeration("vpci_type", [
+    (0, "unknown"),
+    (1, "ecam"),
+    ])
+
 libxl_vkb_backend = Enumeration("vkb_backend", [
     (0, "UNKNOWN"),
     (1, "QEMU"),
@@ -643,6 +648,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
 
     ("arch_arm", Struct(None, [("gic_version", libxl_gic_version),
                                ("vuart", libxl_vuart_type),
+                               ("vpci", libxl_vpci_type),
                               ])),
     ("arch_x86", Struct(None, [("msr_relaxed", libxl_defbool),
                               ])),

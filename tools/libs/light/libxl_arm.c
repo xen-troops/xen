@@ -269,6 +269,130 @@ static int fdt_property_regs(libxl__gc *gc, void *fdt,
     return fdt_property(fdt, "reg", regs, sizeof(regs));
 }
 
+static int fdt_property_vpci_bus_range(libxl__gc *gc, void *fdt,
+        unsigned num_cells, ...)
+{
+    uint32_t bus_range[num_cells];
+    be32 *cells = &bus_range[0];
+    int i;
+    va_list ap;
+    uint32_t arg;
+
+    va_start(ap, num_cells);
+    for (i = 0 ; i < num_cells; i++) {
+        arg = va_arg(ap, uint32_t);
+        set_cell(&cells, 1, arg);
+    }
+    va_end(ap);
+
+    return fdt_property(fdt, "bus-range", bus_range, sizeof(bus_range));
+}
+
+static int fdt_property_vpci_interrupt_map_mask(libxl__gc *gc, void *fdt,
+        unsigned num_cells, ...)
+{
+    uint32_t interrupt_map_mask[num_cells];
+    be32 *cells = &interrupt_map_mask[0];
+    int i;
+    va_list ap;
+    uint32_t arg;
+
+    va_start(ap, num_cells);
+    for (i = 0 ; i < num_cells; i++) {
+        arg = va_arg(ap, uint32_t);
+        set_cell(&cells, 1, arg);
+    }
+    va_end(ap);
+
+    return fdt_property(fdt, "interrupt-map-mask", interrupt_map_mask,
+                                sizeof(interrupt_map_mask));
+}
+
+static int fdt_property_vpci_ranges(libxl__gc *gc, void *fdt,
+        unsigned vpci_addr_cells,
+        unsigned cpu_addr_cells,
+        unsigned vpci_size_cells,
+        unsigned num_regs, ...)
+{
+    uint32_t regs[num_regs*(vpci_addr_cells+cpu_addr_cells+vpci_size_cells)];
+    be32 *cells = &regs[0];
+    int i;
+    va_list ap;
+    uint64_t arg;
+
+    va_start(ap, num_regs);
+    for (i = 0 ; i < num_regs; i++) {
+        /* Set the memory bit field */
+        arg = va_arg(ap, uint64_t);
+        set_cell(&cells, 1, arg);
+
+        /* Set the vpci bus address */
+        arg = vpci_addr_cells ? va_arg(ap, uint64_t) : 0;
+        set_cell(&cells, 2 , arg);
+
+        /* Set the cpu bus address where vpci address is mapped */
+        arg = cpu_addr_cells ? va_arg(ap, uint64_t) : 0;
+        set_cell(&cells, cpu_addr_cells, arg);
+
+        /* Set the vpci size requested */
+        arg = vpci_size_cells ? va_arg(ap, uint64_t) : 0;
+        set_cell(&cells, vpci_size_cells,arg);
+    }
+    va_end(ap);
+
+    return fdt_property(fdt, "ranges", regs, sizeof(regs));
+}
+
+static int fdt_property_vpci_interrupt_map(libxl__gc *gc, void *fdt,
+        unsigned child_unit_addr_cells,
+        unsigned child_interrupt_specifier_cells,
+        unsigned parent_unit_addr_cells,
+        unsigned parent_interrupt_specifier_cells,
+        unsigned num_regs, ...)
+{
+    uint32_t interrupt_map[num_regs * (child_unit_addr_cells +
+            child_interrupt_specifier_cells + parent_unit_addr_cells
+            + parent_interrupt_specifier_cells + 1)];
+    be32 *cells = &interrupt_map[0];
+    int i,j;
+    va_list ap;
+    uint64_t arg;
+
+    va_start(ap, num_regs);
+    for (i = 0 ; i < num_regs; i++) {
+        /* Set the child unit address*/
+        for (j = 0 ; j < child_unit_addr_cells; j++) {
+            arg = va_arg(ap, uint32_t);
+            set_cell(&cells, 1 , arg);
+        }
+
+        /* Set the child interrupt specifier*/
+        for (j = 0 ; j < child_interrupt_specifier_cells ; j++) {
+            arg = va_arg(ap, uint32_t);
+            set_cell(&cells, 1 , arg);
+        }
+
+        /* Set the interrupt-parent*/
+        set_cell(&cells, 1 , GUEST_PHANDLE_GIC);
+
+        /* Set the parent unit address*/
+        for (j = 0 ; j < parent_unit_addr_cells; j++) {
+            arg = va_arg(ap, uint32_t);
+            set_cell(&cells, 1 , arg);
+        }
+
+        /* Set the parent interrupt specifier*/
+        for (j = 0 ; j < parent_interrupt_specifier_cells; j++) {
+            arg = va_arg(ap, uint32_t);
+            set_cell(&cells, 1 , arg);
+        }
+    }
+    va_end(ap);
+
+    return fdt_property(fdt, "interrupt-map", interrupt_map,
+                                sizeof(interrupt_map));
+}
+
 static int make_root_properties(libxl__gc *gc,
                                 const libxl_version_info *vers,
                                 void *fdt)
@@ -660,6 +784,79 @@ static int make_vpl011_uart_node(libxl__gc *gc, void *fdt,
     return 0;
 }
 
+static int make_vpci_node(libxl__gc *gc, void *fdt,
+        const struct arch_info *ainfo,
+        struct xc_dom_image *dom)
+{
+    int res;
+    const uint64_t vpci_ecam_base = GUEST_VPCI_ECAM_BASE;
+    const uint64_t vpci_ecam_size = GUEST_VPCI_ECAM_SIZE;
+    const char *name = GCSPRINTF("pcie@%"PRIx64, vpci_ecam_base);
+
+    res = fdt_begin_node(fdt, name);
+    if (res) return res;
+
+    res = fdt_property_compat(gc, fdt, 1, "pci-host-ecam-generic");
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "device_type", "pci");
+    if (res) return res;
+
+    res = fdt_property_regs(gc, fdt, GUEST_ROOT_ADDRESS_CELLS,
+            GUEST_ROOT_SIZE_CELLS, 1, vpci_ecam_base, vpci_ecam_size);
+    if (res) return res;
+
+    res = fdt_property_vpci_bus_range(gc, fdt, 2, 0,17);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "linux,pci-domain", 0);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#address-cells", 3);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#size-cells", 2);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#interrupt-cells", 1);
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "status", "okay");
+    if (res) return res;
+
+    res = fdt_property_vpci_ranges(gc, fdt, GUEST_PCI_ADDRESS_CELLS,
+        GUEST_ROOT_ADDRESS_CELLS, GUEST_PCI_SIZE_CELLS,
+        3,
+        GUEST_VPCI_ADDR_TYPE_MEM, GUEST_VPCI_MEM_PCI_ADDR,
+        GUEST_VPCI_MEM_CPU_ADDR, GUEST_VPCI_MEM_SIZE,
+        GUEST_VPCI_ADDR_TYPE_PREFETCH_MEM, GUEST_VPCI_PREFETCH_MEM_PCI_ADDR,
+        GUEST_VPCI_PREFETCH_MEM_CPU_ADDR, GUEST_VPCI_PREFETCH_MEM_SIZE,
+        GUEST_VPCI_ADDR_TYPE_IO, GUEST_VPCI_IO_PCI_ADDR,
+        GUEST_VPCI_IO_CPU_ADDR, GUEST_VPCI_IO_SIZE);
+    if (res) return res;
+
+    res = fdt_property_vpci_interrupt_map_mask(gc, fdt, 4, 0, 0, 0, 7);
+    if (res) return res;
+
+    /*
+     * Legacy interrupt is forced and assigned to the guest.
+     * This will be removed once we have implementation for MSI support.
+     *
+     */
+    res = fdt_property_vpci_interrupt_map(gc, fdt, 3, 1, 0, 3,
+            4,
+            0, 0, 0, 1, 0, 169, DT_IRQ_TYPE_LEVEL_HIGH,
+            0, 0, 0, 2, 0, 170, DT_IRQ_TYPE_LEVEL_HIGH,
+            0, 0, 0, 3, 0, 171, DT_IRQ_TYPE_LEVEL_HIGH,
+            0, 0, 0, 4, 0, 172, DT_IRQ_TYPE_LEVEL_HIGH);
+    if (res) return res;
+
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    return 0;
+}
+
 static const struct arch_info *get_arch_info(libxl__gc *gc,
                                              const struct xc_dom_image *dom)
 {
@@ -962,6 +1159,9 @@ next_resize:
 
         if (info->tee == LIBXL_TEE_TYPE_OPTEE)
             FDT( make_optee_node(gc, fdt) );
+
+        if (info->arch_arm.vpci == LIBXL_VPCI_TYPE_ECAM)
+            FDT( make_vpci_node(gc, fdt, ainfo, dom) );
 
         if (pfdt)
             FDT( copy_partial_fdt(gc, fdt, pfdt) );
