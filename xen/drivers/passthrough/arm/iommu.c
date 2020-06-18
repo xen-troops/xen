@@ -135,3 +135,8 @@ void arch_iommu_domain_destroy(struct domain *d)
 void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
 {
 }
+
+bool arch_iommu_use_permitted(const struct domain *d)
+{
+    return true;
+}
