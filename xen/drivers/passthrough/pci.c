@@ -793,6 +793,13 @@ int pci_add_device(u16 seg, u8 bus, u8 devfn,
     else
         iommu_enable_device(pdev);
 
+#ifdef CONFIG_ARM
+    ret = vpci_add_handlers(pdev);
+    if ( ret ) {
+        printk(XENLOG_ERR "setup of vPCI for failed: %d\n",ret);
+        goto out;
+    }
+#endif
     pci_enable_acs(pdev);
 
 out:

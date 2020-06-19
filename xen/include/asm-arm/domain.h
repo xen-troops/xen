@@ -32,6 +32,11 @@ enum domain_type {
 /* The hardware domain has always its memory direct mapped. */
 #define is_domain_direct_mapped(d) ((d) == hardware_domain)
 
+/* For X86 VPCI is enabled and tested for PVH DOM0 only but
+ * for ARM we enable support VPCI for guest domain also.
+ */
+#define has_vpci(d) (true)
+
 struct vtimer {
     struct vcpu *v;
     int irq;
@@ -261,8 +266,6 @@ static inline void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
 static inline void arch_vcpu_block(struct vcpu *v) {}
 
 #define arch_vm_assist_valid_mask(d) (1UL << VMASST_TYPE_runstate_update_flag)
-
-#define has_vpci(d)    ({ (void)(d); false; })
 
 #endif /* __ASM_DOMAIN_H__ */
 

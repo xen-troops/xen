@@ -40,6 +40,7 @@
 #include <asm/vtimer.h>
 
 #include "vuart.h"
+#include "vpci.h"
 
 DEFINE_PER_CPU(struct vcpu *, curr_vcpu);
 
@@ -765,6 +766,9 @@ int arch_domain_create(struct domain *d,
      * support multi-platform.
      */
     if ( is_hardware_domain(d) && (rc = domain_vuart_init(d)) )
+        goto fail;
+
+    if ( (rc = domain_vpci_init(d)) != 0 )
         goto fail;
 
     return 0;
