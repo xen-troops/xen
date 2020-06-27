@@ -51,6 +51,14 @@ static int hvm_allow_set_param(const struct domain *d, unsigned int param)
     case HVM_PARAM_MONITOR_RING_PFN:
         return d == current->domain ? -EPERM : 0;
 
+        /*
+         * XXX Do we need to follow x86's logic here:
+         * "The following parameters should only be changed once"?
+         */
+    case HVM_PARAM_IOREQ_SERVER_PFN:
+    case HVM_PARAM_NR_IOREQ_SERVER_PAGES:
+        return 0;
+
         /* Writeable only by Xen, hole, deprecated, or out-of-range. */
     default:
         return -EINVAL;
@@ -67,6 +75,11 @@ static int hvm_allow_get_param(const struct domain *d, unsigned int param)
     case HVM_PARAM_STORE_EVTCHN:
     case HVM_PARAM_CONSOLE_PFN:
     case HVM_PARAM_CONSOLE_EVTCHN:
+        return 0;
+
+        /* XXX Can these be read by someone? What policy to apply? */
+    case HVM_PARAM_IOREQ_SERVER_PFN:
+    case HVM_PARAM_NR_IOREQ_SERVER_PAGES:
         return 0;
 
         /*
