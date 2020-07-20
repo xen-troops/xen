@@ -140,6 +140,9 @@ int iommu_add_dt_device(struct dt_device_node *np)
     if ( !ops )
         return -EINVAL;
 
+    if ( dt_device_is_protected(np) )
+        return 0;
+
     if ( dev_iommu_fwspec_get(dev) )
         return -EEXIST;
 
