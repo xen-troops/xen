@@ -31,6 +31,13 @@ menu "Architecture Features"
 
 source "arch/Kconfig"
 
+config ARM_PCI
+	bool "PCI Passthrough Support"
+	depends on ARM_64
+	---help---
+
+	  PCI passthrough support for Xen on ARM64.
+
 config ACPI
 	bool "ACPI (Advanced Configuration and Power Interface) Support" if EXPERT
 	depends on ARM_64

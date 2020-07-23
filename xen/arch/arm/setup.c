@@ -955,6 +955,8 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     setup_virt_paging();
 
+    pci_init();
+
     do_initcalls();
 
     /*
