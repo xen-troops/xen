@@ -431,6 +431,34 @@ typedef uint64_t xen_callback_t;
 #define GUEST_VPCI_ECAM_BASE    xen_mk_ullong(0x10000000)
 #define GUEST_VPCI_ECAM_SIZE    xen_mk_ullong(0x10000000)
 
+#define GUEST_PCI_ADDRESS_CELLS 3
+#define GUEST_PCI_SIZE_CELLS 2
+
+/* PCI-PCIe memory space types */
+#define GUEST_VPCI_ADDR_TYPE_PREFETCH_MEM xen_mk_ullong(0x42000000)
+#define GUEST_VPCI_ADDR_TYPE_MEM          xen_mk_ullong(0x02000000)
+#define GUEST_VPCI_ADDR_TYPE_IO           xen_mk_ullong(0x01000000)
+
+/* Guest PCI-PCIe memory space where config space and BAR will be available.*/
+#define GUEST_VPCI_PREFETCH_MEM_CPU_ADDR  xen_mk_ullong(0x4000000000)
+#define GUEST_VPCI_MEM_CPU_ADDR           xen_mk_ullong(0x04020000)
+#define GUEST_VPCI_IO_CPU_ADDR            xen_mk_ullong(0xC0200800)
+
+/*
+ * This is hardcoded values for the real PCI physical addresses.
+ * This will be removed once we read the real PCI-PCIe physical
+ * addresses form the config space and map to the guest memory map
+ * when assigning the device to guest via VPCI.
+ *
+ */
+#define GUEST_VPCI_PREFETCH_MEM_PCI_ADDR  xen_mk_ullong(0x4000000000)
+#define GUEST_VPCI_MEM_PCI_ADDR           xen_mk_ullong(0x50000000)
+#define GUEST_VPCI_IO_PCI_ADDR            xen_mk_ullong(0x00000000)
+
+#define GUEST_VPCI_PREFETCH_MEM_SIZE      xen_mk_ullong(0x100000000)
+#define GUEST_VPCI_MEM_SIZE               xen_mk_ullong(0x08000000)
+#define GUEST_VPCI_IO_SIZE                xen_mk_ullong(0x00800000)
+
 /*
  * 16MB == 4096 pages reserved for guest to use as a region to map its
  * grant table in.
