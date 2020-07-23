@@ -39,6 +39,7 @@
 #include <asm/vtimer.h>
 
 #include "vuart.h"
+#include "vpci.h"
 
 DEFINE_PER_CPU(struct vcpu *, curr_vcpu);
 
@@ -763,6 +764,9 @@ int arch_domain_create(struct domain *d,
         goto fail;
 
     d->arch.vgsx_osid = config->arch.vgsx_osid;
+
+    if ( (rc = domain_vpci_init(d)) != 0 )
+        goto fail;
 
     return 0;
 
