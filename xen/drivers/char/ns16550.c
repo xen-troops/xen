@@ -356,10 +356,12 @@ static void __init ns16550_init_preirq(struct serial_port *port)
 static void __init ns16550_init_irq(struct serial_port *port)
 {
 #ifdef CONFIG_HAS_PCI
+#ifndef CONFIG_ARM
     struct ns16550 *uart = port->uart;
 
     if ( uart->msi )
         uart->irq = create_irq(0, false);
+#endif
 #endif
 }
 
@@ -397,6 +399,7 @@ static void __init ns16550_init_postirq(struct serial_port *port)
     uart->timeout_ms = max_t(
         unsigned int, 1, (bits * uart->fifo_size * 1000) / uart->baud);
 
+#ifndef CONFIG_ARM
 #ifdef CONFIG_HAS_PCI
     if ( uart->bar || uart->ps_bdf_enable )
     {
@@ -457,6 +460,7 @@ static void __init ns16550_init_postirq(struct serial_port *port)
                        rc, uart->ps_bdf[0], uart->ps_bdf[1], uart->ps_bdf[2]);
         }
     }
+#endif
 #endif
 
     if ( uart->irq > 0 )

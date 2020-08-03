@@ -21,6 +21,10 @@ config ARM
 	select HAS_PASSTHROUGH
 	select HAS_PDX
 	select IOMMU_FORCE_PT_SHARE
+	select ARM_PCI
+	select HAS_PCI
+	select HAS_VPCI
+	select LATE_HWDOM
 
 config ARCH_DEFCONFIG
 	string

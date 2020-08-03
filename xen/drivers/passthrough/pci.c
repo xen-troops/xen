@@ -24,7 +24,9 @@
 #include <xen/irq.h>
 #include <xen/param.h>
 #include <xen/vm_event.h>
+#ifndef CONFIG_ARM
 #include <asm/hvm/irq.h>
+#endif
 #include <xen/delay.h>
 #include <xen/keyhandler.h>
 #include <xen/event.h>
@@ -35,7 +37,9 @@
 #include <xen/tasklet.h>
 #include <xen/vpci.h>
 #include <xsm/xsm.h>
+#ifndef CONFIG_ARM
 #include <asm/msi.h>
+#endif
 #include "ats.h"
 
 struct pci_seg {
@@ -333,6 +337,8 @@ static struct pci_dev *alloc_pdev(struct pci_seg *pseg, u8 bus, u8 devfn)
 
     pos = pci_find_cap_offset(pseg->nr, bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
                               PCI_CAP_ID_MSI);
+#ifndef CONFIG_ARM
+    /*TODO :Implement MSI support for ARM  */
     if ( pos )
     {
         uint16_t ctrl = pci_conf_read16(pdev->sbdf, msi_control_reg(pos));
@@ -359,6 +365,7 @@ static struct pci_dev *alloc_pdev(struct pci_seg *pseg, u8 bus, u8 devfn)
 
         pdev->msix = msix;
     }
+#endif
 
     list_add(&pdev->alldevs_list, &pseg->alldevs_list);
 
@@ -591,6 +598,8 @@ struct pci_dev *pci_get_pdev_by_domain(const struct domain *d, int seg,
     return NULL;
 }
 
+#ifndef CONFIG_ARM
+/*TODO :Need to investigate the ACS support for ARM  */
 /**
  * pci_enable_acs - enable ACS if hardware support it
  * @dev: the PCI device
@@ -625,6 +634,7 @@ static void pci_enable_acs(struct pci_dev *pdev)
 
     pci_conf_write16(pdev->sbdf, pos + PCI_ACS_CTRL, ctrl);
 }
+#endif
 
 static int iommu_add_device(struct pci_dev *pdev);
 static int iommu_enable_device(struct pci_dev *pdev);
@@ -798,7 +808,9 @@ int pci_add_device(u16 seg, u8 bus, u8 devfn,
         goto out;
     }
 #endif
+#ifndef CONFIG_ARM
     pci_enable_acs(pdev);
+#endif
 
 out:
     pcidevs_unlock();
@@ -836,7 +848,10 @@ int pci_remove_device(u16 seg, u8 bus, u8 devfn)
     list_for_each_entry ( pdev, &pseg->alldevs_list, alldevs_list )
         if ( pdev->bus == bus && pdev->devfn == devfn )
         {
+#ifndef CONFIG_ARM
+            /*TODO :Implement MSI support for ARM  */
             pci_cleanup_msi(pdev);
+#endif
             ret = iommu_remove_device(pdev);
             if ( pdev->domain )
                 list_del(&pdev->domain_list);
@@ -849,6 +864,8 @@ int pci_remove_device(u16 seg, u8 bus, u8 devfn)
     return ret;
 }
 
+#ifndef CONFIG_ARM
+/*TODO :Implement MSI support for ARM  */
 static int pci_clean_dpci_irq(struct domain *d,
                               struct hvm_pirq_dpci *pirq_dpci, void *arg)
 {
@@ -913,6 +930,7 @@ static int pci_clean_dpci_irqs(struct domain *d)
     spin_unlock(&d->event_lock);
     return 0;
 }
+#endif
 
 /* Caller should hold the pcidevs_lock */
 static int deassign_device(struct domain *d, uint16_t seg, uint8_t bus,
@@ -970,15 +988,20 @@ int pci_release_devices(struct domain *d)
 {
     struct pci_dev *pdev;
     u8 bus, devfn;
+#ifndef CONFIG_ARM
     int ret;
+#endif
 
     pcidevs_lock();
+#ifndef CONFIG_ARM
+    /*TODO :Implement MSI support for ARM  */
     ret = pci_clean_dpci_irqs(d);
     if ( ret )
     {
         pcidevs_unlock();
         return ret;
     }
+#endif
     while ( (pdev = pci_get_pdev_by_domain(d, -1, -1, -1)) )
     {
         bus = pdev->bus;
@@ -1345,7 +1368,10 @@ bool_t pcie_aer_get_firmware_first(const struct pci_dev *pdev)
 static int _dump_pci_devices(struct pci_seg *pseg, void *arg)
 {
     struct pci_dev *pdev;
+#ifndef CONFIG_ARM
+    /*TODO :Implement MSI support for ARM  */
     struct msi_desc *msi;
+#endif
 
     printk("==== segment %04x ====\n", pseg->nr);
 
@@ -1354,8 +1380,11 @@ static int _dump_pci_devices(struct pci_seg *pseg, void *arg)
         printk("%pp - %pd - node %-3d - MSIs < ",
                &pdev->sbdf, pdev->domain,
                (pdev->node != NUMA_NO_NODE) ? pdev->node : -1);
+#ifndef CONFIG_ARM
+        /*TODO :Implement MSI support for ARM  */
         list_for_each_entry ( msi, &pdev->msi_list, list )
                printk("%d ", msi->irq);
+#endif
         printk(">\n");
     }
 
@@ -1377,12 +1406,15 @@ static int __init setup_dump_pcidevs(void)
 }
 __initcall(setup_dump_pcidevs);
 
+#ifndef CONFIG_ARM
+/*TODO :Implement MSI support for ARM  */
 int iommu_update_ire_from_msi(
     struct msi_desc *msi_desc, struct msi_msg *msg)
 {
     return iommu_intremap
            ? iommu_call(&iommu_ops, update_ire_from_msi, msi_desc, msg) : 0;
 }
+#endif
 
 static int iommu_add_device(struct pci_dev *pdev)
 {
@@ -1494,6 +1526,8 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
     if ( !is_iommu_enabled(d) )
         return 0;
 
+#ifndef CONFIG_ARM
+    /*TODO :need to check if it is required for ARM  */
     /* Prevent device assign if mem paging or mem sharing have been 
      * enabled for this domain */
     if ( d != dom_io &&
@@ -1501,6 +1535,7 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
                   vm_event_check_ring(d->vm_event_paging) ||
                   p2m_get_hostp2m(d)->global_logdirty) )
         return -EXDEV;
+#endif
 
     /* device_assigned() should already have cleared the device for assignment */
     ASSERT(pcidevs_locked());
@@ -1508,6 +1543,8 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
     ASSERT(pdev && (pdev->domain == hardware_domain ||
                     pdev->domain == dom_io));
 
+#ifndef CONFIG_ARM
+    /*TODO :Implement MSI support for ARM  */
     if ( pdev->msix )
     {
         rc = pci_reset_msix_state(pdev);
@@ -1515,6 +1552,7 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
             goto done;
         msixtbl_init(d);
     }
+#endif
 
     pdev->fault.count = 0;
 
@@ -1591,7 +1629,10 @@ void iommu_dev_iotlb_flush_timeout(struct domain *d, struct pci_dev *pdev)
 {
     pcidevs_lock();
 
+#ifndef CONFIG_ARM
+    /*TODO ARM: Implement the ATS enable/disable */
     disable_ats_device(pdev);
+#endif
 
     ASSERT(pdev->domain);
     if ( d != pdev->domain )

@@ -91,6 +91,7 @@ struct vpci {
         /* FIXME: currently there's no support for SR-IOV. */
     } header;
 
+#ifdef CONFIG_X86
     /* MSI data. */
     struct vpci_msi {
       /* Address. */
@@ -137,6 +138,7 @@ struct vpci {
         } entries[];
     } *msix;
 #endif
+#endif
 };
 
 struct vpci_vcpu {
@@ -147,6 +149,7 @@ struct vpci_vcpu {
     bool rom_only : 1;
 };
 
+#ifdef CONFIG_X86
 #ifdef __XEN__
 void vpci_dump_msi(void);
 
@@ -211,6 +214,7 @@ static inline unsigned int vmsix_entry_nr(const struct vpci_msix *msix,
 }
 #endif /* __XEN__ */
 
+#endif
 #else /* !CONFIG_HAS_VPCI */
 struct vpci_vcpu {};
 
