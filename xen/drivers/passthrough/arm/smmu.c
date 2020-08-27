@@ -2733,6 +2733,13 @@ static void arm_smmu_iommu_domain_teardown(struct domain *d)
 	xfree(xen_domain);
 }
 
+static int arm_iommu_add_device(u8 devfn, struct device *dev)
+{
+    printk(XENLOG_WARNING "TODO: %s Add device devfn %d\n", __func__, devfn);
+
+    return 0;
+}
+
 static const struct iommu_ops arm_smmu_iommu_ops = {
     .init = arm_smmu_iommu_domain_init,
     .hwdom_init = arm_smmu_iommu_hwdom_init,
@@ -2743,6 +2750,7 @@ static const struct iommu_ops arm_smmu_iommu_ops = {
     .reassign_device = arm_smmu_reassign_dev,
     .map_page = arm_iommu_map_page,
     .unmap_page = arm_iommu_unmap_page,
+    .add_device	= arm_iommu_add_device,
 };
 
 static __init const struct arm_smmu_device *find_smmu(const struct device *dev)
