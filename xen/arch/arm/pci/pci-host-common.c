@@ -65,7 +65,7 @@ static void pci_ecam_free(struct pci_config_window *cfg)
 }
 
 static struct pci_config_window *gen_pci_init(struct dt_device_node *dev,
-        struct pci_ecam_ops *ops)
+        struct pci_ecam_ops *ops, bool xlnx_nwl)
 {
     int err;
     struct pci_config_window *cfg;
@@ -93,6 +93,12 @@ static struct pci_config_window *gen_pci_init(struct dt_device_node *dev,
     cfg->phys_addr = addr;
     cfg->size = size;
     cfg->ops = ops;
+
+    if ( xlnx_nwl )
+    {
+        cfg->phys_addr = 0x8000000000;
+        cfg->size = 0x1000000;
+    }
 
     /*
      * On 64-bit systems, we do a single ioremap for the whole config space
@@ -135,7 +141,7 @@ static struct pci_host_bridge * pci_alloc_host_bridge(void)
 }
 
 int pci_host_common_probe(struct dt_device_node *dev,
-        struct pci_ecam_ops *ops)
+        struct pci_ecam_ops *ops, bool xlnx_nwl)
 {
     struct pci_host_bridge *bridge;
     struct pci_config_window *cfg;
@@ -146,7 +152,7 @@ int pci_host_common_probe(struct dt_device_node *dev,
         return -ENOMEM;
 
     /* Parse and map our Configuration Space windows */
-    cfg = gen_pci_init(dev, ops);
+    cfg = gen_pci_init(dev, ops, xlnx_nwl);
     if ( !cfg )
         return -ENOMEM;
 
@@ -157,7 +163,10 @@ int pci_host_common_probe(struct dt_device_node *dev,
     if( !dt_property_read_u32(dev, "linux,pci-domain", &segment) )
     {
         printk(XENLOG_ERR "\"linux,pci-domain\" property in not available in DT\n");
-        return -ENODEV;
+        if ( !xlnx_nwl )
+            return -ENODEV;
+        else
+            segment = 0;
     }
 
     bridge->segment = (u16)segment;

@@ -97,7 +97,8 @@ struct pci_ecam_ops pci_generic_ecam_ops = {
 static const struct dt_device_match gen_pci_dt_match[] = {
     { .compatible = "pci-host-ecam-generic",
       .data =       &pci_generic_ecam_ops },
-
+    { .compatible = "xlnx,nwl-pcie-2.11",
+      .data =       &pci_generic_ecam_ops },
     { },
 };
 
@@ -105,6 +106,7 @@ static int gen_pci_dt_init(struct dt_device_node *dev, const void *data)
 {
     const struct dt_device_match *of_id;
     struct pci_ecam_ops *ops;
+    bool xlnx_nwl = false;
 
     of_id = dt_match_node(gen_pci_dt_match, dev->dev.of_node);
     ops = (struct pci_ecam_ops *) of_id->data;
@@ -112,7 +114,11 @@ static int gen_pci_dt_init(struct dt_device_node *dev, const void *data)
     printk(XENLOG_INFO "Found PCI host bridge %s compatible:%s \n",
             dt_node_full_name(dev), of_id->compatible);
 
-    return pci_host_common_probe(dev, ops);
+    if ( !strncmp(of_id->compatible, "xlnx,nwl-pcie-2.11",
+                  sizeof("xlnx,nwl-pcie-2.11")) )
+        xlnx_nwl = true;
+
+    return pci_host_common_probe(dev, ops, xlnx_nwl);
 }
 
 DT_DEVICE_START(pci_gen, "PCI HOST GENERIC", DEVICE_PCI)
