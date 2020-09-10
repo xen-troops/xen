@@ -174,6 +174,16 @@ static int libxl__device_disk_setdefault(libxl__gc *gc, uint32_t domid,
         disk->backend = LIBXL_DISK_BACKEND_QDISK;
     }
 
+    /* Force virtio_disk backend for Virtio devices */
+    if (disk->virtio) {
+        if (!(disk->backend == LIBXL_DISK_BACKEND_VIRTIO ||
+              disk->backend == LIBXL_DISK_BACKEND_UNKNOWN)) {
+            LOGD(ERROR, domid, "Backend for Virtio devices on must be virtio_disk");
+            return ERROR_FAIL;
+        }
+        disk->backend = LIBXL_DISK_BACKEND_VIRTIO;
+    }
+
     rc = libxl__device_disk_set_backend(gc, disk);
     return rc;
 }
@@ -204,6 +214,9 @@ static int libxl__device_from_disk(libxl__gc *gc, uint32_t domid,
         case LIBXL_DISK_BACKEND_QDISK:
             device->backend_kind = LIBXL__DEVICE_KIND_QDISK;
             break;
+        case LIBXL_DISK_BACKEND_VIRTIO:
+            device->backend_kind = LIBXL__DEVICE_KIND_VIRTIO_DISK;
+            break;
         default:
             LOGD(ERROR, domid, "Unrecognized disk backend type: %d",
                  disk->backend);
@@ -212,7 +225,8 @@ static int libxl__device_from_disk(libxl__gc *gc, uint32_t domid,
 
     device->domid = domid;
     device->devid = devid;
-    device->kind  = LIBXL__DEVICE_KIND_VBD;
+    device->kind = disk->backend == LIBXL_DISK_BACKEND_VIRTIO ?
+        LIBXL__DEVICE_KIND_VIRTIO_DISK : LIBXL__DEVICE_KIND_VBD;
 
     return 0;
 }
@@ -330,7 +344,17 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
 
                 assert(device->backend_kind == LIBXL__DEVICE_KIND_VBD);
                 break;
+            case LIBXL_DISK_BACKEND_VIRTIO:
+                dev = disk->pdev_path;
 
+                flexarray_append(back, "params");
+                flexarray_append(back, dev);
+
+                flexarray_append_pair(back, "base", GCSPRINTF("%lu", disk->base));
+                flexarray_append_pair(back, "irq", GCSPRINTF("%u", disk->irq));
+
+                assert(device->backend_kind == LIBXL__DEVICE_KIND_VIRTIO_DISK);
+                break;
             case LIBXL_DISK_BACKEND_TAP:
                 LOG(ERROR, "blktap is not supported");
                 rc = ERROR_FAIL;
@@ -532,6 +556,26 @@ static int libxl__disk_from_xenstore(libxl__gc *gc, const char *libxl_path,
     }
     libxl_string_to_backend(ctx, tmp, &(disk->backend));
 
+    if (disk->backend == LIBXL_DISK_BACKEND_VIRTIO) {
+        disk->virtio = true;
+
+        tmp = libxl__xs_read(gc, XBT_NULL,
+                             GCSPRINTF("%s/base", libxl_path));
+        if (!tmp) {
+            LOG(ERROR, "Missing xenstore node %s/base", libxl_path);
+            goto cleanup;
+        }
+        disk->base = strtoul(tmp, NULL, 10);
+
+        tmp = libxl__xs_read(gc, XBT_NULL,
+                             GCSPRINTF("%s/irq", libxl_path));
+        if (!tmp) {
+            LOG(ERROR, "Missing xenstore node %s/irq", libxl_path);
+            goto cleanup;
+        }
+        disk->irq = strtoul(tmp, NULL, 10);
+    }
+
     disk->vdev = xs_read(ctx->xsh, XBT_NULL,
                          GCSPRINTF("%s/dev", libxl_path), &len);
     if (!disk->vdev) {
@@ -575,6 +619,41 @@ cleanup:
     return rc;
 }
 
+static int libxl_device_disk_get_path(libxl__gc *gc, uint32_t domid,
+                                      char **path)
+{
+    const char *dir;
+    int rc;
+
+    /*
+     * As we don't know exactly what device kind to be used here, guess it
+     * by checking the presence of the corresponding path in Xenstore.
+     * First, try to read path for vbd device (default) and if not exists
+     * read path for virtio_disk device. This will work as long as both Xen PV
+     * and Virtio disk devices are not assigned to the same guest.
+     */
+    *path = GCSPRINTF("%s/device/%s",
+                      libxl__xs_libxl_path(gc, domid),
+                      libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VBD));
+
+    rc = libxl__xs_read_checked(gc, XBT_NULL, *path, &dir);
+    if (rc)
+        return rc;
+
+    if (dir)
+        return 0;
+
+    *path = GCSPRINTF("%s/device/%s",
+                      libxl__xs_libxl_path(gc, domid),
+                      libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VIRTIO_DISK));
+
+    rc = libxl__xs_read_checked(gc, XBT_NULL, *path, &dir);
+    if (rc)
+        return rc;
+
+    return 0;
+}
+
 int libxl_vdev_to_device_disk(libxl_ctx *ctx, uint32_t domid,
                               const char *vdev, libxl_device_disk *disk)
 {
@@ -588,10 +667,12 @@ int libxl_vdev_to_device_disk(libxl_ctx *ctx, uint32_t domid,
 
     libxl_device_disk_init(disk);
 
-    libxl_path = libxl__domain_device_libxl_path(gc, domid, devid,
-                                                 LIBXL__DEVICE_KIND_VBD);
+    rc = libxl_device_disk_get_path(gc, domid, &libxl_path);
+    if (rc)
+        return rc;
 
-    rc = libxl__disk_from_xenstore(gc, libxl_path, devid, disk);
+    rc = libxl__disk_from_xenstore(gc, GCSPRINTF("%s/%d", libxl_path, devid),
+                                   devid, disk);
 
     GC_FREE;
     return rc;
@@ -605,16 +686,19 @@ int libxl_device_disk_getinfo(libxl_ctx *ctx, uint32_t domid,
     char *fe_path, *libxl_path;
     char *val;
     int rc;
+    libxl__device_kind kind;
 
     diskinfo->backend = NULL;
 
     diskinfo->devid = libxl__device_disk_dev_number(disk->vdev, NULL, NULL);
 
-    /* tap devices entries in xenstore are written as vbd devices. */
+    /* tap devices entries in xenstore are written as vbd/virtio_disk devices. */
+    kind = disk->backend == LIBXL_DISK_BACKEND_VIRTIO ?
+        LIBXL__DEVICE_KIND_VIRTIO_DISK : LIBXL__DEVICE_KIND_VBD;
     fe_path = libxl__domain_device_frontend_path(gc, domid, diskinfo->devid,
-                                                 LIBXL__DEVICE_KIND_VBD);
+                                                 kind);
     libxl_path = libxl__domain_device_libxl_path(gc, domid, diskinfo->devid,
-                                                 LIBXL__DEVICE_KIND_VBD);
+                                                 kind);
     diskinfo->backend = xs_read(ctx->xsh, XBT_NULL,
                                 GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!diskinfo->backend) {
@@ -1375,6 +1459,7 @@ LIBXL_DEFINE_DEVICE_LIST(disk)
 #define libxl__device_disk_update_devid NULL
 
 DEFINE_DEVICE_TYPE_STRUCT(disk, VBD, disks,
+    .get_path    = libxl_device_disk_get_path,
     .merge       = libxl_device_disk_merge,
     .dm_needed   = libxl_device_disk_dm_needed,
     .from_xenstore = (device_from_xenstore_fn_t)libxl__disk_from_xenstore,

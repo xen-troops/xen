@@ -198,6 +198,7 @@ script=[^,]*,?	{ STRIP(','); SAVESTRING("script", script, FROMEQUALS); }
 direct-io-safe,? { DPC->disk->direct_io_safe = 1; }
 discard,?	{ libxl_defbool_set(&DPC->disk->discard_enable, true); }
 no-discard,?	{ libxl_defbool_set(&DPC->disk->discard_enable, false); }
+virtio,?	{ DPC->disk->virtio = 1; }
  /* Note that the COLO configuration settings should be considered unstable.
   * They may change incompatibly in future versions of Xen. */
 colo,?		{ libxl_defbool_set(&DPC->disk->colo_enable, true); }

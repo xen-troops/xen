@@ -304,6 +304,8 @@ int libxl_string_to_backend(libxl_ctx *ctx, char *s, libxl_disk_backend *backend
         *backend = LIBXL_DISK_BACKEND_TAP;
     } else if (!strcmp(s, "qdisk")) {
         *backend = LIBXL_DISK_BACKEND_QDISK;
+    } else if (!strcmp(s, "virtio_disk")) {
+        *backend = LIBXL_DISK_BACKEND_VIRTIO;
     } else if (!strcmp(s, "tap")) {
         p = strchr(s, ':');
         if (!p) {

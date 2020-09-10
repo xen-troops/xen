@@ -503,6 +503,12 @@
 #define LIBXL_HAVE_X86_MSR_RELAXED 1
 
 /*
+ * LIBXL_HAVE_DEVICE_DISK_VIRTIO indicates that a 'virtio' field
+ * (of boolean type) is present in libxl_device_disk.
+ */
+#define LIBXL_HAVE_DEVICE_DISK_VIRTIO 1
+
+/*
  * libxl ABI compatibility
  *
  * The only guarantee which libxl makes regarding ABI compatibility

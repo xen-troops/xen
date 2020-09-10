@@ -34,6 +34,7 @@ libxl__device_kind = Enumeration("device_kind", [
     (16, "VINPUT"),
     (17, "VGSX"),
     (18, "VCAMERA"),
+    (19, "VIRTIO_DISK"),
     ])
 
 libxl__console_backend = Enumeration("console_backend", [
