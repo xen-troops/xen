@@ -8,6 +8,12 @@
 #include <assert.h>
 #include <xen/device_tree_defs.h>
 
+#ifndef container_of
+#define container_of(ptr, type, member) ({			\
+        typeof( ((type *)0)->member ) *__mptr = (ptr);	\
+        (type *)( (char *)__mptr - offsetof(type,member) );})
+#endif
+
 static const char *gicv_to_string(libxl_gic_version gic_version)
 {
     switch (gic_version) {
@@ -39,14 +45,32 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         vuart_enabled = true;
     }
 
-    /*
-     * XXX: Handle properly virtio
-     * A proper solution would be the toolstack to allocate the interrupts
-     * used by each virtio backend and let the backend now which one is used
-     */
     if (libxl_defbool_val(d_config->b_info.arch_arm.virtio)) {
-        nr_spis += (GUEST_VIRTIO_MMIO_SPI - 32) + 1;
+        uint64_t virtio_base;
+        libxl_device_virtio_disk *virtio_disk;
+
+        virtio_base = GUEST_VIRTIO_MMIO_BASE;
         virtio_irq = GUEST_VIRTIO_MMIO_SPI;
+
+        if (!d_config->num_virtio_disks) {
+            LOG(ERROR, "Virtio is enabled, but no Virtio devices present\n");
+            return ERROR_FAIL;
+        }
+        virtio_disk = &d_config->virtio_disks[0];
+
+        for (i = 0; i < virtio_disk->num_disks; i++) {
+            virtio_disk->disks[i].base = virtio_base;
+            virtio_disk->disks[i].irq = virtio_irq;
+
+            LOG(DEBUG, "Allocate Virtio MMIO params: IRQ %u BASE 0x%"PRIx64,
+                virtio_irq, virtio_base);
+
+            virtio_irq ++;
+            virtio_base += GUEST_VIRTIO_MMIO_SIZE;
+        }
+        virtio_irq --;
+
+        nr_spis += (virtio_irq - 32) + 1;
         virtio_enabled = true;
     }
 
@@ -70,8 +94,9 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         }
 
         /* The same check as for vpl011 */
-        if (virtio_enabled && irq == virtio_irq) {
-            LOG(ERROR, "Physical IRQ %u conflicting with virtio SPI\n", irq);
+        if (virtio_enabled &&
+           (irq >= GUEST_VIRTIO_MMIO_SPI && irq <= virtio_irq)) {
+            LOG(ERROR, "Physical IRQ %u conflicting with Virtio IRQ range\n", irq);
             return ERROR_FAIL;
         }
 
@@ -1021,8 +1046,19 @@ next_resize:
         if (info->tee == LIBXL_TEE_TYPE_OPTEE)
             FDT( make_optee_node(gc, fdt) );
 
-        if (libxl_defbool_val(info->arch_arm.virtio))
-            FDT( make_virtio_mmio_node(gc, fdt, GUEST_VIRTIO_MMIO_BASE, GUEST_VIRTIO_MMIO_SPI) );
+        if (libxl_defbool_val(info->arch_arm.virtio)) {
+            libxl_domain_config *d_config =
+                container_of(info, libxl_domain_config, b_info);
+            libxl_device_virtio_disk *virtio_disk = &d_config->virtio_disks[0];
+            unsigned int i;
+
+            for (i = 0; i < virtio_disk->num_disks; i++) {
+                uint64_t base = virtio_disk->disks[i].base;
+                uint32_t irq = virtio_disk->disks[i].irq;
+
+                FDT( make_virtio_mmio_node(gc, fdt, base, irq) );
+            }
+        }
 
         if (pfdt)
             FDT( copy_partial_fdt(gc, fdt, pfdt) );

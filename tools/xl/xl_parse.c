@@ -1518,6 +1518,120 @@ static void parse_vcamera_list(const XLU_Config *config,
     }
 }
 
+#define MAX_VIRTIO_DISKS 4
+
+static int parse_virtio_disk_config(libxl_device_virtio_disk *virtio_disk, char *token)
+{
+    char *oparg;
+    libxl_string_list disks = NULL;
+    int i, rc;
+
+    if (MATCH_OPTION("backend", token, oparg)) {
+        virtio_disk->backend_domname = strdup(oparg);
+    } else if (MATCH_OPTION("disks", token, oparg)) {
+        split_string_into_string_list(oparg, ";", &disks);
+
+        virtio_disk->num_disks = libxl_string_list_length(&disks);
+        if (virtio_disk->num_disks > MAX_VIRTIO_DISKS) {
+            fprintf(stderr, "vdisk: currently only %d disks are supported",
+                    MAX_VIRTIO_DISKS);
+            return 1;
+        }
+        virtio_disk->disks = xcalloc(virtio_disk->num_disks,
+                                     sizeof(*virtio_disk->disks));
+
+        for(i = 0; i < virtio_disk->num_disks; i++) {
+            char *disk_opt;
+
+            rc = split_string_into_pair(disks[i], ":", &disk_opt,
+                                        &virtio_disk->disks[i].filename);
+            if (rc) {
+                fprintf(stderr, "vdisk: failed to split \"%s\" into pair\n",
+                        disks[i]);
+                goto out;
+            }
+
+            if (!strcmp(disk_opt, "ro"))
+                virtio_disk->disks[i].readonly = 1;
+            else if (!strcmp(disk_opt, "rw"))
+                virtio_disk->disks[i].readonly = 0;
+            else {
+                fprintf(stderr, "vdisk: failed to parse \"%s\" disk option\n",
+                        disk_opt);
+                rc = 1;
+            }
+            free(disk_opt);
+
+            if (rc) goto out;
+        }
+    } else {
+        fprintf(stderr, "Unknown string \"%s\" in vdisk spec\n", token);
+        rc = 1; goto out;
+    }
+
+    rc = 0;
+
+out:
+    libxl_string_list_dispose(&disks);
+    return rc;
+}
+
+static void parse_virtio_disk_list(const XLU_Config *config,
+                            libxl_domain_config *d_config)
+{
+    XLU_ConfigList *virtio_disks;
+    const char *item;
+    char *buf = NULL;
+    int rc;
+
+    if (!xlu_cfg_get_list (config, "vdisk", &virtio_disks, 0, 0)) {
+        libxl_domain_build_info *b_info = &d_config->b_info;
+        int entry = 0;
+
+        /* XXX Remove an extra property */
+        libxl_defbool_setdefault(&b_info->arch_arm.virtio, false);
+        if (!libxl_defbool_val(b_info->arch_arm.virtio)) {
+            fprintf(stderr, "Virtio device requires Virtio property to be set\n");
+            exit(EXIT_FAILURE);
+        }
+
+        while ((item = xlu_cfg_get_listitem(virtio_disks, entry)) != NULL) {
+            libxl_device_virtio_disk *virtio_disk;
+            char *p;
+
+            virtio_disk = ARRAY_EXTEND_INIT(d_config->virtio_disks,
+                                            d_config->num_virtio_disks,
+                                            libxl_device_virtio_disk_init);
+
+            buf = strdup(item);
+
+            p = strtok (buf, ",");
+            while (p != NULL)
+            {
+                while (*p == ' ') p++;
+
+                rc = parse_virtio_disk_config(virtio_disk, p);
+                if (rc) goto out;
+
+                p = strtok (NULL, ",");
+            }
+
+            entry++;
+
+            if (virtio_disk->num_disks == 0) {
+                fprintf(stderr, "At least one virtio disk should be specified\n");
+                rc = 1; goto out;
+            }
+        }
+    }
+
+    rc = 0;
+
+out:
+    free(buf);
+    if (rc) exit(EXIT_FAILURE);
+}
+
 void parse_config_data(const char *config_source,
                        const char *config_data,
                        int config_len,
@@ -3054,6 +3168,7 @@ skip_usbdev:
     parse_vkb_list(config, d_config);
     parse_vgsx_list(config, d_config);
     parse_vcamera_list(config, d_config);
+    parse_virtio_disk_list(config, d_config);
 
     xlu_cfg_get_defbool(config, "xend_suspend_evtchn_compat",
                         &c_info->xend_suspend_evtchn_compat, 0);
