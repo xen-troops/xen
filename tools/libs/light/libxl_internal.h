@@ -4001,6 +4001,7 @@ extern const libxl__device_type libxl__pvcallsif_devtype;
 extern const libxl__device_type libxl__vsnd_devtype;
 extern const libxl__device_type libxl__vgsx_devtype;
 extern const libxl__device_type libxl__vcamera_devtype;
+extern const libxl__device_type libxl__virtio_disk_devtype;
 
 extern const libxl__device_type *device_type_tbl[];
 

@@ -970,6 +970,20 @@ libxl_device_vcamera = Struct("device_vcamera", [
     ("formats", Array(libxl_vcamera_format, "num_vcamera_formats"))
     ])
 
+libxl_virtio_disk_param = Struct("virtio_disk_param", [
+    ("filename", string),
+    ("readonly", bool),
+    ("irq", uint32),
+    ("base", uint64),
+    ])
+
+libxl_device_virtio_disk = Struct("device_virtio_disk", [
+    ("backend_domid", libxl_domid),
+    ("backend_domname", string),
+    ("devid", libxl_devid),
+    ("disks", Array(libxl_virtio_disk_param, "num_disks")),
+    ])
+
 libxl_domain_config = Struct("domain_config", [
     ("c_info", libxl_domain_create_info),
     ("b_info", libxl_domain_build_info),
@@ -988,6 +1002,7 @@ libxl_domain_config = Struct("domain_config", [
     ("vsnds", Array(libxl_device_vsnd, "num_vsnds")),
     ("vgsxs", Array(libxl_device_vgsx, "num_vgsxs")),
     ("vcameras", Array(libxl_device_vcamera, "num_vcameras")),
+    ("virtio_disks", Array(libxl_device_virtio_disk, "num_virtio_disks")),
     # a channel manifests as a console with a name,
     # see docs/misc/channels.txt
     ("channels", Array(libxl_device_channel, "num_channels")),
