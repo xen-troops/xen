@@ -86,6 +86,7 @@ struct pci_host_bridge {
 };
 
 struct pci_host_bridge *pci_find_host_bridge(uint16_t segment, uint8_t bus);
+struct device *pci_find_host_bridge_device(struct device *dev);
 void pci_add_host_bridge(struct pci_host_bridge *bridge);
 struct pci_host_bridge * pci_alloc_host_bridge(void);
 
