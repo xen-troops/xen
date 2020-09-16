@@ -25,7 +25,17 @@ int __init device_init(struct dt_device_node *dev, enum device_class class,
 
     ASSERT(dev != NULL);
 
-    if ( !dt_device_is_available(dev) || dt_device_for_passthrough(dev) )
+    /*
+     * PCI host bridge can live in a driver domain other then Domain-0,
+     * so Domain-0 won't own it. But "xen,passthrough" will be set in that
+     * case: make sure we still let Xen instantiate the device.
+     */
+    if ( class == DEVICE_PCI_HOSTBRIDGE )
+    {
+        if ( !dt_device_is_available(dev) )
+             return  -ENODEV;
+    }
+    else if ( (!dt_device_is_available(dev) || dt_device_for_passthrough(dev)) )
         return  -ENODEV;
 
     for ( desc = _sdevice; desc != _edevice; desc++ )
