@@ -85,11 +85,16 @@ struct pci_host_bridge {
 };
 
 struct pci_host_bridge *pci_find_host_bridge(uint16_t segment, uint8_t bus);
+void pci_add_host_bridge(struct pci_host_bridge *bridge);
+struct pci_host_bridge * pci_alloc_host_bridge(void);
+
 
 int pci_host_common_probe(struct dt_device_node *dev,
                 struct pci_ecam_ops *ops, bool xlnx_nwl);
 
 void pci_init(void);
+bool dt_pci_parse_bus_range(struct dt_device_node *dev,
+                            struct pci_config_window *cfg);
 
 #else   /*!CONFIG_ARM_PCI*/
 struct arch_pci_dev { };
