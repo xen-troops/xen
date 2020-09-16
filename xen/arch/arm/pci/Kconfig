@@ -9,4 +9,10 @@ config PCIE_XILINX_NWL
 	help
 	  Say 'Y' here if you want support for Xilinx NWL PCIe controller.
 
+config PCIE_RCAR_GEN3
+	bool "R-Car Gen3 PCIe Core"
+	default y
+	help
+	  Say 'Y' here if you want support for Renesas R-Car Gen3 PCIe controller.
+
 endmenu
