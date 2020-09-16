@@ -34,8 +34,8 @@
 
 static LIST_HEAD(pci_host_bridges);
 
-static bool __init dt_pci_parse_bus_range(struct dt_device_node *dev,
-                                          struct pci_config_window *cfg)
+bool dt_pci_parse_bus_range(struct dt_device_node *dev,
+                            struct pci_config_window *cfg)
 {
     const __be32 *cells;
     uint32_t len;
@@ -123,7 +123,7 @@ err_exit:
     return NULL;
 }
 
-static struct pci_host_bridge *pci_alloc_host_bridge(void)
+struct pci_host_bridge *pci_alloc_host_bridge(void)
 {
     struct pci_host_bridge *bridge = xzalloc(struct pci_host_bridge);
 
@@ -132,6 +132,11 @@ static struct pci_host_bridge *pci_alloc_host_bridge(void)
 
     INIT_LIST_HEAD(&bridge->node);
     return bridge;
+}
+
+void pci_add_host_bridge(struct pci_host_bridge *bridge)
+{
+    list_add_tail(&bridge->node, &pci_host_bridges);
 }
 
 int pci_host_common_probe(struct dt_device_node *dev,
@@ -167,7 +172,7 @@ int pci_host_common_probe(struct dt_device_node *dev,
 
     bridge->segment = (u16)segment;
 
-    list_add_tail(&bridge->node, &pci_host_bridges);
+    pci_add_host_bridge(bridge);
 
     return 0;
 
