@@ -1071,6 +1071,18 @@ static void ipmmu_free_root_domain(struct ipmmu_vmsa_domain *domain)
     xfree(domain);
 }
 
+static int ipmmu_check_assign_pci_device(struct device *dev)
+{
+    struct device *root_dev;
+
+    root_dev = pci_find_host_bridge_device(dev);
+    if ( !root_dev )
+        return -ENODEV;
+    if ( !to_domain(root_dev) )
+        dev_err(root_dev, "Host bridge hasn't been added to IPMMU yet\n");
+    return 0;
+}
+
 static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
                                uint32_t flag)
 {
@@ -1080,6 +1092,9 @@ static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
 
     if ( !xen_domain )
         return -EINVAL;
+
+    if ( dev_is_pci(dev) )
+        return ipmmu_check_assign_pci_device(dev);
 
     if ( !to_ipmmu(dev) )
         return -ENODEV;
@@ -1236,9 +1251,26 @@ static int ipmmu_dt_xlate(struct device *dev,
     return ipmmu_init_platform_device(dev, spec);
 }
 
+static int ipmmu_check_add_pci_device(struct device *dev)
+{
+    struct device *root_dev;
+
+    root_dev = pci_find_host_bridge_device(dev);
+    if ( !root_dev )
+        return -ENODEV;
+
+    if ( !dt_device_is_protected(dev_to_dt(root_dev)) )
+        dev_err(root_dev, "Host bridge hasn't been added to IPMMU yet\n");
+
+    return 0;
+}
+
 static int ipmmu_add_device(u8 devfn, struct device *dev)
 {
     struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+
+    if ( dev_is_pci(dev) )
+        return ipmmu_check_add_pci_device(dev);
 
     /* Only let through devices that have been verified in xlate(). */
     if ( !to_ipmmu(dev) )
