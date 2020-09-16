@@ -57,6 +57,9 @@ struct pci_config_window {
     uint8_t     busn_end;
     const struct pci_ecam_ops     *ops;
     void __iomem        *win;
+    /* R-Car */
+    /* TODO: is it bridge or config property? */
+    uint8_t root_bus_nr;
 };
 
 /* Forward declaration as pci_host_bridge and pci_ops depend on each other. */
