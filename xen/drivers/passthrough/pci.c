@@ -1344,6 +1344,9 @@ static int iommu_add_device(struct pci_dev *pdev)
     if ( !is_iommu_enabled(pdev->domain) )
         return 0;
 
+#ifdef CONFIG_ARM
+    pci_to_dev(pdev)->type = DEV_PCI;
+#endif
     rc = hd->platform_ops->add_device(pdev->devfn, pci_to_dev(pdev));
     if ( rc || !pdev->phantom_stride )
         return rc;
