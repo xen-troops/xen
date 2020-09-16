@@ -109,6 +109,9 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     } else
         config->arch.vgsx_osid = 0;
 
+    config->arch.has_vpci =
+        d_config->b_info.arch_arm.vpci != LIBXL_VPCI_TYPE_UNKNOWN;
+
     return 0;
 }
 

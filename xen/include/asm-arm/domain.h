@@ -35,7 +35,7 @@ enum domain_type {
 /* For X86 VPCI is enabled and tested for PVH DOM0 only but
  * for ARM we enable support VPCI for guest domain also.
  */
-#define has_vpci(d) (true)
+#define has_vpci(d) ((d)->arch.has_vpci)
 
 struct vtimer {
     struct vcpu *v;
@@ -97,6 +97,9 @@ struct arch_domain
 
     /* OSID used by virtual GSX device */
     uint8_t vgsx_osid;
+
+    /*Does this domain have a virtual PCI host bridge. */
+    bool has_vpci;
 }  __cacheline_aligned;
 
 struct arch_vcpu

@@ -323,6 +323,11 @@ struct xen_arch_domainconfig {
      */
     uint8_t vgsx_osid;
     /*
+     * IN
+     * Does this domain have a virtual PCI host bridge.
+     */
+    uint8_t has_vpci;
+    /*
      * OUT
      * Based on the property clock-frequency in the DT timer node.
      * The property may be present when the bootloader/firmware doesn't
