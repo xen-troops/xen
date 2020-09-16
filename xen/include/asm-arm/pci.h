@@ -96,9 +96,13 @@ int pci_generic_config_write(struct pci_host_bridge *bridge, uint32_t sbdf,
                             uint32_t reg, uint32_t len, uint32_t value);
 
 struct pci_host_bridge *pci_find_host_bridge(uint16_t segment, uint8_t bus);
+void pci_add_host_bridge(struct pci_host_bridge *bridge);
+struct pci_host_bridge * pci_alloc_host_bridge(void);
 
 int pci_host_common_probe(struct dt_device_node *dev,
                           const struct pci_ecam_ops *ops);
+bool dt_pci_parse_bus_range(struct dt_device_node *dev,
+                            struct pci_config_window *cfg);
 
 void __iomem *pci_ecam_map_bus(struct pci_host_bridge *bridge,
                                uint32_t sbdf, uint32_t where);
