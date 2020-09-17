@@ -1076,8 +1076,10 @@ static int ipmmu_check_assign_pci_device(struct device *dev)
     struct device *root_dev;
 
     root_dev = pci_find_host_bridge_device(dev);
-    if ( !root_dev || !to_domain(root_dev) )
+    if ( !root_dev )
         return -ENODEV;
+    if ( !to_domain(root_dev) )
+        dev_err(root_dev, "Host bridge hasn't been added to IPMMU yet\n");
     return 0;
 }
 
@@ -1254,8 +1256,12 @@ static int ipmmu_check_add_pci_device(struct device *dev)
     struct device *root_dev;
 
     root_dev = pci_find_host_bridge_device(dev);
-    if ( !root_dev || !dt_device_is_protected(dev_to_dt(root_dev)) )
+    if ( !root_dev )
         return -ENODEV;
+
+    if ( !dt_device_is_protected(dev_to_dt(root_dev)) )
+        dev_err(root_dev, "Host bridge hasn't been added to IPMMU yet\n");
+
     return 0;
 }
 
