@@ -37,6 +37,12 @@ struct arch_pci_dev {
 
 #define PRI_pci "%04x:%02x:%02x.%u"
 #define pci_to_dev(pcidev) (&(pcidev)->arch.dev)
+/*
+ * FIXME: because of the header cross-dependencies, e.g. we need both
+ * struct pci_dev and struct arch_pci_dev at the same time, this cannot be
+ * done with an inline here. Macro can be implemented, but looks scary.
+ */
+struct pci_dev *dev_to_pci(struct device *dev);
 
 /*
  * struct to hold the mappings of a config space window. This
