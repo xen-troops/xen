@@ -37,6 +37,7 @@ struct arch_pci_dev {
 
 #define PRI_pci "%04x:%02x:%02x.%u"
 #define pci_to_dev(pcidev) (&(pcidev)->arch.dev)
+#define dev_to_pci(dev)    (container_of((dev), struct pci_dev, arch.dev))
 
 /*
  * struct to hold the mappings of a config space window. This
