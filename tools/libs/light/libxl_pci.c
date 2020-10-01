@@ -319,6 +319,7 @@ retry_transaction2:
 
 static int get_all_assigned_devices(libxl__gc *gc, libxl_device_pci **list, int *num)
 {
+#ifdef CONFIG_PCIBACK
     char **domlist;
     unsigned int nd = 0, i;
 
@@ -356,6 +357,33 @@ static int get_all_assigned_devices(libxl__gc *gc, libxl_device_pci **list, int 
             }
         }
     }
+#else
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+    int ret;
+    xc_pci_device_enum_assigned_t e;
+
+    *list = NULL;
+    *num = 0;
+
+    memset(&e, 0, sizeof(e));
+    do {
+        ret = xc_pci_device_enum_assigned(ctx->xch, &e);
+        if ( ret && errno == EINVAL )
+            break;
+        *list = realloc(*list, sizeof(libxl_device_pci) * (e.idx + 1));
+        if (*list == NULL)
+            return ERROR_NOMEM;
+
+        pcidev_struct_fill(*list + e.idx,
+                           e.domain,
+                           e.machine_sbdf >> 8 & 0xff,
+                           PCI_SLOT(e.machine_sbdf),
+                           PCI_FUNC(e.machine_sbdf),
+                           0 /*vdevfn*/);
+        e.idx++;
+    } while (!ret);
+    *num = e.idx;
+#endif
     libxl__ptr_add(gc, *list);
 
     return 0;
@@ -411,13 +439,20 @@ static int sysfs_write_bdf(libxl__gc *gc, const char * sysfs_path,
 libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
 {
     GC_INIT(ctx);
-    libxl_device_pci *pcidevs = NULL, *new, *assigned;
+    libxl_device_pci *pcidevs = NULL, *new;
+    int r;
+#ifdef CONFIG_PCIBACK
+    libxl_device_pci *assigned;
+    int num_assigned;
     struct dirent *de;
     DIR *dir;
-    int r, num_assigned;
+#else
+    xc_pci_device_enum_assigned_t e;
+#endif
 
     *num = 0;
 
+#ifdef CONFIG_PCIBACK
     r = get_all_assigned_devices(gc, &assigned, &num_assigned);
     if (r) goto out;
 
@@ -453,6 +488,32 @@ libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
 
     closedir(dir);
 out:
+#else
+    memset(&e, 0, sizeof(e));
+    e.report_not_assigned = 1;
+    do {
+        r = xc_pci_device_enum_assigned(ctx->xch, &e);
+        if ( r && errno == EINVAL )
+            break;
+        new = realloc(pcidevs, (e.idx + 1) * sizeof(*new));
+        if (NULL == new)
+            continue;
+
+        pcidevs = new;
+        new = pcidevs + e.idx;
+
+        memset(new, 0, sizeof(*new));
+
+        pcidev_struct_fill(new,
+                           e.domain,
+                           e.machine_sbdf >> 8 & 0xff,
+                           PCI_SLOT(e.machine_sbdf),
+                           PCI_FUNC(e.machine_sbdf),
+                           0 /*vdevfn*/);
+        e.idx++;
+    } while (!r);
+    *num = e.idx;
+#endif
     GC_FREE;
     return pcidevs;
 }
@@ -606,6 +667,7 @@ bool libxl__is_igd_vga_passthru(libxl__gc *gc,
     return false;
 }
 
+#ifdef CONFIG_PCIBACK
 /*
  * A brief comment about slots.  I don't know what slots are for; however,
  * I have by experimentation determined:
@@ -648,11 +710,13 @@ out:
     fclose(f);
     return rc;
 }
+#endif
 
 static int pciback_dev_is_assigned(libxl__gc *gc, libxl_device_pci *pcidev)
 {
-    char * spath;
     int rc;
+#ifdef CONFIG_PCIBACK
+    char * spath;
     struct stat st;
 
     if ( access(SYSFS_PCIBACK_DRIVER, F_OK) < 0 ) {
@@ -663,22 +727,27 @@ static int pciback_dev_is_assigned(libxl__gc *gc, libxl_device_pci *pcidev)
         }
         return -1;
     }
-
     spath = GCSPRINTF(SYSFS_PCIBACK_DRIVER"/"PCI_BDF,
                       pcidev->domain, pcidev->bus,
                       pcidev->dev, pcidev->func);
     rc = lstat(spath, &st);
-
     if( rc == 0 )
         return 1;
     if ( rc < 0 && errno == ENOENT )
         return 0;
     LOGE(ERROR, "Accessing %s", spath);
     return -1;
+#else
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+
+    rc = xc_pci_device_get_assigned(ctx->xch, pcidev_encode_bdf(pcidev));
+    return rc == 0 ? 1 : 0;
+#endif
 }
 
 static int pciback_dev_assign(libxl__gc *gc, libxl_device_pci *pcidev)
 {
+#ifdef CONFIG_PCIBACK
     int rc;
 
     if ( (rc=pciback_dev_has_slot(gc, pcidev)) < 0 ) {
@@ -697,10 +766,17 @@ static int pciback_dev_assign(libxl__gc *gc, libxl_device_pci *pcidev)
         return ERROR_FAIL;
     }
     return 0;
+#else
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+
+    return xc_pci_device_set_assigned(ctx->xch, pcidev_encode_bdf(pcidev),
+                                      true);
+#endif
 }
 
 static int pciback_dev_unassign(libxl__gc *gc, libxl_device_pci *pcidev)
 {
+#ifdef CONFIG_PCIBACK
     /* Remove from pciback */
     if ( sysfs_dev_unbind(gc, pcidev, NULL) < 0 ) {
         LOG(ERROR, "Couldn't unbind device!");
@@ -716,6 +792,12 @@ static int pciback_dev_unassign(libxl__gc *gc, libxl_device_pci *pcidev)
         }
     }
     return 0;
+#else
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+
+    return xc_pci_device_set_assigned(ctx->xch, pcidev_encode_bdf(pcidev),
+                                      false);
+#endif
 }
 
 #define PCIBACK_INFO_PATH "/libxl/pciback"
@@ -780,10 +862,15 @@ static int libxl__device_pci_assignable_add(libxl__gc *gc,
 
     /* See if the device exists */
     spath = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF, dom, bus, dev, func);
+#ifdef CONFIG_PCI_SYSFS_DOM0
     if ( lstat(spath, &st) ) {
         LOGE(ERROR, "Couldn't lstat %s", spath);
         return ERROR_FAIL;
     }
+#else
+    (void)st;
+    printf("IMPLEMENT_ME: %s lstat %s\n", __func__, spath);
+#endif
 
     /* Check to see if it's already assigned to pciback */
     rc = pciback_dev_is_assigned(gc, pcidev);
@@ -1350,8 +1437,12 @@ static void pci_add_dm_done(libxl__egc *egc,
 
     if (f == NULL) {
         LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
+#ifdef CONFIG_PCI_SYSFS_DOM0
         rc = ERROR_FAIL;
         goto out;
+#else
+        goto out_no_irq;
+#endif
     }
     for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
         if (fscanf(f, "0x%llx 0x%llx 0x%llx\n", &start, &end, &flags) != 3)
@@ -1522,7 +1613,11 @@ static int libxl_pcidev_assignable(libxl_ctx *ctx, libxl_device_pci *pcidev)
             break;
     }
     free(pcidevs);
+#ifdef CONFIG_PCIBACK
     return i != num;
+#else
+    return 1;
+#endif
 }
 
 static void device_pci_add_stubdom_wait(libxl__egc *egc,

@@ -864,6 +864,43 @@ int pci_remove_device(u16 seg, u8 bus, u8 devfn)
     return ret;
 }
 
+#ifdef CONFIG_ARM
+int pci_device_set_assigned(u16 seg, u8 bus, u8 devfn, bool assigned)
+{
+    struct pci_dev *pdev;
+
+    pdev = pci_get_pdev(seg, bus, devfn);
+    if ( !pdev )
+    {
+        printk(XENLOG_ERR "Can't find PCI device %04x:%02x:%02x.%u\n",
+               seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn));
+        return -ENODEV;
+    }
+
+    pdev->assigned = assigned;
+    printk(XENLOG_ERR "pciback %sassign PCI device %04x:%02x:%02x.%u\n",
+           assigned ? "" : "de-",
+           seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn));
+
+    return 0;
+}
+
+int pci_device_get_assigned(u16 seg, u8 bus, u8 devfn)
+{
+    struct pci_dev *pdev;
+
+    pdev = pci_get_pdev(seg, bus, devfn);
+    if ( !pdev )
+    {
+        printk(XENLOG_ERR "Can't find PCI device %04x:%02x:%02x.%u\n",
+               seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn));
+        return -ENODEV;
+    }
+
+    return pdev->assigned ? 0 : -ENODEV;
+}
+#endif
+
 #ifndef CONFIG_ARM
 /*TODO :Implement MSI support for ARM  */
 static int pci_clean_dpci_irq(struct domain *d,
@@ -1791,6 +1828,62 @@ int iommu_do_pci_domctl(
 
     return ret;
 }
+
+#ifdef CONFIG_ARM
+struct list_assigned {
+    uint32_t cur_idx;
+    uint32_t from_idx;
+    bool assigned;
+    domid_t *domain;
+    uint32_t *machine_sbdf;
+};
+
+static int _enum_assigned_pci_devices(struct pci_seg *pseg, void *arg)
+{
+    struct list_assigned *ctxt = arg;
+    struct pci_dev *pdev;
+
+    list_for_each_entry ( pdev, &pseg->alldevs_list, alldevs_list )
+    {
+        if ( pdev->assigned == ctxt->assigned )
+        {
+            if ( ctxt->cur_idx == ctxt->from_idx )
+            {
+                *ctxt->domain = pdev->domain->domain_id;
+                *ctxt->machine_sbdf = pdev->sbdf.sbdf;
+                return 1;
+            }
+            ctxt->cur_idx++;
+        }
+    }
+    return 0;
+}
+
+int pci_device_enum_assigned(bool report_not_assigned,
+                             uint32_t from_idx, domid_t *domain,
+                             uint32_t *machine_sbdf)
+{
+    struct list_assigned ctxt = {
+        .assigned = !report_not_assigned,
+        .cur_idx = 0,
+        .from_idx = from_idx,
+        .domain = domain,
+        .machine_sbdf = machine_sbdf,
+    };
+    int ret;
+
+    pcidevs_lock();
+    ret = pci_segments_iterate(_enum_assigned_pci_devices, &ctxt);
+    pcidevs_unlock();
+    /*
+     * If not found then report as EINVAL to mark
+     * enumeration process finished.
+     */
+    if ( !ret )
+        return -EINVAL;
+    return 0;
+}
+#endif
 
 /*
  * Local variables:

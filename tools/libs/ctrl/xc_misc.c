@@ -988,6 +988,52 @@ int xc_livepatch_replace(xc_interface *xch, char *name, uint32_t timeout, uint32
     return _xc_livepatch_action(xch, name, LIVEPATCH_ACTION_REPLACE, timeout, flags);
 }
 
+int xc_pci_device_set_assigned(
+    xc_interface *xch,
+    uint32_t machine_sbdf,
+    bool assigned)
+{
+    DECLARE_SYSCTL;
+
+    sysctl.cmd = XEN_SYSCTL_pci_device_set_assigned;
+    sysctl.u.pci_set_assigned.machine_sbdf = machine_sbdf;
+    sysctl.u.pci_set_assigned.assigned = assigned;
+
+    return do_sysctl(xch, &sysctl);
+}
+
+int xc_pci_device_get_assigned(
+    xc_interface *xch,
+    uint32_t machine_sbdf)
+{
+    DECLARE_SYSCTL;
+
+    sysctl.cmd = XEN_SYSCTL_pci_device_get_assigned;
+    sysctl.u.pci_get_assigned.machine_sbdf = machine_sbdf;
+
+    return do_sysctl(xch, &sysctl);
+}
+
+int xc_pci_device_enum_assigned(xc_interface *xch,
+                                xc_pci_device_enum_assigned_t *e)
+{
+    int ret;
+    DECLARE_SYSCTL;
+
+    sysctl.cmd = XEN_SYSCTL_pci_device_enum_assigned;
+    sysctl.u.pci_enum_assigned.idx = e->idx;
+    sysctl.u.pci_enum_assigned.report_not_assigned = e->report_not_assigned;
+    ret = do_sysctl(xch, &sysctl);
+    if ( ret )
+        errno = EINVAL;
+    else
+    {
+        e->domain = sysctl.u.pci_enum_assigned.domain;
+        e->machine_sbdf = sysctl.u.pci_enum_assigned.machine_sbdf;
+    }
+    return ret;
+}
+
 /*
  * Local variables:
  * mode: C

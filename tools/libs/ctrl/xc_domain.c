@@ -2185,6 +2185,7 @@ int xc_domain_soft_reset(xc_interface *xch,
     domctl.domain = domid;
     return do_domctl(xch, &domctl);
 }
+
 /*
  * Local variables:
  * mode: C

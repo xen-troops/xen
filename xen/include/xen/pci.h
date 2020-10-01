@@ -132,6 +132,13 @@ struct pci_dev {
 
     /* Data for vPCI. */
     struct vpci *vpci;
+#ifdef CONFIG_ARM
+    /*
+     * Set if this PCI device is eligible for pass through,
+     * e.g. just like it was assigned to pciback driver.
+     */
+    bool assigned;
+#endif
 };
 
 #define for_each_pdev(domain, pdev) \
@@ -164,6 +171,11 @@ const unsigned long *pci_get_ro_map(u16 seg);
 int pci_add_device(u16 seg, u8 bus, u8 devfn,
                    const struct pci_dev_info *, nodeid_t node);
 int pci_remove_device(u16 seg, u8 bus, u8 devfn);
+int pci_device_set_assigned(u16 seg, u8 bus, u8 devfn, bool assigned);
+int pci_device_get_assigned(u16 seg, u8 bus, u8 devfn);
+int pci_device_enum_assigned(bool report_not_assigned,
+                             uint32_t from_idx, domid_t *domain,
+                             uint32_t *machine_sbdf);
 int pci_ro_device(int seg, int bus, int devfn);
 int pci_hide_device(unsigned int seg, unsigned int bus, unsigned int devfn);
 struct pci_dev *pci_get_pdev(int seg, int bus, int devfn);
