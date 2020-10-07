@@ -765,8 +765,6 @@ int arch_domain_create(struct domain *d,
 
     d->arch.vgsx_osid = config->arch.vgsx_osid;
 
-    d->arch.has_vpci = config->arch.has_vpci;
-
     if ( (rc = domain_vpci_init(d)) != 0 )
         goto fail;
 
