@@ -44,6 +44,7 @@
 #include <xen/lib.h>
 #include <xen/list.h>
 #include <xen/mm.h>
+#include <xen/pci.h>
 #include <xen/sched.h>
 #include <xen/vmap.h>
 
@@ -1083,6 +1084,22 @@ static int ipmmu_check_assign_pci_device(struct device *dev)
     return 0;
 }
 
+static int reassign_device(struct domain *source, struct domain *target,
+                           u8 devfn, struct pci_dev *pdev)
+{
+    if ( devfn == pdev->devfn )
+    {
+        list_move(&pdev->domain_list, &target->pdev_list);
+        pdev->domain = target;
+    }
+
+    printk(XENLOG_INFO "Re-assign %04x:%02x:%02x.%u from dom%d to dom%d\n",
+           pdev->seg, pdev->bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
+           source->domain_id, target->domain_id);
+
+    return 0;
+}
+
 static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
                                uint32_t flag)
 {
@@ -1094,7 +1111,14 @@ static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
         return -EINVAL;
 
     if ( dev_is_pci(dev) )
-        return ipmmu_check_assign_pci_device(dev);
+    {
+        struct pci_dev *pdev = dev_to_pci(dev);
+
+        ret = ipmmu_check_assign_pci_device(dev);
+        if ( ret )
+            return ret;
+        return reassign_device(pdev->domain, d, devfn, pdev);
+    }
 
     if ( !to_ipmmu(dev) )
         return -ENODEV;
