@@ -20,6 +20,11 @@ struct arch_iommu
     void *priv;
 };
 
+struct arm_pci_iommu_alias_info {
+    struct device *dev;
+    struct dt_device_node *np;
+};
+
 const struct iommu_ops *iommu_get_ops(void);
 void iommu_set_ops(const struct iommu_ops *ops);
 
@@ -33,6 +38,11 @@ int __must_check arm_iommu_map_page(struct domain *d, dfn_t dfn, mfn_t mfn,
 int __must_check arm_iommu_unmap_page(struct domain *d, dfn_t dfn,
                                       unsigned int *flush_flags);
 
+int arm_iommu_pci_init(struct pci_dev *pdev, u16 alias, void *data);
+
+int pci_for_each_dma_alias2(struct pci_dev *pdev,
+                           int (*fn)(struct pci_dev *pdev, u16 alias,
+                           void *data), void *data);
 #endif /* __ARCH_ARM_IOMMU_H__ */
 
 /*
