@@ -7,6 +7,7 @@
  * onwards. Reserve a high value for the GIC phandle.
  */
 #define GUEST_PHANDLE_GIC (65000)
+#define GUEST_PHANDLE_ITS (64999)
 
 #define GUEST_ROOT_ADDRESS_CELLS 2
 #define GUEST_ROOT_SIZE_CELLS 2
