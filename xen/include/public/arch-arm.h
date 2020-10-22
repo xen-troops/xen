@@ -414,6 +414,10 @@ typedef uint64_t xen_callback_t;
 #define GUEST_GICV3_GICR0_BASE     xen_mk_ullong(0x03020000) /* vCPU0..127 */
 #define GUEST_GICV3_GICR0_SIZE     xen_mk_ullong(0x01000000)
 
+/* vGIC ITS mappings */
+#define GUEST_GICV3_ITS_BASE   xen_mk_ullong(0x04020000)
+#define GUEST_GICV3_ITS_SIZE   xen_mk_ullong(0x00020000)
+
 /* ACPI tables physical address */
 #define GUEST_ACPI_BASE xen_mk_ullong(0x20000000)
 #define GUEST_ACPI_SIZE xen_mk_ullong(0x02000000)
