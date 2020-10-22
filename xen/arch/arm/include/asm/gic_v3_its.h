@@ -104,6 +104,8 @@
 #define ITS_DOORBELL_OFFSET             0x10040
 #define GICV3_ITS_SIZE                  SZ_128K
 
+#define ITS_TRANSLATION_OFFSET          0x10000
+
 #include <xen/device_tree.h>
 #include <xen/rbtree.h>
 
@@ -197,6 +199,9 @@ struct pending_irq *gicv3_assign_guest_event(struct domain *d,
 void gicv3_lpi_update_host_entry(uint32_t host_lpi, int domain_id,
                                  uint32_t virt_lpi);
 
+/* Map a ITS translation register to hwdom when IOMMU is enabled. */
+int gicv3_its_map_translation_register(struct domain *d);
+
 #else
 
 #ifdef CONFIG_ACPI
@@ -270,6 +275,11 @@ static inline int gicv3_its_make_hwdom_dt_nodes(const struct domain *d,
     return 0;
 }
 
+static inline int gicv3_its_map_translation_register(struct domain *d)
+{
+    /* We should never get here without an ITS. */
+    BUG();
+}
 #endif /* CONFIG_HAS_ITS */
 
 #endif
