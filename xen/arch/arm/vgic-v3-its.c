@@ -55,7 +55,8 @@
 struct virt_its {
     struct domain *d;
     struct list_head vits_list;
-    paddr_t doorbell_address;
+    paddr_t host_doorbell_address;
+    paddr_t guest_doorbell_address;
     unsigned int devid_bits;
     unsigned int evid_bits;
     spinlock_t vcmd_lock;       /* Protects the virtual command buffer, which */
@@ -360,7 +361,7 @@ static int its_handle_clear(struct virt_its *its, uint64_t *cmdptr)
     if ( !read_itte(its, devid, eventid, &vcpu, &vlpi) )
         goto out_unlock;
 
-    p = gicv3_its_get_event_pending_irq(its->d, its->doorbell_address,
+    p = gicv3_its_get_event_pending_irq(its->d, its->guest_doorbell_address,
                                         devid, eventid);
     /* Protect against an invalid LPI number. */
     if ( unlikely(!p) )
@@ -482,7 +483,7 @@ static int its_handle_inv(struct virt_its *its, uint64_t *cmdptr)
     if ( vlpi == INVALID_LPI )
         goto out_unlock_its;
 
-    p = gicv3_its_get_event_pending_irq(d, its->doorbell_address,
+    p = gicv3_its_get_event_pending_irq(d, its->guest_doorbell_address,
                                         devid, eventid);
     if ( unlikely(!p) )
         goto out_unlock_its;
@@ -529,8 +530,9 @@ static int its_handle_invall(struct virt_its *its, uint64_t *cmdptr)
      * However this command is very rare, also we don't expect many
      * LPIs to be actually mapped, so it's fine for Dom0 to use.
      */
+#if 0
     ASSERT(is_hardware_domain(its->d));
-
+#endif
     /*
      * If no redistributor has its LPIs enabled yet, we can't access the
      * property table, so there is no point in executing this command.
@@ -626,7 +628,7 @@ static int its_discard_event(struct virt_its *its,
     spin_unlock_irqrestore(&vcpu->arch.vgic.lock, flags);
 
     /* Remove the corresponding host LPI entry */
-    return gicv3_remove_guest_event(its->d, its->doorbell_address,
+    return gicv3_remove_guest_event(its->d, its->guest_doorbell_address,
                                     vdevid, vevid);
 }
 
@@ -646,7 +648,9 @@ static void its_unmap_device(struct virt_its *its, uint32_t devid)
      * long for a guest. This ASSERT can then be removed if that is
      * covered.
      */
+#if 0
     ASSERT(is_hardware_domain(its->d));
+#endif
 
     for ( evid = 0; evid < DEV_TABLE_ITT_SIZE(itt); evid++ )
         /* Don't care about errors here, clean up as much as possible. */
@@ -681,19 +685,16 @@ static int its_handle_mapd(struct virt_its *its, uint64_t *cmdptr)
      * Eventually this will be replaced with a dedicated hypercall to
      * announce pass-through of devices.
      */
-    if ( is_hardware_domain(its->d) )
-    {
 
-        /*
-         * Dom0's ITSes are mapped 1:1, so both addresses are the same.
-         * Also the device IDs are equal.
-         */
-        ret = gicv3_its_map_guest_device(its->d, its->doorbell_address, devid,
-                                         its->doorbell_address, devid,
-                                         BIT(size, UL), valid);
-        if ( ret && valid )
-            return ret;
-    }
+    /*
+     * Dom0's ITSes are mapped 1:1, so both addresses are the same.
+     * Also the device IDs are equal.
+     */
+    ret = gicv3_its_map_guest_device(its->d, its->host_doorbell_address, devid,
+            its->guest_doorbell_address, devid,
+            BIT(size, UL), valid);
+    if ( ret && valid )
+        return ret;
 
     spin_lock(&its->its_lock);
 
@@ -755,7 +756,7 @@ static int its_handle_mapti(struct virt_its *its, uint64_t *cmdptr)
      * determined by the same device ID and event ID on the host side.
      * This returns us the corresponding, still unused pending_irq.
      */
-    pirq = gicv3_assign_guest_event(its->d, its->doorbell_address,
+    pirq = gicv3_assign_guest_event(its->d, its->guest_doorbell_address,
                                     devid, eventid, intid);
     if ( !pirq )
         goto out_remove_mapping;
@@ -796,7 +797,7 @@ static int its_handle_mapti(struct virt_its *its, uint64_t *cmdptr)
      * cleanup and return an error here in any case.
      */
 out_remove_host_entry:
-    gicv3_remove_guest_event(its->d, its->doorbell_address, devid, eventid);
+    gicv3_remove_guest_event(its->d, its->guest_doorbell_address, devid, eventid);
 
 out_remove_mapping:
     spin_lock(&its->its_lock);
@@ -830,7 +831,7 @@ static int its_handle_movi(struct virt_its *its, uint64_t *cmdptr)
     if ( !nvcpu )
         goto out_unlock;
 
-    p = gicv3_its_get_event_pending_irq(its->d, its->doorbell_address,
+    p = gicv3_its_get_event_pending_irq(its->d, its->guest_doorbell_address,
                                         devid, eventid);
     if ( unlikely(!p) )
         goto out_unlock;
@@ -1188,7 +1189,6 @@ static bool vgic_v3_verify_its_status(struct virt_its *its, bool status)
      * an LPI), which should go away with proper per-IRQ locking.
      * So for now we ignore this issue and rely on Dom0 not doing bad things.
      */
-    ASSERT(is_hardware_domain(its->d));
 
     return true;
 }
@@ -1455,9 +1455,11 @@ static const struct mmio_handler_ops vgic_its_mmio_handler = {
 };
 
 static int vgic_v3_its_init_virtual(struct domain *d, paddr_t guest_addr,
+                                    paddr_t host_addr,
                                     unsigned int devid_bits,
                                     unsigned int evid_bits)
 {
+    int ret;
     struct virt_its *its;
     uint64_t base_attr;
 
@@ -1480,7 +1482,8 @@ static int vgic_v3_its_init_virtual(struct domain *d, paddr_t guest_addr,
                        GITS_BASER_ENTRY_SIZE_SHIFT;
     its->baser_coll |= base_attr;
     its->d = d;
-    its->doorbell_address = guest_addr + ITS_DOORBELL_OFFSET;
+    its->guest_doorbell_address = guest_addr + ITS_DOORBELL_OFFSET;
+    its->host_doorbell_address = host_addr + ITS_DOORBELL_OFFSET;
     its->devid_bits = devid_bits;
     its->evid_bits = evid_bits;
     spin_lock_init(&its->vcmd_lock);
@@ -1488,6 +1491,20 @@ static int vgic_v3_its_init_virtual(struct domain *d, paddr_t guest_addr,
 
     register_mmio_handler(d, &vgic_its_mmio_handler, guest_addr, SZ_64K, its);
 
+    if ( !is_hardware_domain(d) )
+    {
+        ret = map_mmio_regions(d, gaddr_to_gfn(guest_addr + 0x10000),
+                               PFN_UP(0x10000),
+                               maddr_to_mfn(host_addr + 0x10000));
+        if ( ret )
+        {
+            printk(XENLOG_ERR "GICv3: Map ITS translation register d%d failed.\n",
+                    its->d->domain_id);
+            return ret;
+        }
+        printk(XENLOG_ERR "GICv3: Map ITS translation register  %lx->%lx.\n",
+                guest_addr + 0x10000,host_addr + 0x10000);
+    }
     /* Register the virtual ITS to be able to clean it up later. */
     list_add_tail(&its->vits_list, &d->arch.vgic.vits_list);
 
@@ -1516,30 +1533,36 @@ unsigned int vgic_v3_its_count(const struct domain *d)
 int vgic_v3_its_init_domain(struct domain *d)
 {
     int ret;
+    paddr_t guest_addr;
+    struct host_its *hw_its;
 
     INIT_LIST_HEAD(&d->arch.vgic.vits_list);
     spin_lock_init(&d->arch.vgic.its_devices_lock);
     d->arch.vgic.its_devices = RB_ROOT;
 
-    if ( is_hardware_domain(d) )
+    list_for_each_entry(hw_its, &host_its_list, entry)
     {
-        struct host_its *hw_its;
-
-        list_for_each_entry(hw_its, &host_its_list, entry)
+        /*
+         * For each host ITS create a virtual ITS using the same
+         * base and thus doorbell address.
+         * Use the same number of device ID and event ID bits as the host.
+         */
+        if ( is_hardware_domain(d) )
         {
-            /*
-             * For each host ITS create a virtual ITS using the same
-             * base and thus doorbell address.
-             * Use the same number of device ID and event ID bits as the host.
-             */
-            ret = vgic_v3_its_init_virtual(d, hw_its->addr,
-                                           hw_its->devid_bits,
-                                           hw_its->evid_bits);
-            if ( ret )
-                return ret;
-            else
-                d->arch.vgic.has_its = true;
+            guest_addr = hw_its->addr;
         }
+        else
+        {
+            guest_addr = GUEST_GICV3_ITS_BASE;
+        }
+
+        ret = vgic_v3_its_init_virtual(d, guest_addr, hw_its->addr,
+                hw_its->devid_bits,
+                hw_its->evid_bits);
+        if ( ret )
+            return ret;
+        else
+            d->arch.vgic.has_its = true;
     }
 
     return 0;
