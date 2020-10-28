@@ -1729,7 +1729,7 @@ static int vgic_v3_domain_init(struct domain *d)
          * emulation. So we just go with "10" here to cover all eventual
          * SPIs (even if the guest implements less).
          */
-        d->arch.vgic.intid_bits = 10;
+        d->arch.vgic.intid_bits = 0x1f;
     }
 
     ret = vgic_v3_its_init_domain(d);
