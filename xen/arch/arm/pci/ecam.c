@@ -18,6 +18,7 @@
  */
 
 #include <xen/pci.h>
+#include <xen/sched.h>
 
 /*
  * Function to implement the pci_ops ->map_bus method.
@@ -51,6 +52,19 @@ static int pci_ecam_register_mmio_handler(struct domain *d,
     return 0;
 }
 
+static int pci_ecam_need_mapping(struct domain *d,
+                                 struct pci_host_bridge *bridge,
+                                 u64 addr, u64 len)
+{
+    struct pci_config_window *cfg = bridge->sysdata;
+
+    /* Only check for control domain which owns HW PCI host bridge. */
+    if ( !is_control_domain(d) )
+        return true;
+
+    return cfg->phys_addr != addr;
+}
+
 /* ECAM ops */
 const struct pci_ecam_ops pci_generic_ecam_ops = {
     .bus_shift  = 20,
@@ -59,6 +73,7 @@ const struct pci_ecam_ops pci_generic_ecam_ops = {
         .read                   = pci_generic_config_read,
         .write                  = pci_generic_config_write,
         .register_mmio_handler  = pci_ecam_register_mmio_handler,
+        .need_mapping           = pci_ecam_need_mapping,
     }
 };
 

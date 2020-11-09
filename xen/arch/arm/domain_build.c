@@ -1238,6 +1238,9 @@ static int __init map_range_to_domain(const struct dt_device_node *dev,
         }
     }
 
+    if ( need_mapping && (device_get_class(dev) == DEVICE_PCI) )
+        need_mapping = pci_host_bridge_need_mapping(d, dev, addr, len);
+
     if ( need_mapping )
     {
         res = map_regions_p2mt(d,
