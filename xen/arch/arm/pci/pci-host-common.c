@@ -213,6 +213,28 @@ int pci_host_iterate_bridges(struct domain *d,
     }
     return 0;
 }
+
+bool pci_host_bridge_need_mapping(struct domain *d,
+                                  const struct dt_device_node *node,
+                                  u64 addr, u64 len)
+{
+    struct pci_host_bridge *bridge;
+    struct pci_dev *pdev = dev_to_pci((struct device *)&node->dev);
+
+    bridge = pci_find_host_bridge(pdev->seg, pdev->bus);
+    if ( unlikely(!bridge) )
+    {
+        printk(XENLOG_ERR "Unable to find PCI bridge for "PRI_pci"\n",
+               pdev->seg, pdev->bus, pdev->sbdf.dev, pdev->sbdf.fn);
+        return NULL;
+    }
+
+    if ( !bridge->ops->need_mapping )
+        return true;
+
+    return bridge->ops->need_mapping(d, bridge, addr, len);
+}
+
 /*
  * Local variables:
  * mode: C
