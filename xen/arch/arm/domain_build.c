@@ -2566,7 +2566,15 @@ int __init construct_dom0(struct domain *d)
     if ( rc < 0 )
         return rc;
 
-    return construct_domain(d, &kinfo);
+    rc = construct_domain(d, &kinfo);
+    if ( rc < 0 )
+        return rc;
+
+#ifdef CONFIG_HAS_PCI
+    if ( has_vpci(d) )
+        rc = pci_host_bridge_update_mappings(d);
+#endif
+    return rc;
 }
 
 /*

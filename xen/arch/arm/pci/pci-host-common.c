@@ -235,6 +235,21 @@ int pci_host_iterate_bridges(struct domain *d,
     }
     return 0;
 }
+
+static int pci_host_bridge_update_mapping(struct domain *d,
+                                          struct pci_host_bridge *bridge)
+{
+    if ( !bridge->ops->update_mappings )
+        return 0;
+
+    return bridge->ops->update_mappings(d, bridge);
+}
+
+int pci_host_bridge_update_mappings(struct domain *d)
+{
+    return pci_host_iterate_bridges(d, pci_host_bridge_update_mapping);
+}
+
 /*
  * Local variables:
  * mode: C

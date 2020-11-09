@@ -21,6 +21,8 @@
 #include <asm/device.h>
 #include <asm/io.h>
 #include <xen/pci.h>
+#include <xen/sched.h>
+#include <asm/p2m.h>
 #include <asm/pci.h>
 
 /*
@@ -85,6 +87,31 @@ int pci_ecam_config_read(struct pci_host_bridge *bridge, uint32_t sbdf,
     return 0;
 }
 
+/*
+ * TODO: This is called late on domain creation to mangle p2m if needed:
+ * for ECAM host controller for mmio region traps to work for Domain-0
+ * we need to unmap those mappings in p2m.
+ * This is WIP:
+ * julieng: I think it would be best if we avoid the map/unmap operation.
+ * So maybe we want to introduce another way to avoid the mapping.
+ * Maybe by changing the type of the controller to "PCI_HOSTCONTROLLER"
+ * and check if this is a PCI hostcontroller avoid the mapping.
+ */
+static int pci_ecam_update_mappings(struct domain *d,
+                                    struct pci_host_bridge *bridge)
+{
+    struct pci_config_window *cfg = bridge->sysdata;
+    int ret;
+
+    /* Only for control domain which owns this PCI host bridge. */
+    if ( !is_control_domain(d) )
+        return 0;
+
+    ret = unmap_regions_p2mt(d, gaddr_to_gfn(cfg->phys_addr),
+                             cfg->size >> PAGE_SHIFT, INVALID_MFN);
+    return ret;
+}
+
 static int pci_ecam_register_mmio_handler(struct domain *d,
                                           struct pci_host_bridge *bridge,
                                           const struct mmio_handler_ops *ops)
@@ -101,6 +128,7 @@ struct pci_ecam_ops pci_generic_ecam_ops = {
     .pci_ops    = {
         .read                  = pci_ecam_config_read,
         .write                 = pci_ecam_config_write,
+        .update_mappings       = pci_ecam_update_mappings,
         .register_mmio_handler = pci_ecam_register_mmio_handler,
     }
 };
