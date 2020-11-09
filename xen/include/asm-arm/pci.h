@@ -72,6 +72,8 @@ struct pci_ops {
     int (*register_mmio_handler)(struct domain *d,
                                  struct pci_host_bridge *bridge,
                                  const struct mmio_handler_ops *ops);
+    int (*need_mapping)(struct domain *d, struct pci_host_bridge *bridge,
+                        u64 addr, u64 len);
 };
 
 /*
@@ -119,8 +121,17 @@ void __iomem *pci_ecam_map_bus(struct pci_host_bridge *bridge,
 int pci_host_iterate_bridges(struct domain *d,
                              int (*clb)(struct domain *d,
                                         struct pci_host_bridge *bridge));
+bool pci_host_bridge_need_mapping(struct domain *d,
+                                  const struct dt_device_node *node,
+                                  u64 addr, u64 len);
 #else   /*!CONFIG_HAS_PCI*/
 struct arch_pci_dev { };
 static inline void  pci_init(void) { }
+static inline bool pci_host_bridge_need_mapping(struct domain *d,
+                                                const struct dt_device_node *node,
+                                                u64 addr, u64 len)
+{
+    return true;
+}
 #endif  /*!CONFIG_HAS_PCI*/
 #endif /* __ARM_PCI_H__ */
