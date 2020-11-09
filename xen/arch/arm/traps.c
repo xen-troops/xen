@@ -33,6 +33,7 @@
 #include <xen/symbols.h>
 #include <xen/version.h>
 #include <xen/virtual_region.h>
+#include <xen/vpci.h>
 
 #include <public/sched.h>
 #include <public/xen.h>
@@ -2258,6 +2259,11 @@ static void check_for_pcpu_work(void)
 static void check_for_vcpu_work(void)
 {
     struct vcpu *v = current;
+
+    local_irq_enable();
+    if ( has_vpci(v->domain) && vpci_process_pending(v) )
+        raise_softirq(SCHEDULE_SOFTIRQ);
+    local_irq_disable();
 
     if ( likely(!v->arch.need_flush_to_ram) )
         return;
