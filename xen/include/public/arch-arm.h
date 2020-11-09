@@ -440,9 +440,8 @@ typedef uint64_t xen_callback_t;
 #define GUEST_VPCI_ADDR_TYPE_IO           xen_mk_ullong(0x01000000)
 
 /* Guest PCI-PCIe memory space where config space and BAR will be available.*/
-#define GUEST_VPCI_PREFETCH_MEM_CPU_ADDR  xen_mk_ullong(0x38000000)
-#define GUEST_VPCI_MEM_CPU_ADDR           xen_mk_ullong(0xfe200000)
-#define GUEST_VPCI_MEM_CPU_ADDR0          xen_mk_ullong(0x30000000)
+#define GUEST_VPCI_PREFETCH_MEM_CPU_ADDR  xen_mk_ullong(0x4000000000)
+#define GUEST_VPCI_MEM_CPU_ADDR           xen_mk_ullong(0x04020000)
 #define GUEST_VPCI_IO_CPU_ADDR            xen_mk_ullong(0xC0200800)
 
 /*
@@ -452,14 +451,12 @@ typedef uint64_t xen_callback_t;
  * when assigning the device to guest via VPCI.
  *
  */
-#define GUEST_VPCI_PREFETCH_MEM_PCI_ADDR  xen_mk_ullong(0x38000000)
-#define GUEST_VPCI_MEM_PCI_ADDR           xen_mk_ullong(0xfe200000)
-#define GUEST_VPCI_MEM_PCI_ADDR0          xen_mk_ullong(0x30000000)
+#define GUEST_VPCI_PREFETCH_MEM_PCI_ADDR  xen_mk_ullong(0x4000000000)
+#define GUEST_VPCI_MEM_PCI_ADDR           xen_mk_ullong(0x50000000)
 #define GUEST_VPCI_IO_PCI_ADDR            xen_mk_ullong(0x00000000)
 
-#define GUEST_VPCI_PREFETCH_MEM_SIZE      xen_mk_ullong(0x08000000)
-#define GUEST_VPCI_MEM_SIZE               xen_mk_ullong(0x00200000)
-#define GUEST_VPCI_MEM_SIZE0              xen_mk_ullong(0x08000000)
+#define GUEST_VPCI_PREFETCH_MEM_SIZE      xen_mk_ullong(0x100000000)
+#define GUEST_VPCI_MEM_SIZE               xen_mk_ullong(0x08000000)
 #define GUEST_VPCI_IO_SIZE                xen_mk_ullong(0x00800000)
 
 /*
