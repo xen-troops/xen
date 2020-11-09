@@ -219,6 +219,22 @@ struct device *pci_find_host_bridge_device(struct device *dev)
     }
     return dt_to_dev(bridge->dt_node);
 }
+
+int pci_host_iterate_bridges(struct domain *d,
+                             int (*clb)(struct domain *d,
+                                        struct pci_host_bridge *bridge))
+{
+    struct pci_host_bridge *bridge;
+    int err;
+
+    list_for_each_entry( bridge, &pci_host_bridges, node )
+    {
+        err = clb(d, bridge);
+        if ( err )
+            return err;
+    }
+    return 0;
+}
 /*
  * Local variables:
  * mode: C

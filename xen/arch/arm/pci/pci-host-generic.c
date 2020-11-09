@@ -85,12 +85,23 @@ int pci_ecam_config_read(struct pci_host_bridge *bridge, uint32_t sbdf,
     return 0;
 }
 
+static int pci_ecam_register_mmio_handler(struct domain *d,
+                                          struct pci_host_bridge *bridge,
+                                          const struct mmio_handler_ops *ops)
+{
+    struct pci_config_window *cfg = bridge->sysdata;
+
+    register_mmio_handler(d, ops, cfg->phys_addr, cfg->size, NULL);
+    return 0;
+}
+
 /* ECAM ops */
 struct pci_ecam_ops pci_generic_ecam_ops = {
     .bus_shift  = 20,
     .pci_ops    = {
-        .read       = pci_ecam_config_read,
-        .write      = pci_ecam_config_write,
+        .read                  = pci_ecam_config_read,
+        .write                 = pci_ecam_config_write,
+        .register_mmio_handler = pci_ecam_register_mmio_handler,
     }
 };
 
