@@ -27,6 +27,7 @@
 #include <xen/pci.h>
 #include <xen/device_tree.h>
 #include <asm/device.h>
+#include <asm/mmio.h>
 
 #ifdef CONFIG_HAS_PCI
 
@@ -68,6 +69,9 @@ struct pci_ops {
                 uint32_t reg, uint32_t len, uint32_t *value);
     int (*write)(struct pci_host_bridge *bridge, uint32_t sbdf,
                  uint32_t reg, uint32_t len, uint32_t value);
+    int (*register_mmio_handler)(struct domain *d,
+                                 struct pci_host_bridge *bridge,
+                                 const struct mmio_handler_ops *ops);
 };
 
 /*
@@ -112,6 +116,9 @@ bool dt_pci_parse_bus_range(struct dt_device_node *dev,
 
 void __iomem *pci_ecam_map_bus(struct pci_host_bridge *bridge,
                                uint32_t sbdf, uint32_t where);
+int pci_host_iterate_bridges(struct domain *d,
+                             int (*clb)(struct domain *d,
+                                        struct pci_host_bridge *bridge));
 #else   /*!CONFIG_HAS_PCI*/
 struct arch_pci_dev { };
 static inline void  pci_init(void) { }
