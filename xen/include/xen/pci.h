@@ -217,4 +217,8 @@ static inline int arch_pci_clean_pirqs(struct domain *d)
 }
 #endif /* CONFIG_HVM */
 
+bool pci_is_hardware_domain(const struct domain *d, u16 seg, u8 bus);
+struct domain *pci_get_hardware_domain(u16 seg, u8 bus);
+bool pci_is_owner_domain(const struct domain *d, u16 seg, u8 bus);
+
 #endif /* __XEN_PCI_H__ */

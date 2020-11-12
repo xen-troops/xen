@@ -77,9 +77,18 @@ static const struct mmio_handler_ops vpci_mmio_handler = {
 static int vpci_setup_mmio_handler(struct domain *d,
                                    struct pci_host_bridge *bridge)
 {
-    if ( bridge->ops->register_mmio_handler )
-        return bridge->ops->register_mmio_handler(d, bridge,
-                                                  &vpci_mmio_handler);
+    if ( pci_is_hardware_domain(d, bridge->segment, bridge->bus_start) )
+    {
+        if ( bridge->ops->register_mmio_handler )
+            return bridge->ops->register_mmio_handler(d, bridge,
+                                                      &vpci_mmio_handler);
+    }
+    else
+    {
+        /* Guest domains use what is programmed in their device tree. */
+        register_mmio_handler(d, &vpci_mmio_handler,
+                GUEST_VPCI_ECAM_BASE,GUEST_VPCI_ECAM_SIZE,NULL);
+    }
     return 0;
 }
 
@@ -88,14 +97,7 @@ int domain_vpci_init(struct domain *d)
     if ( !has_vpci(d) )
         return 0;
 
-    if ( is_hardware_domain(d) )
-        return pci_host_iterate_bridges(d, vpci_setup_mmio_handler);
-
-    /* Guest domains use what is programmed in their device tree. */
-    register_mmio_handler(d, &vpci_mmio_handler,
-            GUEST_VPCI_ECAM_BASE,GUEST_VPCI_ECAM_SIZE,NULL);
-
-    return 0;
+    return pci_host_iterate_bridges(d, vpci_setup_mmio_handler);
 }
 
 /*

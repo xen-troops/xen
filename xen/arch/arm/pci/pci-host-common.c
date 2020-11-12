@@ -26,6 +26,7 @@
 #include <xen/pci.h>
 #include <asm/pci.h>
 #include <xen/rwlock.h>
+#include <xen/sched.h>
 #include <xen/vmap.h>
 
 /*
@@ -195,8 +196,11 @@ struct pci_host_bridge *pci_find_host_bridge(uint16_t segment, uint8_t bus)
 
     list_for_each_entry( bridge, &pci_host_bridges, node )
     {
-        if ( bridge->segment == segment )
-            return bridge;
+        if ( bridge->segment != segment )
+            continue;
+        if ( (bus < bridge->bus_start) || (bus > bridge->bus_end) )
+            continue;
+        return bridge;
     }
 
     return NULL;
@@ -237,6 +241,30 @@ bool pci_host_bridge_need_mapping(struct domain *d,
         return true;
 
     return bridge->ops->need_mapping(d, bridge, addr, len);
+}
+
+/*
+ * Check if the domain owns the PCI host bridge with the segment
+ * and bus given.
+ */
+bool pci_is_owner_domain(const struct domain *d, u16 seg, u8 bus)
+{
+    struct pci_host_bridge *bridge = pci_find_host_bridge(seg, bus);
+
+    if ( unlikely(!bridge) )
+        return false;
+
+    return bridge->dt_node->used_by == d->domain_id;
+}
+
+struct domain *pci_get_owner_domain(u16 seg, u8 bus)
+{
+    struct pci_host_bridge *bridge = pci_find_host_bridge(seg, bus);
+
+    if ( unlikely(!bridge) )
+        return false;
+
+    return get_domain_by_id(bridge->dt_node->used_by);
 }
 
 /*

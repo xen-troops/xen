@@ -98,3 +98,12 @@ int pci_conf_write_intercept(unsigned int seg, unsigned int bdf,
 
     return rc;
 }
+
+/*
+ * Check if the domain owns the PCI host bridge with the segment
+ * and bus given.
+ */
+bool pci_is_owner_domain(const struct domain *d, u16 seg, u8 bus)
+{
+    return is_hardware_domain(d);
+}
