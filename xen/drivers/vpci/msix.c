@@ -276,7 +276,7 @@ static int msix_write(struct vcpu *v, unsigned long addr, unsigned int len,
     if ( VMSIX_ADDR_IN_RANGE(addr, msix->pdev->vpci, VPCI_MSIX_PBA) )
     {
         /* Ignore writes to PBA for DomUs, it's behavior is undefined. */
-        if ( is_hardware_domain(d) )
+        if ( pci_is_hardware_domain(d, msix->pdev->seg, msix->pdev->bus) )
         {
             switch ( len )
             {
