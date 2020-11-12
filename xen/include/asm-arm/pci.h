@@ -110,6 +110,8 @@ int pci_host_iterate_bridges(struct domain *d,
                              int (*clb)(struct domain *d,
                                         struct pci_host_bridge *bridge));
 int pci_host_bridge_update_mappings(struct domain *d);
+bool pci_is_owner_domain(struct domain *d, u16 seg);
+struct domain *pci_get_owner_domain(u16 seg);
 #else   /*!CONFIG_ARM_PCI*/
 struct arch_pci_dev { };
 static inline void  pci_init(void) { }
