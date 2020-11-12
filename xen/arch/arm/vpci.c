@@ -74,10 +74,17 @@ static const struct mmio_handler_ops vpci_mmio_handler = {
     .write = vpci_mmio_write,
 };
 
+extern bool pci_under_qemu;
+
 static int vpci_setup_mmio_handler(struct domain *d,
                                    struct pci_host_bridge *bridge)
 {
+#if 0
     if ( pci_is_hardware_domain(d, bridge->segment, bridge->bus_start) )
+#else
+    if ( pci_under_qemu ? pci_is_hardware_domain(d, bridge->segment,
+                                                 bridge->bus_start) : false )
+#endif
     {
         if ( bridge->ops->register_mmio_handler )
             return bridge->ops->register_mmio_handler(d, bridge,
