@@ -22,6 +22,10 @@
 #include <xen/pci.h>
 #include <asm/pci.h>
 
+#include <xen/warning.h>
+
+extern bool pci_under_qemu;
+
 static const struct dt_device_match gen_pci_dt_match[] = {
     { .compatible = "pci-host-ecam-generic",
       .data =       &pci_generic_ecam_ops },
@@ -33,6 +37,13 @@ static int gen_pci_dt_init(struct dt_device_node *dev, const void *data)
 {
     const struct dt_device_match *of_id;
     const struct pci_ecam_ops *ops;
+
+    /*
+     * FIXME: This is a really dirty hack: R-Car doesn't have ECAM
+     * host bridge, but QEMU does.
+     */
+    pci_under_qemu = true;
+    warning_add("\n\nWARNING! ASSUMING QEMU\n\n\n");
 
     of_id = dt_match_node(gen_pci_dt_match, dev->dev.of_node);
     ops = (struct pci_ecam_ops *) of_id->data;

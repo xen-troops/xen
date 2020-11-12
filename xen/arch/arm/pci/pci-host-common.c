@@ -29,6 +29,8 @@
 #include <xen/sched.h>
 #include <xen/vmap.h>
 
+bool pci_under_qemu;
+
 /*
  * List for all the pci host bridges.
  */
@@ -327,7 +329,13 @@ bool pci_is_owner_domain(const struct domain *d, u16 seg, u8 bus)
     if ( unlikely(!bridge) )
         return false;
 
+#if 0
     return bridge->dt_node->used_by == d->domain_id;
+#else
+    return pci_under_qemu ?
+        bridge->dt_node->used_by == d->domain_id :
+        1 == d->domain_id;
+#endif
 }
 
 struct domain *pci_get_owner_domain(u16 seg, u8 bus)
@@ -337,7 +345,13 @@ struct domain *pci_get_owner_domain(u16 seg, u8 bus)
     if ( unlikely(!bridge) )
         return false;
 
+#if 0
     return get_domain_by_id(bridge->dt_node->used_by);
+#else
+    return pci_under_qemu ?
+        get_domain_by_id(bridge->dt_node->used_by) :
+        get_domain_by_id(1);
+#endif
 }
 
 /*
