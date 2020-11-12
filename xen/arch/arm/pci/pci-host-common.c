@@ -251,6 +251,8 @@ int pci_host_bridge_update_mappings(struct domain *d)
     return pci_host_iterate_bridges(d, pci_host_bridge_update_mapping);
 }
 
+extern bool pci_under_qemu;
+
 /* Check if the domain owns the PCI host bridge with the segment given. */
 bool pci_is_owner_domain(struct domain *d, u16 seg)
 {
@@ -259,7 +261,13 @@ bool pci_is_owner_domain(struct domain *d, u16 seg)
     if ( unlikely(!bridge) )
         return false;
 
+#if 0
     return bridge->dt_node->used_by == d->domain_id;
+#else
+    return pci_under_qemu ?
+        bridge->dt_node->used_by == d->domain_id :
+        1 == d->domain_id;
+#endif
 }
 
 struct domain *pci_get_owner_domain(u16 seg)
@@ -269,7 +277,13 @@ struct domain *pci_get_owner_domain(u16 seg)
     if ( unlikely(!bridge) )
         return false;
 
+#if 0
     return get_domain_by_id(bridge->dt_node->used_by);
+#else
+    return pci_under_qemu ?
+        get_domain_by_id(bridge->dt_node->used_by) :
+        get_domain_by_id(1);
+#endif
 }
 
 /*

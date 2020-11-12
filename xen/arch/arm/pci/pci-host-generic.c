@@ -25,6 +25,10 @@
 #include <asm/p2m.h>
 #include <asm/pci.h>
 
+#include <xen/warning.h>
+
+bool pci_under_qemu;
+
 /*
  * Function to get the config space base.
  */
@@ -146,6 +150,13 @@ static int gen_pci_dt_init(struct dt_device_node *dev, const void *data)
     const struct dt_device_match *of_id;
     struct pci_ecam_ops *ops;
     bool xlnx_nwl = false;
+
+    /*
+     * FIXME: This is a really dirty hack: R-Car doesn't have ECAM
+     * host bridge, but QEMU does.
+     */
+    pci_under_qemu = true;
+    warning_add("\n\nWARNING! ASSUMING QEMU\n\n\n");
 
     of_id = dt_match_node(gen_pci_dt_match, dev->dev.of_node);
     ops = (struct pci_ecam_ops *) of_id->data;
