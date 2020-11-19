@@ -1008,6 +1008,10 @@ static int deassign_device(struct domain *d, uint16_t seg, uint8_t bus,
     if ( ret )
         goto out;
 
+    ret = vpci_deassign_device(d, pdev);
+    if ( ret )
+        goto out;
+
     if ( pdev->domain == hardware_domain  )
         pdev->quarantine = false;
 
@@ -1606,6 +1610,8 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
             break;
         rc = hd->platform_ops->assign_device(d, devfn, pci_to_dev(pdev), flag);
     }
+
+    rc = vpci_assign_device(d, pdev);
 
  done:
     if ( rc )
