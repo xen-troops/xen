@@ -449,6 +449,55 @@ static void rom_write(const struct pci_dev *pdev, unsigned int reg,
         rom->addr = val & PCI_ROM_ADDRESS_MASK;
 }
 
+static int add_bar_handlers(struct pci_dev *pdev)
+{
+    unsigned int i;
+    struct vpci_header *header = &pdev->vpci->header;
+    struct vpci_bar *bars = header->bars;
+    int rc;
+
+    /* Setup a handler for the command register. */
+    rc = vpci_add_register(pdev->vpci, vpci_hw_read16, cmd_write, PCI_COMMAND,
+                           2, header);
+    if ( rc )
+        return rc;
+
+    if ( pdev->ignore_bars )
+        return 0;
+
+    for ( i = 0; i < PCI_HEADER_NORMAL_NR_BARS + 1; i++ )
+    {
+        if ( (bars[i].type == VPCI_BAR_IO) || (bars[i].type == VPCI_BAR_EMPTY) )
+            continue;
+
+        if ( bars[i].type == VPCI_BAR_ROM )
+        {
+            unsigned int rom_reg;
+            uint8_t header_type = pci_conf_read8(pdev->sbdf,
+                                                 PCI_HEADER_TYPE) & 0x7f;
+            if ( header_type == PCI_HEADER_TYPE_NORMAL )
+                rom_reg = PCI_ROM_ADDRESS;
+            else
+                rom_reg = PCI_ROM_ADDRESS1;
+            rc = vpci_add_register(pdev->vpci, vpci_hw_read32, rom_write,
+                                   rom_reg, 4, &bars[i]);
+            if ( rc )
+                return rc;
+        }
+        else
+        {
+            uint8_t reg = PCI_BASE_ADDRESS_0 + i * 4;
+
+            /* This is either VPCI_BAR_MEM32 or VPCI_BAR_MEM64_{LO|HI}. */
+            rc = vpci_add_register(pdev->vpci, vpci_hw_read32, bar_write, reg,
+                                   4, &bars[i]);
+            if ( rc )
+                return rc;
+        }
+    }
+    return 0;
+}
+
 static int init_bars(struct pci_dev *pdev)
 {
     uint16_t cmd;
@@ -474,14 +523,8 @@ static int init_bars(struct pci_dev *pdev)
         return -EOPNOTSUPP;
     }
 
-    /* Setup a handler for the command register. */
-    rc = vpci_add_register(pdev->vpci, vpci_hw_read16, cmd_write, PCI_COMMAND,
-                           2, header);
-    if ( rc )
-        return rc;
-
     if ( pdev->ignore_bars )
-        return 0;
+        return add_bar_handlers(pdev);
 
     /* Disable memory decoding before sizing. */
     cmd = pci_conf_read16(pdev->sbdf, PCI_COMMAND);
@@ -496,14 +539,6 @@ static int init_bars(struct pci_dev *pdev)
         if ( i && bars[i - 1].type == VPCI_BAR_MEM64_LO )
         {
             bars[i].type = VPCI_BAR_MEM64_HI;
-            rc = vpci_add_register(pdev->vpci, vpci_hw_read32, bar_write, reg,
-                                   4, &bars[i]);
-            if ( rc )
-            {
-                pci_conf_write16(pdev->sbdf, PCI_COMMAND, cmd);
-                return rc;
-            }
-
             continue;
         }
 
@@ -536,14 +571,6 @@ static int init_bars(struct pci_dev *pdev)
         bars[i].addr = addr;
         bars[i].size = size;
         bars[i].prefetchable = val & PCI_BASE_ADDRESS_MEM_PREFETCH;
-
-        rc = vpci_add_register(pdev->vpci, vpci_hw_read32, bar_write, reg, 4,
-                               &bars[i]);
-        if ( rc )
-        {
-            pci_conf_write16(pdev->sbdf, PCI_COMMAND, cmd);
-            return rc;
-        }
     }
 
     /* Check expansion ROM. */
@@ -557,11 +584,13 @@ static int init_bars(struct pci_dev *pdev)
         rom->addr = addr;
         header->rom_enabled = pci_conf_read32(pdev->sbdf, rom_reg) &
                               PCI_ROM_ADDRESS_ENABLE;
+    }
 
-        rc = vpci_add_register(pdev->vpci, vpci_hw_read32, rom_write, rom_reg,
-                               4, rom);
-        if ( rc )
-            rom->type = VPCI_BAR_EMPTY;
+    rc = add_bar_handlers(pdev);
+    if ( rc )
+    {
+        pci_conf_write16(pdev->sbdf, PCI_COMMAND, cmd);
+        return rc;
     }
 
     return (cmd & PCI_COMMAND_MEMORY) ? modify_bars(pdev, cmd, false) : 0;
