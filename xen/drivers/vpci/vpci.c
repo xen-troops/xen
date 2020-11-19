@@ -95,7 +95,7 @@ int vpci_assign_device(const struct domain *d, struct pci_dev *dev)
     if ( !has_vpci(d) )
         return 0;
 
-    return 0;
+    return vpci_bar_add_handlers(d, dev);
 }
 
 /* Notify vPCI that device is de-assigned from guest. */
@@ -104,7 +104,7 @@ int vpci_deassign_device(const struct domain *d, struct pci_dev *dev)
     if ( !has_vpci(d) )
         return 0;
 
-    return 0;
+    return vpci_bar_remove_handlers(d, dev);
 }
 
 #endif /* __XEN__ */
