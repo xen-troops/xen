@@ -35,7 +35,7 @@ extern vpci_register_init_t *const __start_vpci_array[];
 extern vpci_register_init_t *const __end_vpci_array[];
 #define NUM_VPCI_INIT (__end_vpci_array - __start_vpci_array)
 
-void vpci_remove_device(struct pci_dev *pdev)
+void vpci_remove_device_registers(struct pci_dev *pdev)
 {
     spin_lock(&pdev->vpci->lock);
     while ( !list_empty(&pdev->vpci->handlers) )
@@ -48,6 +48,11 @@ void vpci_remove_device(struct pci_dev *pdev)
         xfree(r);
     }
     spin_unlock(&pdev->vpci->lock);
+}
+
+void vpci_remove_device(struct pci_dev *pdev)
+{
+    vpci_remove_device_registers(pdev);
 #ifdef CONFIG_HAS_PCI_MSI
     xfree(pdev->vpci->msix);
     xfree(pdev->vpci->msi);
