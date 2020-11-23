@@ -404,12 +404,72 @@ static void bar_write(const struct pci_dev *pdev, unsigned int reg,
 static void guest_bar_write(const struct pci_dev *pdev, unsigned int reg,
                             uint32_t val, void *data)
 {
+    struct vpci_bar *bar = data;
+    bool hi = false;
+
+    if ( bar->type == VPCI_BAR_MEM64_HI )
+    {
+        ASSERT(reg > PCI_BASE_ADDRESS_0);
+        bar--;
+        hi = true;
+    }
+    else
+        val &= PCI_BASE_ADDRESS_MEM_MASK;
+    bar->guest_addr &= ~(0xffffffffull << (hi ? 32 : 0));
+    bar->guest_addr |= (uint64_t)val << (hi ? 32 : 0);
 }
 
 static uint32_t guest_bar_read(const struct pci_dev *pdev, unsigned int reg,
                                void *data)
 {
-    return 0xffffffff;
+    struct vpci_bar *bar = data;
+    uint32_t val;
+    bool hi = false;
+
+    switch ( bar->type )
+    {
+    case VPCI_BAR_MEM64_HI:
+        ASSERT(reg > PCI_BASE_ADDRESS_0);
+        bar--;
+        hi = true;
+        /* fallthrough */
+    case VPCI_BAR_MEM64_LO:
+    {
+        if ( hi )
+            val = bar->guest_addr >> 32;
+        else
+            val = bar->guest_addr & 0xffffffff;
+        if ( (val & PCI_BASE_ADDRESS_MEM_MASK_32) ==  PCI_BASE_ADDRESS_MEM_MASK_32 )
+        {
+            /* Guests detects BAR's properties and sizes. */
+            if ( hi )
+                val = bar->size >> 32;
+            else
+                val = 0xffffffff & ~(bar->size - 1);
+        }
+        if ( !hi )
+        {
+            val |= PCI_BASE_ADDRESS_MEM_TYPE_64;
+            val |= bar->prefetchable ? PCI_BASE_ADDRESS_MEM_PREFETCH : 0;
+        }
+        bar->guest_addr &= ~(0xffffffffull << (hi ? 32 : 0));
+        bar->guest_addr |= (uint64_t)val << (hi ? 32 : 0);
+        break;
+    }
+    case VPCI_BAR_MEM32:
+    {
+        val = bar->guest_addr;
+        if ( (val & PCI_BASE_ADDRESS_MEM_MASK_32) ==  PCI_BASE_ADDRESS_MEM_MASK_32 )
+            val = 0xffffffff & ~(bar->size - 1);
+        val |= PCI_BASE_ADDRESS_MEM_TYPE_32;
+        val |= bar->prefetchable ? PCI_BASE_ADDRESS_MEM_PREFETCH : 0;
+        break;
+    }
+    default:
+        val = bar->guest_addr;
+        break;
+    }
+    return val;
 }
 
 static void rom_write(const struct pci_dev *pdev, unsigned int reg,
@@ -526,6 +586,8 @@ static int add_bar_handlers(struct pci_dev *pdev, bool is_hwdom)
             if ( rc )
                 return rc;
         }
+        /* Make guest's view of the BAR equal to physical one at start. */
+        bars[i].guest_addr = bars[i].addr;
     }
     return 0;
 }
