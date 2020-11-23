@@ -102,8 +102,9 @@
 #define  PCI_BASE_ADDRESS_MEM_TYPE_1M	0x02	/* Below 1M [obsolete] */
 #define  PCI_BASE_ADDRESS_MEM_TYPE_64	0x04	/* 64 bit address */
 #define  PCI_BASE_ADDRESS_MEM_PREFETCH	0x08	/* prefetchable? */
-#define  PCI_BASE_ADDRESS_MEM_MASK	(~0x0fUL)
-#define  PCI_BASE_ADDRESS_IO_MASK	(~0x03UL)
+#define  PCI_BASE_ADDRESS_MEM_MASK		(~0x0fUL)
+#define  PCI_BASE_ADDRESS_MEM_MASK_32	(~0x0fU)
+#define  PCI_BASE_ADDRESS_IO_MASK		(~0x03UL)
 /* bit 1 is reserved if address_space = 1 */
 
 /* Header type 0 (normal devices) */
