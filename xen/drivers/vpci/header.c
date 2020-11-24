@@ -30,19 +30,24 @@
 
 struct map_data {
     struct domain *d;
+    gfn_t start_gfn;
     bool map;
 };
 
 static int map_range(unsigned long s, unsigned long e, void *data,
                      unsigned long *c)
 {
-    const struct map_data *map = data;
+    struct map_data *map = data;
     int rc;
 
     for ( ; ; )
     {
         unsigned long size = e - s + 1;
 
+        printk(XENLOG_G_DEBUG
+               "%smap [%lx, %lx] -> %#"PRI_gfn" for d%d\n",
+               map->map ? "" : "un", s, e, gfn_x(map->start_gfn),
+               map->d->domain_id);
         /*
          * ARM TODOs:
          * - On ARM whether the memory is prefetchable or not should be passed
@@ -52,8 +57,10 @@ static int map_range(unsigned long s, unsigned long e, void *data,
          * - {un}map_mmio_regions doesn't support preemption.
          */
 
-        rc = map->map ? map_mmio_regions(map->d, _gfn(s), size, _mfn(s))
-                      : unmap_mmio_regions(map->d, _gfn(s), size, _mfn(s));
+        rc = map->map ? map_mmio_regions(map->d, map->start_gfn,
+                                         size, _mfn(s))
+                      : unmap_mmio_regions(map->d, map->start_gfn,
+                                           size, _mfn(s));
         if ( rc == 0 )
         {
             *c += size;
@@ -69,6 +76,7 @@ static int map_range(unsigned long s, unsigned long e, void *data,
         ASSERT(rc < size);
         *c += rc;
         s += rc;
+        gfn_add(map->start_gfn, rc);
         if ( general_preempt_check() )
                 return -ERESTART;
     }
@@ -149,6 +157,10 @@ bool vpci_process_pending(struct vcpu *v)
             if ( !bar->mem )
                 continue;
 
+            data.start_gfn = pci_is_hardware_domain(v->domain,
+                                                    pdev->seg, pdev->bus) ?
+                _gfn(PFN_DOWN(bar->addr)) :
+                _gfn(PFN_DOWN(bar->guest_addr));
             rc = rangeset_consume_ranges(bar->mem, map_range, &data);
 
             if ( rc == -ERESTART )
@@ -194,6 +206,9 @@ static int __init apply_map(struct domain *d, const struct pci_dev *pdev,
         if ( !bar->mem )
             continue;
 
+        data.start_gfn = pci_is_hardware_domain(d, pdev->seg, pdev->bus) ?
+            _gfn(PFN_DOWN(bar->addr)) :
+            _gfn(PFN_DOWN(bar->guest_addr));
         while ( (rc = rangeset_consume_ranges(bar->mem, map_range,
                                               &data)) == -ERESTART )
             process_pending_softirqs();
