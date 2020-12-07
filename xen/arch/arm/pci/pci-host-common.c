@@ -131,6 +131,8 @@ struct pci_host_bridge *pci_alloc_host_bridge(void)
         return NULL;
 
     INIT_LIST_HEAD(&bridge->node);
+    bridge->bus_start = ~0;
+    bridge->bus_end = ~0;
     return bridge;
 }
 
@@ -162,6 +164,8 @@ int pci_host_common_probe(struct dt_device_node *dev,
     bridge->dt_node = dev;
     bridge->sysdata = cfg;
     bridge->ops = &ops->pci_ops;
+    bridge->bus_start = cfg->busn_start;
+    bridge->bus_end = cfg->busn_end;
 
     if( !dt_property_read_u32(dev, "linux,pci-domain", &segment) )
     {

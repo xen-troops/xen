@@ -97,6 +97,8 @@ struct pci_host_bridge {
     struct dt_device_node *dt_node;  /* Pointer to the associated DT node */
     struct list_head node;           /* Node in list of host bridges */
     uint16_t segment;                /* Segment number */
+    u8 bus_start;                    /* Bus start of this bridge. */
+    u8 bus_end;                      /* Bus end of this bridge. */
     void *sysdata;                   /* Pointer to the config space window*/
     const struct pci_ops *ops;
 };
