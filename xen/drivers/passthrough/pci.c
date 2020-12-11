@@ -33,7 +33,9 @@
 #include <xen/tasklet.h>
 #include <xen/vpci.h>
 #include <xsm/xsm.h>
+#ifdef CONFIG_HAS_PCI_MSI
 #include <asm/msi.h>
+#endif
 #include "ats.h"
 
 struct pci_seg {
@@ -329,6 +331,7 @@ static struct pci_dev *alloc_pdev(struct pci_seg *pseg, u8 bus, u8 devfn)
     pdev->domain = NULL;
     INIT_LIST_HEAD(&pdev->msi_list);
 
+#ifdef CONFIG_HAS_PCI_MSI
     pos = pci_find_cap_offset(pseg->nr, bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
                               PCI_CAP_ID_MSI);
     if ( pos )
@@ -357,6 +360,7 @@ static struct pci_dev *alloc_pdev(struct pci_seg *pseg, u8 bus, u8 devfn)
 
         pdev->msix = msix;
     }
+#endif
 
     list_add(&pdev->alldevs_list, &pseg->alldevs_list);
 
@@ -827,7 +831,9 @@ int pci_remove_device(u16 seg, u8 bus, u8 devfn)
     list_for_each_entry ( pdev, &pseg->alldevs_list, alldevs_list )
         if ( pdev->bus == bus && pdev->devfn == devfn )
         {
+#ifdef CONFIG_HAS_PCI_MSI
             pci_cleanup_msi(pdev);
+#endif
             ret = iommu_remove_device(pdev);
             if ( pdev->domain )
                 list_del(&pdev->domain_list);
@@ -1271,7 +1277,9 @@ bool_t pcie_aer_get_firmware_first(const struct pci_dev *pdev)
 static int _dump_pci_devices(struct pci_seg *pseg, void *arg)
 {
     struct pci_dev *pdev;
+#ifdef CONFIG_HAS_PCI_MSI
     struct msi_desc *msi;
+#endif
 
     printk("==== segment %04x ====\n", pseg->nr);
 
@@ -1280,8 +1288,10 @@ static int _dump_pci_devices(struct pci_seg *pseg, void *arg)
         printk("%pp - %pd - node %-3d - MSIs < ",
                &pdev->sbdf, pdev->domain,
                (pdev->node != NUMA_NO_NODE) ? pdev->node : -1);
+#ifdef CONFIG_HAS_PCI_MSI
         list_for_each_entry ( msi, &pdev->msi_list, list )
                printk("%d ", msi->irq);
+#endif
         printk(">\n");
     }
 
@@ -1303,12 +1313,14 @@ static int __init setup_dump_pcidevs(void)
 }
 __initcall(setup_dump_pcidevs);
 
+#ifdef CONFIG_HAS_PCI_MSI
 int iommu_update_ire_from_msi(
     struct msi_desc *msi_desc, struct msi_msg *msg)
 {
     return iommu_intremap
            ? iommu_call(&iommu_ops, update_ire_from_msi, msi_desc, msg) : 0;
 }
+#endif
 
 static int iommu_add_device(struct pci_dev *pdev)
 {
@@ -1429,6 +1441,7 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
     ASSERT(pdev && (pdev->domain == hardware_domain ||
                     pdev->domain == dom_io));
 
+#ifdef CONFIG_HAS_PCI_MSI
     if ( pdev->msix )
     {
         rc = pci_reset_msix_state(pdev);
@@ -1436,6 +1449,7 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
             goto done;
         msixtbl_init(d);
     }
+#endif
 
     pdev->fault.count = 0;
 

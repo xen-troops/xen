@@ -48,8 +48,10 @@ void vpci_remove_device(struct pci_dev *pdev)
         xfree(r);
     }
     spin_unlock(&pdev->vpci->lock);
+#ifdef CONFIG_HAS_PCI_MSI
     xfree(pdev->vpci->msix);
     xfree(pdev->vpci->msi);
+#endif
     xfree(pdev->vpci);
     pdev->vpci = NULL;
 }
