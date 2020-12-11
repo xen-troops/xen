@@ -121,6 +121,7 @@ struct ipmmu_vmsa_device {
     spinlock_t lock;    /* Protects ctx and domains[] */
     DECLARE_BITMAP(ctx, IPMMU_CTX_MAX);
     struct ipmmu_vmsa_domain *domains[IPMMU_CTX_MAX];
+    unsigned int utlb_refcount[IPMMU_UTLB_MAX];
 
     /* To show whether we have to disable IPMMU TLB cache function */
     bool is_mmu_tlb_disabled;
@@ -475,13 +476,12 @@ static int ipmmu_utlb_enable(struct ipmmu_vmsa_domain *domain,
         }
     }
 
-    /*
-     * TODO: Reference-count the micro-TLB as several bus masters can be
-     * connected to the same micro-TLB.
-     */
-    ipmmu_write(mmu, IMUASID(utlb), 0);
-    ipmmu_write(mmu, IMUCTR(utlb), imuctr |
-                IMUCTR_TTSEL_MMU(domain->context_id) | IMUCTR_MMUEN);
+    if ( mmu->utlb_refcount[utlb]++ == 0 )
+    {
+        ipmmu_write(mmu, IMUASID(utlb), 0);
+        ipmmu_write(mmu, IMUCTR(utlb), imuctr |
+                    IMUCTR_TTSEL_MMU(domain->context_id) | IMUCTR_MMUEN);
+    }
 
     return 0;
 }
@@ -492,7 +492,8 @@ static void ipmmu_utlb_disable(struct ipmmu_vmsa_domain *domain,
 {
     struct ipmmu_vmsa_device *mmu = domain->mmu;
 
-    ipmmu_write(mmu, IMUCTR(utlb), 0);
+    if ( --mmu->utlb_refcount[utlb] == 0 )
+       ipmmu_write(mmu, IMUCTR(utlb), 0);
 }
 
 /* Domain/Context Management */
