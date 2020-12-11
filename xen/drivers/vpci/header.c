@@ -96,8 +96,10 @@ static void modify_decoding(const struct pci_dev *pdev, uint16_t cmd,
      * FIXME: punching holes after the p2m has been set up might be racy for
      * DomU usage, needs to be revisited.
      */
+#ifdef CONFIG_HAS_PCI_MSI
     if ( map && !rom_only && vpci_make_msix_hole(pdev) )
         return;
+#endif
 
     for ( i = 0; i < ARRAY_SIZE(header->bars); i++ )
     {
@@ -206,7 +208,9 @@ static int modify_bars(const struct pci_dev *pdev, uint16_t cmd, bool rom_only)
     struct vpci_header *header = &pdev->vpci->header;
     struct rangeset *mem = rangeset_new(NULL, NULL, 0);
     struct pci_dev *tmp, *dev = NULL;
+#ifdef CONFIG_HAS_PCI_MSI
     const struct vpci_msix *msix = pdev->vpci->msix;
+#endif
     unsigned int i;
     int rc;
 
@@ -243,6 +247,7 @@ static int modify_bars(const struct pci_dev *pdev, uint16_t cmd, bool rom_only)
         }
     }
 
+#ifdef CONFIG_HAS_PCI_MSI
     /* Remove any MSIX regions if present. */
     for ( i = 0; msix && i < ARRAY_SIZE(msix->tables); i++ )
     {
@@ -260,6 +265,7 @@ static int modify_bars(const struct pci_dev *pdev, uint16_t cmd, bool rom_only)
             return rc;
         }
     }
+#endif /* CONFIG_HAS_PCI_MSI */
 
     /*
      * Check for overlaps with other BARs. Note that only BARs that are

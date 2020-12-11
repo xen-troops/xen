@@ -1,3 +1,7 @@
 
 config HAS_PCI
 	bool
+
+config HAS_PCI_MSI
+	def_bool y
+	depends on X86 && HAS_PCI
