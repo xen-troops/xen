@@ -45,6 +45,9 @@ int do_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
                 break;
             }
 #endif
+        case PHYSDEVOP_unmap_pirq:
+        case PHYSDEVOP_map_pirq:
+            break;
         default:
             gdprintk(XENLOG_DEBUG, "PHYSDEVOP cmd=%d: not implemented\n", cmd);
             ret = -ENOSYS;
