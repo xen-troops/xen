@@ -91,6 +91,7 @@ struct vpci {
         /* FIXME: currently there's no support for SR-IOV. */
     } header;
 
+#ifdef CONFIG_HAS_PCI_MSI
     /* MSI data. */
     struct vpci_msi {
       /* Address. */
@@ -136,6 +137,7 @@ struct vpci {
             struct vpci_arch_msix_entry arch;
         } entries[];
     } *msix;
+#endif /* CONFIG_HAS_PCI_MSI */
 #endif
 };
 
@@ -148,6 +150,7 @@ struct vpci_vcpu {
 };
 
 #ifdef __XEN__
+#ifdef CONFIG_HAS_PCI_MSI
 void vpci_dump_msi(void);
 
 /* Make sure there's a hole in the p2m for the MSIX mmio areas. */
@@ -208,6 +211,7 @@ static inline unsigned int vmsix_entry_nr(const struct vpci_msix *msix,
 {
     return entry - msix->entries;
 }
+#endif /* CONFIG_HAS_PCI_MSI */
 #endif /* __XEN__ */
 
 #else /* !CONFIG_HAS_VPCI */
