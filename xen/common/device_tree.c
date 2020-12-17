@@ -1813,7 +1813,7 @@ static unsigned long __init unflatten_dt_node(const void *fdt,
         /* By default dom0 owns the device */
         np->used_by = 0;
         /* By default the device is not protected */
-        np->is_protected = false;
+        np->dev.is_protected = false;
         INIT_LIST_HEAD(&np->domain_list);
 
         if ( new_format )
