@@ -132,12 +132,28 @@ struct pci_dev {
 
     /* Data for vPCI. */
     struct vpci *vpci;
+#ifdef CONFIG_ARM
+    /* Shows that device is protected by IOMMU */
+    bool is_protected;
+#endif
 };
 
 #define for_each_pdev(domain, pdev) \
     list_for_each_entry(pdev, &(domain)->pdev_list, domain_list)
 
 #define has_arch_pdevs(d) (!list_empty(&(d)->pdev_list))
+
+#ifdef CONFIG_ARM
+static inline void pci_device_set_protected(struct pci_dev *pdev)
+{
+    pdev->is_protected = true;
+}
+
+static inline bool pci_device_is_protected(const struct pci_dev *pdev)
+{
+    return pdev->is_protected;
+}
+#endif
 
 /*
  * The pcidevs_lock protect alldevs_list, and the assignment for the 
