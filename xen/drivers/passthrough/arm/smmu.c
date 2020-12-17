@@ -798,7 +798,7 @@ static int arm_smmu_dt_add_device_legacy(struct arm_smmu_device *smmu,
 	master->cfg.fwspec = fwspec;
 
 	/* Xen: Let Xen know that the device is protected by an SMMU */
-	dt_device_set_protected(dev_node);
+	device_set_protected(dev);
 
 	if (!(smmu->features & ARM_SMMU_FEAT_STREAM_MATCH)) {
 		for (i = 0; i < fwspec->num_ids; ++i) {
