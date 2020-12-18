@@ -287,9 +287,9 @@ struct domain *pci_get_owner_domain(u16 seg, u8 bus)
 }
 
 /*
- * Get host bridge device given a device attached to it.
+ * Get host bridge node given a device attached to it.
  */
-struct device *pci_find_host_bridge_device(struct device *dev)
+struct dt_device_node *pci_find_host_bridge_node(struct device *dev)
 {
     struct pci_host_bridge *bridge;
     struct pci_dev *pdev = dev_to_pci(dev);
@@ -301,7 +301,7 @@ struct device *pci_find_host_bridge_device(struct device *dev)
                pdev->seg, pdev->bus, pdev->sbdf.dev, pdev->sbdf.fn);
         return NULL;
     }
-    return dt_to_dev(bridge->dt_node);
+    return bridge->dt_node;
 }
 /*
  * Local variables:
