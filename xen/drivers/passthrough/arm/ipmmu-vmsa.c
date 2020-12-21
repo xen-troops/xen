@@ -1199,9 +1199,6 @@ static int ipmmu_deassign_device(struct domain *d, struct device *dev)
 
     if ( !domain || domain->d != d )
     {
-        /* PCI devices are behind the PCI bridge, so nothing to do. */
-        if ( dev_is_pci(dev) )
-            return 0;
         dev_err(dev, "Not attached to %pd\n", d);
         return -ESRCH;
     }
