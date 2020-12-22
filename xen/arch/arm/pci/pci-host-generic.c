@@ -40,7 +40,7 @@ static int gen_pci_dt_init(struct dt_device_node *dev, const void *data)
     printk(XENLOG_INFO "Found PCI host bridge %s compatible:%s \n",
             dt_node_full_name(dev), of_id->compatible);
 
-    return pci_host_common_probe(dev, ops);
+    return pci_host_common_probe(dev, ops, 0);
 }
 
 DT_DEVICE_START(pci_gen, "PCI HOST GENERIC", DEVICE_PCI)
