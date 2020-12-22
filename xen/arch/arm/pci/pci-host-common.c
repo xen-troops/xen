@@ -66,7 +66,8 @@ static void pci_ecam_free(struct pci_config_window *cfg)
 }
 
 static struct pci_config_window *gen_pci_init(struct dt_device_node *dev,
-                                              const struct pci_ecam_ops *ops)
+                                              const struct pci_ecam_ops *ops,
+                                              int ecam_reg_idx)
 {
     int err;
     struct pci_config_window *cfg;
@@ -87,7 +88,7 @@ static struct pci_config_window *gen_pci_init(struct dt_device_node *dev,
     }
 
     /* Parse our PCI ecam register address*/
-    err = dt_device_get_address(dev, 0, &addr, &size);
+    err = dt_device_get_address(dev, ecam_reg_idx, &addr, &size);
     if ( err )
         goto err_exit;
 
@@ -143,7 +144,8 @@ void pci_add_host_bridge(struct pci_host_bridge *bridge)
 }
 
 int pci_host_common_probe(struct dt_device_node *dev,
-                          const struct pci_ecam_ops *ops)
+                          const struct pci_ecam_ops *ops,
+                          int ecam_reg_idx)
 {
     struct pci_host_bridge *bridge;
     struct pci_config_window *cfg;
@@ -155,7 +157,7 @@ int pci_host_common_probe(struct dt_device_node *dev,
         return -ENOMEM;
 
     /* Parse and map our Configuration Space windows */
-    cfg = gen_pci_init(dev, ops);
+    cfg = gen_pci_init(dev, ops, ecam_reg_idx);
     if ( !cfg )
     {
         err = -ENOMEM;
