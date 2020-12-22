@@ -172,9 +172,12 @@ int pci_host_common_probe(struct dt_device_node *dev,
 
     if( !dt_property_read_u32(dev, "linux,pci-domain", &segment) )
     {
-        printk(XENLOG_ERR "\"linux,pci-domain\" property in not available in DT\n");
-        err = -ENODEV;
-        goto err_exit;
+        static u32 next_seg = 0;
+
+        printk(XENLOG_ERR
+               "\"linux,pci-domain\" property in not available in DT. Assigning %d\n",
+               next_seg);
+        segment = next_seg++;
     }
 
     bridge->segment = (u16)segment;
