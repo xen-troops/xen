@@ -35,7 +35,11 @@ enum domain_type {
 /* For X86 VPCI is enabled and tested for PVH DOM0 only but
  * for ARM we enable support VPCI for guest domain also.
  */
+#ifdef CONFIG_HAS_VPCI
 #define has_vpci(d) (true)
+#else
+#define has_vpci(d) (false)
+#endif
 
 struct vtimer {
     struct vcpu *v;
