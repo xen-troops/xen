@@ -1296,15 +1296,7 @@ map_grant_ref(
     if ( need_iommu )
         double_gt_unlock(lgt, rgt);
 
-    if ( is_iommu_enabled(ld) )
-    {
-        op->dev_bus_addr = op->host_addr;
-    }
-    else
-    {
-        op->dev_bus_addr = mfn_to_maddr(mfn);
-    }
-
+    op->dev_bus_addr = mfn_to_maddr(mfn);
     op->handle       = handle;
     op->status       = GNTST_okay;
 
