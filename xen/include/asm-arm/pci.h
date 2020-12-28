@@ -110,6 +110,7 @@ int pci_generic_config_write(struct pci_host_bridge *bridge, uint32_t sbdf,
                             uint32_t reg, uint32_t len, uint32_t value);
 
 struct pci_host_bridge *pci_find_host_bridge(uint16_t segment, uint8_t bus);
+struct dt_device_node *pci_find_host_bridge_node(struct device *dev);
 void pci_add_host_bridge(struct pci_host_bridge *bridge);
 struct pci_host_bridge * pci_alloc_host_bridge(void);
 
