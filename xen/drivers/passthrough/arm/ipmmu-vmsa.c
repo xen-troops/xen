@@ -44,6 +44,7 @@
 #include <xen/lib.h>
 #include <xen/list.h>
 #include <xen/mm.h>
+#include <xen/pci.h>
 #include <xen/sched.h>
 #include <xen/vmap.h>
 
@@ -736,8 +737,8 @@ static void ipmmu_detach_device(struct ipmmu_vmsa_domain *domain,
         ipmmu_utlb_disable(domain, fwspec->ids[i]);
 }
 
-static int ipmmu_init_platform_device(struct device *dev,
-                                      const struct dt_phandle_args *args)
+static int ipmmu_init_device(struct device *dev,
+                             const struct dt_phandle_args *args)
 {
     struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
     struct ipmmu_vmsa_device *mmu;
@@ -1075,6 +1076,31 @@ static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
     if ( !to_ipmmu(dev) )
         return -ENODEV;
 
+#ifdef CONFIG_HAS_PCI
+    if ( dev_is_pci(dev) )
+    {
+        struct pci_dev *pdev = dev_to_pci(dev);
+
+        printk(XENLOG_INFO "Assigning device %04x:%02x:%02x.%u to dom%d\n",
+               pdev->seg, pdev->bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
+               d->domain_id);
+
+        /*
+         * XXX What would be the proper behavior? This could happen if
+         * pdev->phantom_stride > 0
+         */
+        if ( devfn != pdev->devfn )
+            ASSERT_UNREACHABLE();
+
+        list_move(&pdev->domain_list, &d->pdev_list);
+        pdev->domain = d;
+
+        /* dom_io is used as a sentinel for quarantined devices */
+        if ( d == dom_io )
+            return 0;
+    }
+#endif
+
     spin_lock(&xen_domain->lock);
 
     /*
@@ -1146,10 +1172,32 @@ out:
     return ret;
 }
 
-static int ipmmu_deassign_device(struct domain *d, struct device *dev)
+static int ipmmu_deassign_device(struct domain *d, u8 devfn, struct device *dev)
 {
     struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
     struct ipmmu_vmsa_domain *domain = to_domain(dev);
+
+#ifdef CONFIG_HAS_PCI
+    if ( dev_is_pci(dev) )
+    {
+        struct pci_dev *pdev = dev_to_pci(dev);
+
+        printk(XENLOG_INFO "Deassigning device %04x:%02x:%02x.%u from dom%d\n",
+               pdev->seg, pdev->bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
+               d->domain_id);
+
+        /*
+         * XXX What would be the proper behavior? This could happen if
+         * pdev->phantom_stride > 0
+         */
+        if ( devfn != pdev->devfn )
+            ASSERT_UNREACHABLE();
+
+        /* dom_io is used as a sentinel for quarantined devices */
+        if ( d == dom_io )
+            return 0;
+    }
+#endif
 
     if ( !domain || domain->d != d )
     {
@@ -1181,13 +1229,13 @@ static int ipmmu_reassign_device(struct domain *s, struct domain *t,
     int ret = 0;
 
     /* Don't allow remapping on other domain than hwdom */
-    if ( t && t != hardware_domain )
+    if ( t && t != hardware_domain && t != dom_io )
         return -EPERM;
 
     if ( t == s )
         return 0;
 
-    ret = ipmmu_deassign_device(s, dev);
+    ret = ipmmu_deassign_device(s, devfn, dev);
     if ( ret )
         return ret;
 
@@ -1208,9 +1256,10 @@ static int ipmmu_dt_xlate(struct device *dev,
     int ret;
 
     /*
-     * Perform sanity check of passed DT IOMMU specifier. Each master device
-     * gets micro-TLB (device ID) assignment via the "iommus" property
-     * in DT. We expect #iommu-cells to be 1 (Multiple-master IOMMU) and
+     * Perform sanity check of passed DT IOMMU specifier. Each device gets
+     * micro-TLB (device ID) assignment either via the "iommus" property
+     * (platform device) or via the "iommu-map" property (PCI device) in DT.
+     * We expect #iommu-cells to be 1 (Multiple-master IOMMU) and
      * this cell for the micro-TLB (device ID).
      */
     if ( spec->args_count != 1 || spec->args[0] >= IPMMU_UTLB_MAX )
@@ -1224,7 +1273,7 @@ static int ipmmu_dt_xlate(struct device *dev,
     if ( to_ipmmu(dev) )
         return 0;
 
-    return ipmmu_init_platform_device(dev, spec);
+    return ipmmu_init_device(dev, spec);
 }
 
 static int ipmmu_add_device(u8 devfn, struct device *dev)
@@ -1249,6 +1298,14 @@ static int ipmmu_add_device(u8 devfn, struct device *dev)
 
     return 0;
 }
+
+#ifdef CONFIG_HAS_PCI
+static int ipmmu_remove_device(u8 devfn, struct device *dev)
+{
+    /* XXX Implement me */
+    ASSERT_UNREACHABLE();
+}
+#endif
 
 static int ipmmu_iommu_domain_init(struct domain *d)
 {
@@ -1322,6 +1379,9 @@ static const struct iommu_ops ipmmu_iommu_ops =
     .unmap_page      = arm_iommu_unmap_page,
     .dt_xlate        = ipmmu_dt_xlate,
     .add_device      = ipmmu_add_device,
+#ifdef CONFIG_HAS_PCI
+    .remove_device   = ipmmu_remove_device,
+#endif
 };
 
 static const struct dt_device_match ipmmu_dt_match[] __initconst =
