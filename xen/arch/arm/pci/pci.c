@@ -28,8 +28,11 @@ int arch_pci_clean_pirqs(struct domain *d)
 
 struct pci_dev *dev_to_pci(struct device *dev)
 {
-    struct arch_pci_dev *arch_dev =
-        container_of((dev), struct arch_pci_dev, dev);
+    struct arch_pci_dev *arch_dev;
+
+    ASSERT(dev->type == DEV_PCI);
+
+    arch_dev = container_of((dev), struct arch_pci_dev, dev);
     return container_of(arch_dev, struct pci_dev, arch);
 }
 
