@@ -232,20 +232,20 @@ bool pci_host_bridge_need_mapping(struct domain *d,
                                   u64 addr, u64 len)
 {
     struct pci_host_bridge *bridge;
-    struct pci_dev *pdev = dev_to_pci((struct device *)&node->dev);
 
-    bridge = pci_find_host_bridge(pdev->seg, pdev->bus);
-    if ( unlikely(!bridge) )
+    list_for_each_entry( bridge, &pci_host_bridges, node )
     {
-        printk(XENLOG_ERR "Unable to find PCI bridge for "PRI_pci"\n",
-               pdev->seg, pdev->bus, pdev->sbdf.dev, pdev->sbdf.fn);
-        return NULL;
+        if ( bridge->dt_node != node )
+            continue;
+
+        if ( !bridge->ops->need_mapping )
+            return true;
+
+        return bridge->ops->need_mapping(d, bridge, addr, len);
     }
-
-    if ( !bridge->ops->need_mapping )
-        return true;
-
-    return bridge->ops->need_mapping(d, bridge, addr, len);
+    printk(XENLOG_ERR "Unable to find PCI bridge for %s segment %d, addr %lx\n",
+           node->full_name, bridge->segment, addr);
+    return true;
 }
 
 /*
