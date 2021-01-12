@@ -784,6 +784,16 @@ int vpci_bar_add_handlers(const struct domain *d, struct pci_dev *pdev)
         gprintk(XENLOG_ERR,
             "%pp: failed to add BAR handlers for dom%d\n", &pdev->sbdf,
             d->domain_id);
+
+    /*
+     * Reset the command register: it is possible that when passing
+     * through a PCI device its memory decoding bits in the command
+     * register are already set. Thus, a guest OS may not write to the
+     * command register to update memory decoding, so guest mappings
+     * (guest's view of the BARs) are left not updated.
+     */
+    pci_conf_write16(pdev->sbdf, PCI_COMMAND, 0);
+
     return rc;
 }
 
