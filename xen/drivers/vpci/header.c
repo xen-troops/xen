@@ -660,8 +660,7 @@ static int add_bar_handlers(struct pci_dev *pdev, bool is_hwdom)
             if ( rc )
                 return rc;
         }
-        /* Make guest's view of the BAR equal to physical one at start. */
-        bars[i].guest_addr = bars[i].addr;
+        bars[i].guest_addr = 0;
     }
     return 0;
 }
