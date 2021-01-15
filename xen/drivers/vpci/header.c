@@ -395,7 +395,10 @@ static int modify_bars(const struct pci_dev *pdev, uint16_t cmd, bool rom_only)
             num_mem_ranges++;
     }
 
-    defer_map(dev->domain, dev, cmd, rom_only, num_mem_ranges);
+    if ( !num_mem_ranges )
+        pci_conf_write16(pdev->sbdf, PCI_COMMAND, cmd);
+    else
+        defer_map(dev->domain, dev, cmd, rom_only, num_mem_ranges);
 
     return 0;
 
