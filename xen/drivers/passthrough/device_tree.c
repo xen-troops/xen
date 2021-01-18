@@ -268,7 +268,21 @@ int iommu_add_pci_device(uint8_t devfn, struct pci_dev *pdev)
     rc = dt_map_id(np, PCI_BDF2(pdev->bus, devfn), "iommu-map",
                    "iommu-map-mask", &iommu_spec.np, iommu_spec.args);
     if ( rc )
+    {
+        /*
+         * Note: There might be a case when PCIe Root port doesn't issue DMA
+         * transactions on its own, it only forwards transactions from
+         * PCIe nodes so it's RID is not covered by "iommu-map" property.
+         * So we shouldn't treat this *valid* case as an error condition,
+         * but should return NO_IOMMU (device doesn't need to be protected
+         * by an IOMMU) to the caller to decide. It won't be an issue unless
+         * we assign the Root port to the guest (call assign_device for it).
+         */
+        if ( rc == -EFAULT && pdev->type == DEV_TYPE_PCIe_BRIDGE )
+            return NO_IOMMU;
+
         return rc == -ENODEV ? NO_IOMMU : rc;
+    }
 
     /*
      * The driver which supports generic PCI-IOMMU DT bindings must have
