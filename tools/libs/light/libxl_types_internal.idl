@@ -57,3 +57,9 @@ libxl__device_action = Enumeration("device_action", [
     (1, "ADD"),
     (2, "REMOVE"),
     ])
+
+libxl__pcid_message_type = Enumeration("pcid_message_type", [
+    (1, "return"),
+    (2, "error"),
+    (3, "invalid"),
+    ])
