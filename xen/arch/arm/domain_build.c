@@ -26,6 +26,7 @@
 #include <asm/setup.h>
 #include <asm/cpufeature.h>
 #include <asm/domain_build.h>
+#include <asm/pci.h>
 
 #include <xen/irq.h>
 #include <xen/grant_table.h>
@@ -579,6 +580,29 @@ static int __init write_properties(struct domain *d, struct kernel_info *kinfo,
         if ( res )
             return res;
     }
+
+#ifdef CONFIG_HAS_PCI
+    if ( dt_device_type_is_equal(node, "pci") )
+    {
+        if ( !dt_find_property(node, "linux,pci-domain", NULL) )
+        {
+            paddr_t addr;
+            uint16_t segment;
+
+            res = dt_device_get_address(node, 0, &addr, NULL);
+            if ( res )
+                return res;
+
+            res = pci_get_host_bridge_segment(addr, &segment);
+            if ( res < 0 )
+                return res;
+
+            res = fdt_property_cell(kinfo->fdt, "linux,pci-domain", segment);
+            if ( res )
+                return res;
+        }
+    }
+#endif
 
     /*
      * Override the property "status" to disable the device when it's

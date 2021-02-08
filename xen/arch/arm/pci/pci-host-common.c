@@ -35,6 +35,8 @@
 
 static LIST_HEAD(pci_host_bridges);
 
+static atomic_t domain_nr = ATOMIC_INIT(-1);
+
 bool dt_pci_parse_bus_range(struct dt_device_node *dev,
                             struct pci_config_window *cfg)
 {
@@ -143,13 +145,89 @@ void pci_add_host_bridge(struct pci_host_bridge *bridge)
     list_add_tail(&bridge->node, &pci_host_bridges);
 }
 
+static int pci_get_new_domain_nr(void)
+{
+    return atomic_inc_return(&domain_nr);
+}
+
+/**
+ * This function will try to obtain the host bridge domain number by
+ * finding a property called "linux,pci-domain" of the given device node.
+ *
+ * @node: device tree node with the domain information
+ *
+ * Returns the associated domain number from DT in the range [0-0xffff], or
+ * a negative value if the required property is not found.
+ */
+static int dt_get_pci_domain_nr(struct dt_device_node *node)
+{
+    u32 domain;
+    int error;
+
+    error = dt_property_read_u32(node, "linux,pci-domain", &domain);
+    if ( !error )
+        return -EINVAL;
+
+    return (u16)domain;
+}
+
+static int pci_bus_find_domain_nr(struct dt_device_node *dev)
+{
+    static int use_dt_domains = -1;
+    int domain;
+
+    domain = dt_get_pci_domain_nr(dev);
+
+    /*
+     * Check DT domain and use_dt_domains values.
+     *
+     * If DT domain property is valid (domain >= 0) and
+     * use_dt_domains != 0, the DT assignment is valid since this means
+     * we have not previously allocated a domain number by using
+     * pci_get_new_domain_nr(); we should also update use_dt_domains to
+     * 1, to indicate that we have just assigned a domain number from
+     * DT.
+     *
+     * If DT domain property value is not valid (ie domain < 0), and we
+     * have not previously assigned a domain number from DT
+     * (use_dt_domains != 1) we should assign a domain number by
+     * using the:
+     *
+     * pci_get_new_domain_nr()
+     *
+     * API and update the use_dt_domains value to keep track of method we
+     * are using to assign domain numbers (use_dt_domains = 0).
+     *
+     * All other combinations imply we have a platform that is trying
+     * to mix domain numbers obtained from DT and pci_get_new_domain_nr(),
+     * which is a recipe for domain mishandling and it is prevented by
+     * invalidating the domain value (domain = -1) and printing a
+     * corresponding error.
+     */
+    if ( domain >= 0 && use_dt_domains )
+    {
+        use_dt_domains = 1;
+    }
+    else if ( domain < 0 && use_dt_domains != 1 )
+    {
+        use_dt_domains = 0;
+        domain = pci_get_new_domain_nr();
+    }
+    else
+    {
+        printk(XENLOG_ERR "Inconsistent \"linux,pci-domain\" property in DT\n");
+        BUG();
+    }
+
+    return domain;
+}
+
 int pci_host_common_probe(struct dt_device_node *dev,
                           const struct pci_ecam_ops *ops,
                           int ecam_reg_idx)
 {
     struct pci_host_bridge *bridge;
     struct pci_config_window *cfg;
-    u32 segment;
     int err;
 
     bridge = pci_alloc_host_bridge();
@@ -170,17 +248,7 @@ int pci_host_common_probe(struct dt_device_node *dev,
     bridge->bus_start = cfg->busn_start;
     bridge->bus_end = cfg->busn_end;
 
-    if( !dt_property_read_u32(dev, "linux,pci-domain", &segment) )
-    {
-        static u32 next_seg = 0;
-
-        printk(XENLOG_ERR
-               "\"linux,pci-domain\" property in not available in DT. Assigning %d\n",
-               next_seg);
-        segment = next_seg++;
-    }
-
-    bridge->segment = (u16)segment;
+    bridge->segment = pci_bus_find_domain_nr(dev);
 
     pci_add_host_bridge(bridge);
 
@@ -288,6 +356,26 @@ struct dt_device_node *pci_find_host_bridge_node(struct device *dev)
         return NULL;
     }
     return bridge->dt_node;
+}
+/*
+ * This function will lookup an hostbridge based on confic space address.
+ */
+int pci_get_host_bridge_segment(paddr_t addr, uint16_t *segment)
+{
+    struct pci_host_bridge *bridge;
+    struct pci_config_window *cfg;
+
+    list_for_each_entry( bridge, &pci_host_bridges, node )
+    {
+        cfg = bridge->sysdata;
+        if ( cfg->phys_addr == addr )
+        {
+            *segment = bridge->segment;
+            return 0;
+        }
+    }
+
+    return -EINVAL;
 }
 /*
  * Local variables:
