@@ -27,6 +27,7 @@
 
 #define XENPCID_MSG_EXECUTE         "execute"
 #define XENPCID_MSG_RETURN          "return"
+#define XENPCID_MSG_ERROR           "error"
 
 #define XENPCID_MSG_FIELD_ID        "id"
 #define XENPCID_MSG_FIELD_ARGS      "arguments"
