@@ -27,6 +27,7 @@ SUBDIRS-$(CONFIG_QEMU_TRAD) += qemu-xen-traditional-dir
 SUBDIRS-$(CONFIG_QEMU_XEN) += qemu-xen-dir
 endif
 
+SUBDIRS-y += xenpcid
 SUBDIRS-y += xenpmd
 SUBDIRS-$(CONFIG_GOLANG) += golang
 SUBDIRS-y += xl
