@@ -50,6 +50,11 @@ enum pcid__json_node_type {
     JSON_ANY     = 255 /* this is a mask of all values above, adjust as needed */
 };
 
+struct list_head {
+    struct list_head *next, *prev;
+    char *val;
+};
+
 struct flexarray {
     int size;
     int autogrow;

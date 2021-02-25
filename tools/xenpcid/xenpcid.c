@@ -125,6 +125,17 @@ static yajl_gen_status pcid__yajl_gen_asciiz(yajl_gen hand, const char *str)
     return yajl_gen_string(hand, (const unsigned char *)str, strlen(str));
 }
 
+static void free_list(struct list_head *head)
+{
+    struct list_head* tmp;
+
+    while (head != NULL) {
+        tmp = head;
+        head = head->next;
+        free(tmp);
+    }
+}
+
 static char *vchan_prepare_cmd(struct pcid__json_object *result,
                                int id)
 {
@@ -134,6 +145,7 @@ static char *vchan_prepare_cmd(struct pcid__json_object *result,
     libxl_yajl_length len;
     yajl_gen_status s;
     char *ret = NULL;
+    struct list_head *resp_list;
 
     hand = libxl_yajl_gen_alloc(NULL);
     if (!hand) {
@@ -147,12 +159,28 @@ static char *vchan_prepare_cmd(struct pcid__json_object *result,
 #endif
 
     yajl_gen_map_open(hand);
-    if ( !result )
+
+    if ( !result ) {
         pcid__yajl_gen_asciiz(hand, XENPCID_MSG_ERROR);
-    else
+    } else {
         pcid__yajl_gen_asciiz(hand, XENPCID_MSG_RETURN);
-    yajl_gen_array_open(hand);
-    yajl_gen_array_close(hand);
+        if (result->type == JSON_LIST) {
+            yajl_gen_array_open(hand);
+            if (result->u.list) {
+                resp_list = result->u.list;
+                while (resp_list) {
+                    pcid__yajl_gen_asciiz(hand, resp_list->val);
+                    free(resp_list->val);
+                    resp_list = resp_list->next;
+                }
+                free_list(result->u.list);
+            }
+            yajl_gen_array_close(hand);
+        } else {
+            fprintf(stderr, "Unknown result type\n");
+        }
+        free(result);
+    }
     pcid__yajl_gen_asciiz(hand, XENPCID_MSG_FIELD_ID);
     yajl_gen_integer(hand, id);
     yajl_gen_map_close(hand);
@@ -169,6 +197,53 @@ static char *vchan_prepare_cmd(struct pcid__json_object *result,
     yajl_gen_free(hand);
 out:
     return ret;
+}
+
+static int handle_ls_command(char *dir_name, struct list_head **result)
+{
+    struct list_head *dirs = NULL, *head = NULL, *prev =NULL;
+    struct dirent *de;
+    DIR *dir = NULL;
+
+    head = (struct list_head*)pcid_zalloc(sizeof(struct list_head));
+    dirs = head;
+
+    if (strcmp(XENPCID_PCIBACK_DRIVER, dir_name) == 0) {
+        dir = opendir(SYSFS_PCIBACK_DRIVER);
+    } else {
+        fprintf(stderr, "Unknown directory: %s\n", dir_name);
+        goto out;
+    }
+
+    if (dir == NULL) {
+        if (errno == ENOENT) {
+            fprintf(stderr,  "Looks like pciback driver not loaded\n");
+        } else {
+            fprintf(stderr, "Couldn't open\n");
+        }
+        goto out;
+    }
+
+    while((de = readdir(dir))) {
+        if (!dirs)
+        {
+            dirs = (struct list_head*)pcid_zalloc(sizeof(struct list_head));
+            prev->next = dirs;
+        }
+        dirs->val = strdup(de->d_name);
+        prev = dirs;
+        dirs = dirs->next;
+    }
+
+    closedir(dir);
+
+    *result = head;
+
+    return 0;
+
+out:
+    fprintf(stderr, "LS command failed\n");
+    return 1;
 }
 
 static int flexarray_grow(struct flexarray *array, int extents)
@@ -521,6 +596,35 @@ static int vchan_get_next_msg(struct vchan_state *state,
     return 0;
 }
 
+static struct pcid__json_object *process_ls_cmd(struct pcid__json_object *resp)
+{
+    struct pcid__json_object *result = NULL, *args, *dir_id;
+    char *dir_name;
+    struct list_head *dir_list = NULL;
+    int ret;
+
+    args = pcid__json_map_get(XENPCID_MSG_FIELD_ARGS, resp, JSON_MAP);
+    if (!args)
+        goto out;
+    dir_id = pcid__json_map_get(XENPCID_CMD_DIR_ID, args, JSON_ANY);
+    if (!dir_id)
+        goto free_args;
+    dir_name = dir_id->u.string;
+
+    ret = handle_ls_command(dir_name, &dir_list);
+    free(dir_name);
+    if (ret)
+        goto free_args;
+
+    result = pcid__json_object_alloc(JSON_LIST);
+    result->u.list = dir_list;
+
+free_args:
+    free_pcid_obj_map(args);
+out:
+    return result;
+}
+
 static int vchan_handle_message(struct vchan_state *state,
                                 struct pcid__json_object *resp,
                                 struct pcid__json_object **result)
@@ -531,7 +635,16 @@ static int vchan_handle_message(struct vchan_state *state,
     command_obj = pcid__json_map_get(XENPCID_MSG_EXECUTE, resp, JSON_ANY);
     command_name = command_obj->u.string;
 
+    if (strcmp(command_name, XENPCID_CMD_LIST) == 0)
+        (*result) = process_ls_cmd(resp);
+    else
+        fprintf(stderr, "Unknown command\n");
     free(command_name);
+
+    if (!(*result)) {
+        fprintf(stderr, "Message handling failed\n");
+        return 1;
+    }
 
     return 0;
 }
