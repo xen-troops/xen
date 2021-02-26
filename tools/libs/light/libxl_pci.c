@@ -1454,6 +1454,50 @@ int libxl_device_pci_assignable_remove(libxl_ctx *ctx, libxl_device_pci *pci,
 */
 static int pci_multifunction_check(libxl__gc *gc, libxl_device_pci *pci, unsigned int *func_mask)
 {
+    *func_mask = 0;
+
+#ifdef XENPCID_SERVER
+    struct vchan_state *vchan;
+    libxl__json_object *args = NULL;
+    const libxl__json_object *result = NULL, *lstat_obj, *dir;
+    const char *dir_name;
+    int i;
+
+    vchan = vchan_get_instance(gc);
+    if (!vchan)
+        return -1;
+
+    libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_DIR_ID,
+                                XENPCID_PCI_DEV);
+    result = vchan_send_command(gc, vchan, XENPCID_CMD_LIST, args);
+    if (!result)
+        return -1;
+
+    for (i = 0; (dir = libxl__json_array_get(result, i)); i++) {
+        dir_name = libxl__json_object_get_string(dir);
+        unsigned dom, bus, dev, func;
+        char *path;
+
+        if (sscanf(dir_name, PCI_BDF, &dom, &bus, &dev, &func) != 4)
+            continue;
+        if (pci->domain != dom)
+            continue;
+        if (pci->bus != bus)
+            continue;
+        if (pci->dev != dev)
+            continue;
+
+        path = GCSPRINTF("/" PCI_BDF, dom, bus, dev, func);
+        libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_DIR_ID,
+                                    XENPCID_PCIBACK_DRIVER);
+        libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_PCI_INFO, path);
+        lstat_obj = vchan_send_command(gc, vchan, XENPCID_CMD_EXISTS, args);
+        if (!lstat_obj)
+            return -1;
+
+        (*func_mask) |= (1 << func);
+    }
+#else
     struct dirent *de;
     DIR *dir;
 
@@ -1493,6 +1537,8 @@ static int pci_multifunction_check(libxl__gc *gc, libxl_device_pci *pci, unsigne
     }
 
     closedir(dir);
+#endif
+
     return 0;
 }
 
