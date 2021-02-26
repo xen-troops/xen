@@ -37,6 +37,7 @@
 
 #define XENPCID_CMD_WRITE           "write"
 #define XENPCID_CMD_READ_HEX        "read_hex"
+#define XENPCID_CMD_EXISTS          "exists"
 #define XENPCID_CMD_PCI_PATH        "pci_path"
 #define XENPCID_CMD_PCI_INFO        "pci_info"
 
