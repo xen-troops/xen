@@ -182,6 +182,8 @@ static char *vchan_prepare_cmd(struct pcid__json_object *result,
                 free(result->u.string);
             } else
                 pcid__yajl_gen_asciiz(hand, "success");
+        } else if (result->type == JSON_INTEGER) {
+            yajl_gen_integer(hand, result->u.i);
         } else {
             fprintf(stderr, "Unknown result type\n");
         }
@@ -364,6 +366,27 @@ static int handle_write_cmd(char *sysfs_path, char *pci_info)
     }
 
     return 0;
+}
+
+static long long handle_read_hex_cmd(char *sysfs_path)
+{
+    uint16_t read_items;
+    long long result;
+    FILE *f = fopen(sysfs_path, "r");
+
+    if (!f) {
+        fprintf(stderr, "PCI device %s does not have needed attribute\n",
+                sysfs_path);
+        return -1;
+    }
+    read_items = fscanf(f, "0x%llx\n", &result);
+    fclose(f);
+    if (read_items != 1) {
+        fprintf(stderr, "Cannot read attribute of pci device %s\n", sysfs_path);
+        return -1;
+    }
+
+    return result;
 }
 
 static inline bool pcid__json_object_is_array(const struct pcid__json_object *o)
@@ -704,6 +727,50 @@ out:
     return result;
 }
 
+static struct pcid__json_object *process_read_hex_cmd(struct pcid__json_object *resp)
+{
+    struct pcid__json_object *result = NULL, *args, *dir_id, *pci_info;
+    char *full_path;
+    long long read_result;
+
+    args = pcid__json_map_get(XENPCID_MSG_FIELD_ARGS, resp, JSON_MAP);
+    if (!args)
+        goto out;
+    dir_id = pcid__json_map_get(XENPCID_CMD_DIR_ID, args, JSON_ANY);
+    if (!dir_id)
+        goto free_args;
+    pci_info = pcid__json_map_get(XENPCID_CMD_PCI_INFO, args, JSON_ANY);
+    if (!pci_info)
+        goto free_dir_id;
+
+    if (strcmp(XENPCID_PCI_DEV, dir_id->u.string) == 0) {
+        full_path = (char *)pcid_zalloc(strlen(SYSFS_PCI_DEV) +
+                                        strlen(pci_info->u.string) + 1);
+        sprintf(full_path, SYSFS_PCI_DEV"%s", pci_info->u.string);
+    } else
+        full_path = pci_info->u.string;
+
+    read_result = handle_read_hex_cmd(full_path);
+
+    if (strcmp(XENPCID_PCI_DEV, dir_id->u.string) == 0)
+        free(full_path);
+    if (read_result < 0)
+        goto free_pci_info;
+
+    result = pcid__json_object_alloc(JSON_INTEGER);
+    result->u.i = read_result;
+
+free_pci_info:
+    free(pci_info->u.string);
+free_dir_id:
+    free(dir_id->u.string);
+free_args:
+    free_pcid_obj_map(args);
+out:
+    return result;
+}
+
+
 static int vchan_handle_message(struct vchan_state *state,
                                 struct pcid__json_object *resp,
                                 struct pcid__json_object **result)
@@ -718,6 +785,8 @@ static int vchan_handle_message(struct vchan_state *state,
         (*result) = process_ls_cmd(resp);
     else if (strcmp(XENPCID_CMD_WRITE, command_name) == 0)
         (*result) = process_write_cmd(resp);
+    else if (strcmp(command_name, XENPCID_CMD_READ_HEX) == 0)
+        (*result) = process_read_hex_cmd(resp);
     else
         fprintf(stderr, "Unknown command\n");
     free(command_name);
