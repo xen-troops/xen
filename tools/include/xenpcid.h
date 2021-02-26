@@ -35,7 +35,14 @@
 #define XENPCID_CMD_LIST            "ls"
 #define XENPCID_CMD_DIR_ID          "dir_id"
 
+#define XENPCID_CMD_WRITE           "write"
+#define XENPCID_CMD_PCI_PATH        "pci_path"
+#define XENPCID_CMD_PCI_INFO        "pci_info"
+
 #define XENPCID_PCIBACK_DRIVER      "pciback_driver"
+#define XENPCID_PCI_DEV             "pci_dev"
+
+#define SYSFS_DRIVER_PATH           "driver_path"
 
 #endif /* XENPCID_H */
 
