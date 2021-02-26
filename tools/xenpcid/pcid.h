@@ -24,6 +24,7 @@
 
 #if defined(__linux__)
 #define SYSFS_PCIBACK_DRIVER   "/sys/bus/pci/drivers/pciback"
+#define SYSFS_PCI_DEV          "/sys/bus/pci/devices"
 #endif
 
 #define PCI_INFO_PATH "/libxl/pci"

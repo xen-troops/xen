@@ -176,6 +176,12 @@ static char *vchan_prepare_cmd(struct pcid__json_object *result,
                 free_list(result->u.list);
             }
             yajl_gen_array_close(hand);
+        } else if (result->type == JSON_STRING) {
+            if (result->u.string) {
+                pcid__yajl_gen_asciiz(hand, result->u.string);
+                free(result->u.string);
+            } else
+                pcid__yajl_gen_asciiz(hand, "success");
         } else {
             fprintf(stderr, "Unknown result type\n");
         }
@@ -338,6 +344,26 @@ static struct pcid__json_object *pcid__json_map_get(const char *key,
         }
     }
     return NULL;
+}
+
+static int handle_write_cmd(char *sysfs_path, char *pci_info)
+{
+    int rc, fd;
+
+    fd = open(sysfs_path, O_WRONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Couldn't open %s\n", sysfs_path);
+        return ERROR_FAIL;
+    }
+
+    rc = write(fd, pci_info, strlen(pci_info));
+    close(fd);
+    if (rc < 0) {
+        fprintf(stderr, "write to %s returned %d\n", sysfs_path, rc);
+        return ERROR_FAIL;
+    }
+
+    return 0;
 }
 
 static inline bool pcid__json_object_is_array(const struct pcid__json_object *o)
@@ -625,6 +651,59 @@ out:
     return result;
 }
 
+static struct pcid__json_object *process_write_cmd(struct pcid__json_object *resp)
+{
+    struct pcid__json_object *result = NULL, *args, *dir_id, *pci_path, *pci_info;
+    char *full_path;
+    int ret;
+
+    args = pcid__json_map_get(XENPCID_MSG_FIELD_ARGS, resp, JSON_MAP);
+    if (!args)
+        goto out;
+    dir_id = pcid__json_map_get(XENPCID_CMD_DIR_ID, args, JSON_ANY);
+    if (!dir_id)
+        goto free_args;
+    pci_path = pcid__json_map_get(XENPCID_CMD_PCI_PATH, args, JSON_ANY);
+    if (!pci_path)
+        goto free_dir_id;
+    pci_info = pcid__json_map_get(XENPCID_CMD_PCI_INFO, args, JSON_ANY);
+    if (!pci_info)
+        goto free_pci_path;
+
+    if (strcmp(dir_id->u.string, XENPCID_PCI_DEV) == 0) {
+        full_path = (char *)pcid_zalloc(strlen(SYSFS_PCI_DEV) +
+                                        strlen(pci_path->u.string) + 1);
+        sprintf(full_path, SYSFS_PCI_DEV"%s", pci_path->u.string);
+    } else if (strcmp(dir_id->u.string, XENPCID_PCIBACK_DRIVER) == 0){
+        full_path = (char *)pcid_zalloc(strlen(SYSFS_PCIBACK_DRIVER) +
+                                        strlen(pci_path->u.string) + 1);
+        sprintf(full_path, SYSFS_PCIBACK_DRIVER"%s", pci_path->u.string);
+    } else if (strcmp(dir_id->u.string, SYSFS_DRIVER_PATH) == 0){
+        full_path = pci_path->u.string;
+    } else {
+        fprintf(stderr, "Unknown write directory %s\n", dir_id->u.string);
+        goto free_pci_info;
+    }
+    ret = handle_write_cmd(full_path, pci_info->u.string);
+    if (strcmp(dir_id->u.string, SYSFS_DRIVER_PATH) != 0)
+        free(full_path);
+    if (ret != 0)
+        goto free_pci_info;
+
+    result = pcid__json_object_alloc(JSON_STRING);
+
+free_pci_info:
+    free(pci_info->u.string);
+free_pci_path:
+    free(pci_path->u.string);
+free_dir_id:
+    free(dir_id->u.string);
+free_args:
+    free_pcid_obj_map(args);
+out:
+    return result;
+}
+
 static int vchan_handle_message(struct vchan_state *state,
                                 struct pcid__json_object *resp,
                                 struct pcid__json_object **result)
@@ -637,6 +716,8 @@ static int vchan_handle_message(struct vchan_state *state,
 
     if (strcmp(command_name, XENPCID_CMD_LIST) == 0)
         (*result) = process_ls_cmd(resp);
+    else if (strcmp(XENPCID_CMD_WRITE, command_name) == 0)
+        (*result) = process_write_cmd(resp);
     else
         fprintf(stderr, "Unknown command\n");
     free(command_name);
