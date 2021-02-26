@@ -218,6 +218,8 @@ static int handle_ls_command(char *dir_name, struct list_head **result)
 
     if (strcmp(XENPCID_PCIBACK_DRIVER, dir_name) == 0) {
         dir = opendir(SYSFS_PCIBACK_DRIVER);
+    } else if (strcmp(XENPCID_PCI_DEV, dir_name) == 0) {
+        dir = opendir(SYSFS_PCI_DEV);
     } else {
         fprintf(stderr, "Unknown directory: %s\n", dir_name);
         goto out;
@@ -363,6 +365,22 @@ static int handle_write_cmd(char *sysfs_path, char *pci_info)
     if (rc < 0) {
         fprintf(stderr, "write to %s returned %d\n", sysfs_path, rc);
         return ERROR_FAIL;
+    }
+
+    return 0;
+}
+
+static int handle_exists_cmd(char *path)
+{
+    struct stat st;
+
+    if (lstat(path, &st)) {
+        if (errno == ENOENT)
+            fprintf(stderr, "%s is not assigned to pciback driver",
+                    path);
+        else
+            fprintf(stderr, "Couldn't lstat %s", path);
+        return -1;
     }
 
     return 0;
@@ -770,6 +788,42 @@ out:
     return result;
 }
 
+static struct pcid__json_object *process_exists_cmd(struct pcid__json_object *resp)
+{
+    struct pcid__json_object *result = NULL, *args, *pci_path, *pci_info;
+    char *full_path;
+    int ret;
+
+    args = pcid__json_map_get(XENPCID_MSG_FIELD_ARGS, resp, JSON_MAP);
+    if (!args)
+        goto out;
+    pci_path = pcid__json_map_get(XENPCID_CMD_DIR_ID, args, JSON_ANY);
+    if (!pci_path)
+        goto free_args;
+    pci_info = pcid__json_map_get(XENPCID_CMD_PCI_INFO, args, JSON_ANY);
+    if (!pci_info)
+        goto free_pci_path;
+    if (strcmp(pci_path->u.string, XENPCID_PCIBACK_DRIVER) == 0) {
+        full_path = (char *)pcid_zalloc(strlen(SYSFS_PCIBACK_DRIVER) +
+                                            strlen(pci_info->u.string) + 1);
+        sprintf(full_path, SYSFS_PCIBACK_DRIVER"%s", pci_info->u.string);
+        free(pci_info->u.string);
+    } else
+        full_path = pci_info->u.string;
+    ret = handle_exists_cmd(full_path);
+    free(full_path);
+    if (ret != 0)
+        goto free_pci_path;
+
+    result = pcid__json_object_alloc(JSON_STRING);
+
+free_pci_path:
+    free(pci_path->u.string);
+free_args:
+    free_pcid_obj_map(args);
+out:
+    return result;
+}
 
 static int vchan_handle_message(struct vchan_state *state,
                                 struct pcid__json_object *resp,
@@ -787,6 +841,8 @@ static int vchan_handle_message(struct vchan_state *state,
         (*result) = process_write_cmd(resp);
     else if (strcmp(command_name, XENPCID_CMD_READ_HEX) == 0)
         (*result) = process_read_hex_cmd(resp);
+    else if (strcmp(command_name, XENPCID_CMD_EXISTS) == 0)
+        (*result) = process_exists_cmd(resp);
     else
         fprintf(stderr, "Unknown command\n");
     free(command_name);
