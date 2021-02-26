@@ -251,8 +251,11 @@ static int vchan_handle_message(libxl__gc *gc,
     switch (type) {
     case LIBXL__PCID_MESSAGE_TYPE_RETURN:
         *result = libxl__json_map_get(XENPCID_MSG_RETURN, resp, JSON_ARRAY);
+        if (!(*result))
+            *result = libxl__json_map_get(XENPCID_MSG_RETURN, resp, JSON_STRING);
         return 0;
     case LIBXL__PCID_MESSAGE_TYPE_ERROR:
+        LOGE(ERROR, "Error occured during command processing.");
         break;
     case LIBXL__PCID_MESSAGE_TYPE_INVALID:
         return ERROR_PROTOCOL_ERROR_PCID;
@@ -698,15 +701,44 @@ static bool is_pci_in_array(libxl_device_pci *pcis, int num,
 }
 
 /* Write the standard BDF into the sysfs path given by sysfs_path. */
-static int sysfs_write_bdf(libxl__gc *gc, const char * sysfs_path,
+static int sysfs_write_bdf(libxl__gc *gc, const char *sysfs_path,
+                           const char *pci_path,
                            libxl_device_pci *pci)
 {
-    int rc, fd;
     char *buf;
 
-    fd = open(sysfs_path, O_WRONLY);
+#ifdef XENPCID_SERVER
+    struct vchan_state *vchan;
+    libxl__json_object *args = NULL;
+    const libxl__json_object *result = NULL;
+
+    vchan = vchan_get_instance(gc);
+    if (!vchan)
+        return ERROR_FAIL;
+
+    buf = GCSPRINTF(PCI_BDF, pci->domain, pci->bus, pci->dev, pci->func);
+    if (strcmp(SYSFS_PCI_DEV, sysfs_path) == 0)
+        libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_DIR_ID, XENPCID_PCI_DEV);
+    else if (strcmp(SYSFS_PCIBACK_DRIVER, sysfs_path) == 0)
+        libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_DIR_ID, XENPCID_PCIBACK_DRIVER);
+    else if (strcmp(SYSFS_DRIVER_PATH, sysfs_path) == 0)
+        libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_DIR_ID, SYSFS_DRIVER_PATH);
+
+    libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_PCI_PATH, pci_path);
+    libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_PCI_INFO, buf);
+    result = vchan_send_command(gc, vchan, XENPCID_CMD_WRITE, args);
+    if (!result) {
+        LOGE(WARN, "Write %s to %s failed\n", buf, sysfs_path);
+        return ERROR_FAIL;
+    }
+#else
+    int rc, fd;
+    char *full_path;
+
+    full_path = GCSPRINTF("%s%s", sysfs_path, pci_path);
+    fd = open(full_path, O_WRONLY);
     if (fd < 0) {
-        LOGE(ERROR, "Couldn't open %s", sysfs_path);
+        LOGE(ERROR, "Couldn't open %s", full_path);
         return ERROR_FAIL;
     }
 
@@ -715,12 +747,12 @@ static int sysfs_write_bdf(libxl__gc *gc, const char * sysfs_path,
     rc = write(fd, buf, strlen(buf));
     /* Annoying to have two if's, but we need the errno */
     if (rc < 0)
-        LOGE(ERROR, "write to %s returned %d", sysfs_path, rc);
+        LOGE(ERROR, "write to %s returned %d", full_path, rc);
     close(fd);
 
     if (rc < 0)
         return ERROR_FAIL;
-
+#endif
     return 0;
 }
 
@@ -881,14 +913,13 @@ void libxl_device_pci_assignable_list_free(libxl_device_pci *list, int num)
 static int sysfs_dev_unbind(libxl__gc *gc, libxl_device_pci *pci,
                             char **driver_path)
 {
-    char * spath, *dp = NULL;
+    char *spath, *pci_path, *dp = NULL;
     struct stat st;
 
-    spath = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/driver",
-                           pci->domain,
-                           pci->bus,
-                           pci->dev,
-                           pci->func);
+    pci_path = GCSPRINTF("/"PCI_BDF"/driver", pci->domain, pci->bus,
+                         pci->dev, pci->func);
+
+    spath = GCSPRINTF(SYSFS_PCI_DEV"%s", pci_path);
     if ( !lstat(spath, &st) ) {
         /* Find the canonical path to the driver. */
         dp = libxl__zalloc(gc, PATH_MAX);
@@ -902,7 +933,7 @@ static int sysfs_dev_unbind(libxl__gc *gc, libxl_device_pci *pci,
 
         /* Unbind from the old driver */
         spath = GCSPRINTF("%s/unbind", dp);
-        if ( sysfs_write_bdf(gc, spath, pci) < 0 ) {
+        if (sysfs_write_bdf(gc, SYSFS_PCI_DEV, pci_path, pci) < 0) {
             LOGE(ERROR, "Couldn't unbind device");
             return -1;
         }
@@ -1104,14 +1135,14 @@ static int pciback_dev_assign(libxl__gc *gc, libxl_device_pci *pci)
         LOGE(ERROR, "Error checking for pciback slot");
         return ERROR_FAIL;
     } else if (rc == 0) {
-        if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/new_slot",
-                             pci) < 0 ) {
+        if (sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER, "/new_slot",
+                            pci) < 0) {
             LOGE(ERROR, "Couldn't bind device to pciback!");
             return ERROR_FAIL;
         }
     }
 
-    if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/bind", pci) < 0 ) {
+    if (sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER, "/bind", pci) < 0) {
         LOGE(ERROR, "Couldn't bind device to pciback!");
         return ERROR_FAIL;
     }
@@ -1128,8 +1159,8 @@ static int pciback_dev_unassign(libxl__gc *gc, libxl_device_pci *pci)
 
     /* Remove slot if necessary */
     if ( pciback_dev_has_slot(gc, pci) > 0 ) {
-        if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/remove_slot",
-                             pci) < 0 ) {
+        if (sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER, "/remove_slot",
+                            pci) < 0) {
             LOGE(ERROR, "Couldn't remove pciback slot");
             return ERROR_FAIL;
         }
@@ -1310,9 +1341,9 @@ static int libxl__device_pci_assignable_remove(libxl__gc *gc,
         if ( rebind ) {
             LOG(INFO, "Rebinding to driver at %s", driver_path);
 
-            if ( sysfs_write_bdf(gc,
-                                 GCSPRINTF("%s/bind", driver_path),
-                                 pci) < 0 ) {
+            if (sysfs_write_bdf(gc, SYSFS_DRIVER_PATH,
+                                GCSPRINTF("%s/bind", driver_path),
+                                pci) < 0) {
                 LOGE(ERROR, "Couldn't bind device to %s", driver_path);
                 return -1;
             }
@@ -1853,8 +1884,8 @@ static void pci_add_dm_done(libxl__egc *egc,
 
     /* Don't restrict writes to the PCI config space from this VM */
     if (pci->permissive) {
-        if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/permissive",
-                             pci) < 0 ) {
+        if (sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER, "/permissive",
+                            pci) < 0) {
             LOGD(ERROR, domainid, "Setting permissive for device");
             rc = ERROR_FAIL;
             goto out;
