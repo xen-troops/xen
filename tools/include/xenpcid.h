@@ -34,6 +34,7 @@
 
 #define XENPCID_CMD_LIST            "ls"
 #define XENPCID_CMD_UNBIND          "unbind"
+#define XENPCID_CMD_RESET           "reset"
 #define XENPCID_CMD_DIR_ID          "dir_id"
 
 #define XENPCID_CMD_WRITE           "write"

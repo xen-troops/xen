@@ -2146,6 +2146,29 @@ static int libxl__device_pci_reset(libxl__gc *gc, unsigned int domain, unsigned 
                                    unsigned int dev, unsigned int func)
 {
     char *reset;
+#ifdef XENPCID_SERVER
+    char *buf;
+    struct vchan_state *vchan;
+    libxl__json_object *args = NULL;
+    const libxl__json_object *result = NULL;
+
+    vchan = vchan_get_instance(gc);
+    if (!vchan)
+        return -1;
+
+    reset = GCSPRINTF("%s", "/do_flr");
+    buf = GCSPRINTF(PCI_BDF, domain, bus, dev, func);
+
+    libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_PCI_PATH, reset);
+    libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_PCI_INFO, buf);
+    result = vchan_send_command(gc, vchan, XENPCID_CMD_WRITE, args);
+    if (!result) {
+        LOGD(ERROR, domain, "write to %s returned error", reset);
+        return -1;
+    }
+
+    return 0;
+#else
     int fd, rc;
 
     reset = GCSPRINTF("%s/do_flr", SYSFS_PCIBACK_DRIVER);
@@ -2177,6 +2200,7 @@ static int libxl__device_pci_reset(libxl__gc *gc, unsigned int domain, unsigned 
         LOGED(ERROR, domain, "Failed to access reset path %s", reset);
     }
     return -1;
+#endif
 }
 
 int libxl__device_pci_setdefault(libxl__gc *gc, uint32_t domid,
@@ -2596,6 +2620,82 @@ static void do_pci_remove(libxl__egc *egc, pci_remove_state *prs)
             goto out_fail;
         }
     } else {
+        char *sysfs_path = GCSPRINTF("/"PCI_BDF"/resource", pci->domain,
+                                     pci->bus, pci->dev, pci->func);
+        unsigned int start = 0, end = 0, flags = 0, size = 0;
+        int irq = 0;
+        int i;
+#ifdef XENPCID_SERVER
+        struct vchan_state *vchan;
+        libxl__json_object *args = NULL;
+        const libxl__json_object *result = NULL, *addr;
+        int j = 0;
+
+        vchan = vchan_get_instance(gc);
+        if (!vchan)
+            goto out_fail;
+        libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_PCI_INFO, sysfs_path);
+        result = vchan_send_command(gc, vchan, XENPCID_CMD_READ_RESOURCES, args);
+        if (!result) {
+            LOGED(ERROR, domainid, "Couldn't get resources from %s", sysfs_path);
+            rc = ERROR_FAIL;
+            goto skip1;
+        }
+
+        for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
+            addr = libxl__json_array_get(result, j++);
+            start = libxl__json_object_get_integer(addr);
+            addr = libxl__json_array_get(result, j++);
+            end = libxl__json_object_get_integer(addr);
+            addr = libxl__json_array_get(result, j++);
+            flags = libxl__json_object_get_integer(addr);
+
+            size = end - start + 1;
+            if (start) {
+                if (flags & PCI_BAR_IO) {
+                    rc = xc_domain_ioport_permission(ctx->xch, domid, start, size, 0);
+                    if (rc < 0)
+                        LOGED(ERROR, domainid,
+                              "xc_domain_ioport_permission error 0x%x/0x%x",
+                              start,
+                              size);
+                } else {
+                    rc = xc_domain_iomem_permission(ctx->xch, domid, start>>XC_PAGE_SHIFT,
+                                                    (size+(XC_PAGE_SIZE-1))>>XC_PAGE_SHIFT, 0);
+                    if (rc < 0)
+                        LOGED(ERROR, domainid,
+                              "xc_domain_iomem_permission error 0x%x/0x%x",
+                              start,
+                              size);
+                }
+            }
+        }
+
+skip1:
+        sysfs_path = GCSPRINTF("/"PCI_BDF"/irq", pci->domain,
+                               pci->bus, pci->dev, pci->func);
+        libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_PCI_INFO, sysfs_path);
+        libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_DIR_ID,
+                                    XENPCID_PCI_DEV);
+        result = vchan_send_command(gc, vchan, XENPCID_CMD_READ_HEX, args);
+        if (!result) {
+            LOGED(ERROR, domainid, "Couldn't get irq from %s", sysfs_path);
+            rc = ERROR_FAIL;
+            goto skip_irq;
+        }
+
+        irq = libxl__json_object_get_integer(result);
+        if (irq) {
+            rc = xc_physdev_unmap_pirq(ctx->xch, domid, irq);
+            if (rc < 0) {
+                LOGED(ERROR, domainid, "xc_physdev_unmap_pirq irq=%d", irq);
+            }
+            rc = xc_domain_irq_permission(ctx->xch, domid, irq, 0);
+            if (rc < 0) {
+                LOGED(ERROR, domainid, "xc_domain_irq_permission irq=%d", irq);
+            }
+        }
+#else
         char *sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/resource", pci->domain,
                                      pci->bus, pci->dev, pci->func);
         FILE *f = fopen(sysfs_path, "r");
@@ -2650,6 +2750,7 @@ skip1:
             }
         }
         fclose(f);
+#endif
     }
 skip_irq:
     rc = 0;
