@@ -2155,6 +2155,8 @@ static bool arm_smmu_sid_in_range(struct arm_smmu_device *smmu, u32 sid)
 }
 /* Forward declaration */
 static struct arm_smmu_device *arm_smmu_get_by_dev(struct device *dev);
+static int arm_smmu_assign_dev(struct domain *d, u8 devfn,
+			struct device *dev, u32 flag);
 
 static int arm_smmu_add_device(u8 devfn, struct device *dev)
 {
@@ -2207,16 +2209,27 @@ static int arm_smmu_add_device(u8 devfn, struct device *dev)
 	 */
 	arm_smmu_enable_pasid(master);
 
-	if (dt_device_is_protected(dev_to_dt(dev))) {
+	if (device_is_protected(dev)) {
 		dev_err(dev, "Already added to SMMUv3\n");
 		return -EEXIST;
 	}
 
 	/* Let Xen know that the master device is protected by an IOMMU. */
-	dt_device_set_protected(dev_to_dt(dev));
+	device_set_protected(dev);
 
 	dev_info(dev, "Added master device (SMMUv3 %s StreamIds %u)\n",
 			dev_name(fwspec->iommu_dev), fwspec->num_ids);
+
+#ifdef CONFIG_HAS_PCI
+	if (dev_is_pci(dev))
+	{
+		struct pci_dev *pdev = dev_to_pci(dev);
+
+		ret = arm_smmu_assign_dev(pdev->domain, devfn, dev, 0);
+		if (ret)
+			goto err_free_master;
+	}
+#endif
 
 	return 0;
 
@@ -2225,6 +2238,14 @@ err_free_master:
 	dev_iommu_priv_set(dev, NULL);
 	return ret;
 }
+
+#ifdef CONFIG_HAS_PCI
+static int arm_smmu_remove_device(u8 devfn, struct device *dev)
+{
+	/* XXX Implement me */
+	ASSERT_UNREACHABLE();
+}
+#endif
 
 static int arm_smmu_dt_xlate(struct device *dev,
 				const struct dt_phandle_args *args)
@@ -3302,6 +3323,30 @@ static int arm_smmu_assign_dev(struct domain *d, u8 devfn,
 	struct arm_smmu_domain *smmu_domain;
 	struct arm_smmu_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
 
+#ifdef CONFIG_HAS_PCI
+	if (dev_is_pci(dev) && !is_hardware_domain(d))
+	{
+		struct pci_dev *pdev = dev_to_pci(dev);
+
+		printk(XENLOG_INFO "Assigning device %04x:%02x:%02x.%u to dom%d\n",
+				pdev->seg, pdev->bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
+				d->domain_id);
+
+		/*
+		 * XXX What would be the proper behavior? This could happen if
+		 * pdev->phantom_stride > 0
+		 */
+		BUG_ON(devfn != pdev->devfn);
+
+		list_move(&pdev->domain_list, &d->pdev_list);
+		pdev->domain = d;
+
+		/* dom_io is used as a sentinel for quarantined devices */
+		if (d == dom_io)
+			return 0;
+	}
+#endif
+
 	spin_lock(&xen_domain->lock);
 
 	/*
@@ -3335,7 +3380,7 @@ out:
 	return ret;
 }
 
-static int arm_smmu_deassign_dev(struct domain *d, struct device *dev)
+static int arm_smmu_deassign_dev(struct domain *d, u8 devfn, struct device *dev)
 {
 	struct iommu_domain *io_domain = arm_smmu_get_domain(d, dev);
 	struct arm_smmu_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
@@ -3346,6 +3391,27 @@ static int arm_smmu_deassign_dev(struct domain *d, struct device *dev)
 		dev_err(dev, " not attached to domain %d\n", d->domain_id);
 		return -ESRCH;
 	}
+
+#ifdef CONFIG_HAS_PCI
+	if (dev_is_pci(dev))
+	{
+		struct pci_dev *pdev = dev_to_pci(dev);
+
+		printk(XENLOG_INFO "Deassigning device %04x:%02x:%02x.%u from dom%d\n",
+				pdev->seg, pdev->bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
+				d->domain_id);
+
+		/*
+		 * XXX What would be the proper behavior? This could happen if
+		 * pdev->phantom_stride > 0
+		 */
+		BUG_ON(devfn != pdev->devfn);
+
+		/* dom_io is used as a sentinel for quarantined devices */
+		if (d == dom_io)
+			return 0;
+	}
+#endif
 
 	spin_lock(&xen_domain->lock);
 
@@ -3366,13 +3432,13 @@ static int arm_smmu_reassign_dev(struct domain *s, struct domain *t,
 	int ret = 0;
 
 	/* Don't allow remapping on other domain than hwdom */
-	if (t && t != hardware_domain)
+	if (t && t != hardware_domain && t != dom_io)
 		return -EPERM;
 
 	if (t == s)
 		return 0;
 
-	ret = arm_smmu_deassign_dev(s, dev);
+	ret = arm_smmu_deassign_dev(s, devfn, dev);
 	if (ret)
 		return ret;
 
@@ -3437,6 +3503,9 @@ static const struct iommu_ops arm_smmu_iommu_ops = {
 	.unmap_page		= arm_iommu_unmap_page,
 	.dt_xlate		= arm_smmu_dt_xlate,
 	.add_device		= arm_smmu_add_device,
+#ifdef CONFIG_HAS_PCI
+	.remove_device = arm_smmu_remove_device,
+#endif
 };
 
 static __init int arm_smmu_dt_init(struct dt_device_node *dev,
