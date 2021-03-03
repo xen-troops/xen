@@ -50,11 +50,13 @@ install-initd:
 	$(INSTALL_PROG) init.d/xendomains $(DESTDIR)$(INITD_DIR)
 	$(INSTALL_PROG) init.d/xencommons $(DESTDIR)$(INITD_DIR)
 	$(INSTALL_PROG) init.d/xendriverdomain $(DESTDIR)$(INITD_DIR)
+	$(INSTALL_PROG) init.d/xen-pcid $(DESTDIR)$(INITD_DIR)
 	$(INSTALL_PROG) init.d/xen-watchdog $(DESTDIR)$(INITD_DIR)
 
 .PHONY: uninstall-initd
 uninstall-initd:
 	rm -f $(DESTDIR)$(INITD_DIR)/xen-watchdog
+	rm -f $(DESTDIR)$(INITD_DIR)/xen-pcid
 	rm -f $(DESTDIR)$(INITD_DIR)/xendriverdomain
 	rm -f $(DESTDIR)$(INITD_DIR)/xencommons
 	rm -f $(DESTDIR)$(INITD_DIR)/xendomains

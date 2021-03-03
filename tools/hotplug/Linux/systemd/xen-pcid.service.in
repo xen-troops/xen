@@ -1,0 +1,14 @@
+[Unit]
+Description=Xen-pcid - run xenpcid daemon
+Requires=xenstored.service
+After=xendomains.service
+ConditionPathExists=/proc/xen/capabilities
+
+[Service]
+Type=forking
+Environment="XENPCID_ARGS=-f"
+EnvironmentFile=-@CONFIG_DIR@/@CONFIG_LEAF_DIR@/xencommons
+ExecStart=@sbindir@/xenpcid $XENPCID_ARGS
+
+[Install]
+WantedBy=multi-user.target
