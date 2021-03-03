@@ -20,6 +20,7 @@
 #define PCID_H
 /* TODO: Determine id of control domain and use it all over the code */
 #define DOM0_ID 0
+#define FOREGROUND_OPT "-f"
 
 #if defined(__linux__)
 #define SYSFS_PCIBACK_DRIVER   "/sys/bus/pci/drivers/pciback"
