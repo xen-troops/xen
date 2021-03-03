@@ -35,6 +35,10 @@
 #include <dirent.h>
 #include "pcid.h"
 
+#include <sys/types.h>
+#include <sys/stat.h>
+
+/* #define RUN_STANDALONE */
 #define BUFSIZE 4096
 /*
  * TODO: Running this code in multi-threaded environment
@@ -588,6 +592,31 @@ static void vchan_receive_command(struct vchan_state *state)
     free(reply);
 }
 
+/* Borrowed daemonize from xenstored - Initially written by Stevens. */
+static void daemonize(void)
+{
+    pid_t pid;
+
+    if ( (pid = fork()) < 0 )
+        exit(1);
+
+    if ( pid != 0 )
+        exit(0);
+
+    setsid();
+
+    if ( (pid = fork()) < 0 )
+        exit(1);
+
+    if ( pid != 0 )
+        exit(0);
+
+    if ( chdir("/") == -1 )
+        exit(1);
+
+    umask(0);
+}
+
 int main(int argc, char *argv[])
 {
     int ret, rsiz, wsiz;
@@ -596,6 +625,9 @@ int main(int argc, char *argv[])
     char *domid_str, vchan_path[100];
     struct xs_handle *xs;
     struct vchan_state *vchan;
+
+    if (argc == 2 && strcmp(argv[1], FOREGROUND_OPT) == 0)
+        daemonize();
 
     xs = xs_open(0);
     if (!xs)

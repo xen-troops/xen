@@ -1,0 +1,88 @@
+#! /bin/bash
+#
+# xen-pcid
+#
+# description: Run xenpcid daemon
+### BEGIN INIT INFO
+# Provides:          xen-pcid
+# Short-Description: Start/stop xen-pcid
+# Description:       Run xenpcid daemon
+### END INIT INFO
+#
+
+. @XEN_SCRIPT_DIR@/hotplugpath.sh
+
+xencommons_config=@CONFIG_DIR@/@CONFIG_LEAF_DIR@
+
+test -f $xencommons_config/xencommons && . $xencommons_config/xencommons
+
+test -n "$XENPCID_ARGS" || XENPCID_ARGS='-f'
+DAEMON=${sbindir}/xenpcid
+base=$(basename $DAEMON)
+
+# Source function library.
+if [ -e  /etc/init.d/functions ] ; then
+    . /etc/init.d/functions
+elif [ -e /lib/lsb/init-functions ] ; then
+    . /lib/lsb/init-functions
+    success () {
+        log_success_msg $*
+    }
+    failure () {
+        log_failure_msg $*
+    }
+else
+    success () {
+        echo $*
+    }
+    failure () {
+        echo $*
+    }
+fi
+
+start() {
+	local r
+	echo -n $"Starting domain xenpcid daemon: "
+
+	$DAEMON $XENPCID_ARGS
+	r=$?
+	[ "$r" -eq 0 ] && success $"$base startup" || failure $"$base startup"
+	echo
+
+	return $r
+}
+
+stop() {
+	local r
+	echo -n $"Stopping domain xenpcid daemon: "
+
+	killall -USR1 $base 2>/dev/null
+	r=$?
+	[ "$r" -eq 0 ] && success $"$base stop" || failure $"$base stop"
+	echo
+
+	return $r
+}
+
+case "$1" in
+  start)
+  	start
+	;;
+  stop)
+	stop
+	;;
+  restart)
+	stop
+	start
+	;;
+  status)
+	;;
+  condrestart)
+	stop
+	start
+	;;
+  *)
+	echo $"Usage: $0 {start|stop|status|restart|condrestart}"
+	exit 1
+esac
+
