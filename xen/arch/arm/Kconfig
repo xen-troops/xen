@@ -297,3 +297,5 @@ source "arch/arm/platforms/Kconfig"
 source "common/Kconfig"
 
 source "drivers/Kconfig"
+
+source "arch/arm/pci/Kconfig"

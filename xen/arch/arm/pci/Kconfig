@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0
+
+menu "PCI controller drivers"
+	depends on HAS_PCI
+
+config PCIE_XILINX_NWL
+	bool "NWL PCIe Core"
+	default y
+	help
+	  Say 'Y' here if you want support for Xilinx NWL PCIe controller.
+
+endmenu
