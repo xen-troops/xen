@@ -360,19 +360,18 @@ struct dt_device_node *pci_find_host_bridge_node(struct device *dev)
 /*
  * This function will lookup an hostbridge based on confic space address.
  */
-int pci_get_host_bridge_segment(paddr_t addr, uint16_t *segment)
+int pci_get_host_bridge_segment(const struct dt_device_node *node,
+                                uint16_t *segment)
 {
     struct pci_host_bridge *bridge;
-    struct pci_config_window *cfg;
 
     list_for_each_entry( bridge, &pci_host_bridges, node )
     {
-        cfg = bridge->sysdata;
-        if ( cfg->phys_addr == addr )
-        {
-            *segment = bridge->segment;
-            return 0;
-        }
+        if ( bridge->dt_node != node )
+            continue;
+
+        *segment = bridge->segment;
+        return 0;
     }
 
     return -EINVAL;

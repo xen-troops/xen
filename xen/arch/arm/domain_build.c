@@ -586,14 +586,9 @@ static int __init write_properties(struct domain *d, struct kernel_info *kinfo,
     {
         if ( !dt_find_property(node, "linux,pci-domain", NULL) )
         {
-            paddr_t addr;
             uint16_t segment;
 
-            res = dt_device_get_address(node, 0, &addr, NULL);
-            if ( res )
-                return res;
-
-            res = pci_get_host_bridge_segment(addr, &segment);
+            res = pci_get_host_bridge_segment(node, &segment);
             if ( res < 0 )
                 return res;
 
