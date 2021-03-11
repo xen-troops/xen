@@ -33,10 +33,7 @@
  *     as there is no blocking locks implementation available in XEN.This might
  *     introduce latency in XEN. Need to investigate before driver is out for
  *     Tech Preview.
- *  7. PCI ATS functionality is not supported, as there is no support available
- *     in XEN to test the functionality. Code is not tested and compiled. Code
- *     is guarded by the flag CONFIG_PCI_ATS.
- *  8. MSI interrupts are not supported as there is no support available
+ *  7. MSI interrupts are not supported as there is no support available
  *     in XEN to request MSI interrupts. Code is not tested and compiled. Code
  *     is guarded by the flag CONFIG_MSI.
  *
@@ -47,7 +44,7 @@
  *     when attaching devices to SMMU.
  *  2. Merged the latest Linux SMMUv3 driver code once atomic operation is
  *     available in XEN.
- *  3. PCI ATS and MSI interrupts should be supported.
+ *  3. MSI interrupts should be supported.
  *  4. Investigate side-effect of using tasklet in place of threaded IRQ and
  *     fix if any.
  *
@@ -89,7 +86,7 @@
 #include <asm/io.h>
 #include <asm/iommu_fwspec.h>
 #include <asm/platform.h>
-
+#include "../ats.h"
 
 #define ARM_SMMU_VTCR_SH_IS		3
 #define ARM_SMMU_VTCR_RGN_WBWA		1
@@ -848,6 +845,8 @@ struct arm_smmu_device {
 	struct tasklet		evtq_irq_tasklet;
 	struct tasklet		priq_irq_tasklet;
 	struct tasklet		combined_irq_tasklet;
+
+	struct list_head ats_devices;
 };
 
 /* SMMU private data for each master */
@@ -1649,7 +1648,6 @@ static void arm_smmu_priq_irq_tasklet(int irq, void *dev,
 	tasklet_schedule(&(smmu->priq_irq_tasklet));
 }
 
-#ifdef CONFIG_PCI_ATS
 static void
 arm_smmu_atc_inv_to_cmd(int ssid, unsigned long iova, size_t size,
 			struct arm_smmu_cmdq_ent *cmd)
@@ -1694,7 +1692,7 @@ arm_smmu_atc_inv_to_cmd(int ssid, unsigned long iova, size_t size,
 	 *		x = 0b0111 ^ 0b1010 = 0b1101
 	 *		span = 1 << fls(x) = 16
 	 */
-	log2_span	= fls_long(page_start ^ page_end);
+	log2_span	= flsl(page_start ^ page_end);
 	span_mask	= (1ULL << log2_span) - 1;
 
 	page_start	&= ~span_mask;
@@ -1756,7 +1754,6 @@ static int arm_smmu_atc_inv_domain(struct arm_smmu_domain *smmu_domain,
 
 	return ret ? -ETIMEDOUT : 0;
 }
-#endif /* CONFIG_PCI_ATS */
 
 static void arm_smmu_tlb_inv_context(void *cookie)
 {
@@ -1776,6 +1773,7 @@ static void arm_smmu_tlb_inv_context(void *cookie)
 	 */
 	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
 	arm_smmu_cmdq_issue_sync(smmu);
+	arm_smmu_atc_inv_domain(smmu_domain, 0, 0, 0);
 }
 
 static struct iommu_domain *arm_smmu_domain_alloc(void)
@@ -1955,20 +1953,17 @@ static void arm_smmu_install_ste_for_dev(struct arm_smmu_master *master)
 	}
 }
 
-#ifdef CONFIG_PCI_ATS
 static bool arm_smmu_ats_supported(struct arm_smmu_master *master)
 {
-	struct device *dev = master->dev;
+	struct pci_dev *pdev;
 	struct arm_smmu_device *smmu = master->smmu;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
-	if (!(smmu->features & ARM_SMMU_FEAT_ATS))
+	if (!(smmu->features & ARM_SMMU_FEAT_ATS) || !dev_is_pci(master->dev))
 		return false;
 
-	if (!(fwspec->flags & IOMMU_FWSPEC_PCI_RC_ATS))
-		return false;
+	pdev = dev_to_pci(master->dev);
 
-	return dev_is_pci(dev) && pci_ats_supported(to_pci_dev(dev));
+	return pci_ats_device(pdev->seg, pdev->bus, pdev->devfn);
 }
 
 static void arm_smmu_enable_ats(struct arm_smmu_master *master)
@@ -1984,12 +1979,11 @@ static void arm_smmu_enable_ats(struct arm_smmu_master *master)
 
 	/* Smallest Translation Unit: log2 of the smallest supported granule */
 	stu = __ffs(smmu->pgsize_bitmap);
-	pdev = to_pci_dev(master->dev);
+	pdev = dev_to_pci(master->dev);
 
 	atomic_inc(&smmu_domain->nr_ats_masters);
 	arm_smmu_atc_inv_domain(smmu_domain, 0, 0, 0);
-	if (pci_enable_ats(pdev, stu))
-		dev_err(master->dev, "Failed to enable ATS (STU %zu)\n", stu);
+	enable_ats_device(pdev, &smmu->ats_devices);
 }
 
 static void arm_smmu_disable_ats(struct arm_smmu_master *master)
@@ -2000,7 +1994,7 @@ static void arm_smmu_disable_ats(struct arm_smmu_master *master)
 	if (!master->ats_enabled)
 		return;
 
-	pci_disable_ats(to_pci_dev(master->dev));
+	disable_ats_device(dev_to_pci(master->dev));
 	/*
 	 * Ensure ATS is disabled at the endpoint before we issue the
 	 * ATC invalidation via the SMMU.
@@ -2010,67 +2004,6 @@ static void arm_smmu_disable_ats(struct arm_smmu_master *master)
 	arm_smmu_atc_inv_master(master, &cmd);
 	atomic_dec(&smmu_domain->nr_ats_masters);
 }
-
-static int arm_smmu_enable_pasid(struct arm_smmu_master *master)
-{
-	int ret;
-	int features;
-	int num_pasids;
-	struct pci_dev *pdev;
-
-	if (!dev_is_pci(master->dev))
-		return -ENODEV;
-
-	pdev = to_pci_dev(master->dev);
-
-	features = pci_pasid_features(pdev);
-	if (features < 0)
-		return features;
-
-	num_pasids = pci_max_pasids(pdev);
-	if (num_pasids <= 0)
-		return num_pasids;
-
-	ret = pci_enable_pasid(pdev, features);
-	if (ret) {
-		dev_err(&pdev->dev, "Failed to enable PASID\n");
-		return ret;
-	}
-
-	return 0;
-}
-
-static void arm_smmu_disable_pasid(struct arm_smmu_master *master)
-{
-	struct pci_dev *pdev;
-
-	if (!dev_is_pci(master->dev))
-		return;
-
-	pdev = to_pci_dev(master->dev);
-
-	if (!pdev->pasid_enabled)
-		return;
-
-	pci_disable_pasid(pdev);
-}
-#else
-static inline bool arm_smmu_ats_supported(struct arm_smmu_master *master)
-{
-	return false;
-}
-
-static inline void arm_smmu_enable_ats(struct arm_smmu_master *master) { }
-
-static inline void arm_smmu_disable_ats(struct arm_smmu_master *master) { }
-
-static inline int arm_smmu_enable_pasid(struct arm_smmu_master *master)
-{
-	return 0;
-}
-
-static inline void arm_smmu_disable_pasid(struct arm_smmu_master *master) { }
-#endif /* CONFIG_PCI_ATS */
 
 static void arm_smmu_detach_dev(struct arm_smmu_master *master)
 {
@@ -2198,16 +2131,6 @@ static int arm_smmu_add_device(u8 devfn, struct device *dev)
 				goto err_free_master;
 		}
 	}
-
-	/*
-	 * Note that PASID must be enabled before, and disabled after ATS:
-	 * PCI Express Base 4.0r1.0 - 10.5.1.3 ATS Control Register
-	 *
-	 *   Behavior is undefined if this bit is Set and the value of the PASID
-	 *   Enable, Execute Requested Enable, or Privileged Mode Requested bits
-	 *   are changed.
-	 */
-	arm_smmu_enable_pasid(master);
 
 	if (device_is_protected(dev)) {
 		dev_err(dev, "Already added to SMMUv3\n");
@@ -2882,7 +2805,7 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 	if (IS_ENABLED(CONFIG_PCI_PRI) && reg & IDR0_PRI)
 		smmu->features |= ARM_SMMU_FEAT_PRI;
 
-	if (IS_ENABLED(CONFIG_PCI_ATS) && reg & IDR0_ATS)
+	if (IS_ENABLED(CONFIG_HAS_PCI) && reg & IDR0_ATS)
 		smmu->features |= ARM_SMMU_FEAT_ATS;
 
 	if (reg & IDR0_SEV)
@@ -3210,6 +3133,7 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 	 * the smmu devices based on the fwnode.
 	 */
 	INIT_LIST_HEAD(&smmu->devices);
+	INIT_LIST_HEAD(&smmu->ats_devices);
 
 	spin_lock(&arm_smmu_devices_lock);
 	list_add(&smmu->devices, &arm_smmu_devices);
