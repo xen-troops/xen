@@ -250,7 +250,7 @@ static int vchan_handle_message(libxl__gc *gc,
     *result = NULL;
     switch (type) {
     case LIBXL__PCID_MESSAGE_TYPE_RETURN:
-        *result = libxl__json_map_get(XENPCID_MSG_RETURN, resp, JSON_ANY);
+        *result = libxl__json_map_get(XENPCID_MSG_RETURN, resp, JSON_ARRAY);
         return 0;
     case LIBXL__PCID_MESSAGE_TYPE_ERROR:
         break;
@@ -769,7 +769,7 @@ static void pci_info_xs_remove(libxl__gc *gc, libxl_device_pci *pci,
 
 libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
 {
-    libxl_device_pci *pcis = NULL;
+    libxl_device_pci *pcis = NULL, *new;
 
     GC_INIT(ctx);
     *num = 0;
@@ -777,7 +777,9 @@ libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
 #ifdef XENPCID_SERVER
     struct vchan_state *vchan;
     libxl__json_object *args = NULL;
-    const libxl__json_object *result;
+    const libxl__json_object *result = NULL, *dir;
+    int i;
+    const char *dir_name;
 
     vchan = vchan_get_instance(gc);
     if (!vchan)
@@ -786,10 +788,37 @@ libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
     libxl__qmp_param_add_string(gc, &args, XENPCID_CMD_DIR_ID,
                                 XENPCID_PCIBACK_DRIVER);
     result = vchan_send_command(gc, vchan, XENPCID_CMD_LIST, args);
+    if (!result)
+        goto out;
 
-    return 0;
+    for (i = 0; (dir = libxl__json_array_get(result, i)); i++) {
+        dir_name = libxl__json_object_get_string(dir);
+        unsigned dom, bus, dev, func;
+        char *name;
+        if (sscanf(dir_name, PCI_BDF, &dom, &bus, &dev, &func) != 4)
+            continue;
+
+        new = realloc(pcis, ((*num) + 1) * sizeof(*new));
+        if (new == NULL) {
+            LOGE(ERROR, "Couldn't realloc pcis struct for new entry");
+            break;
+        }
+
+        pcis = new;
+        new = pcis + *num;
+
+        libxl_device_pci_init(new);
+        pci_struct_fill(new, dom, bus, dev, func);
+
+        if (pci_info_xs_read(gc, new, "domid")) /* already assigned */
+            continue;
+
+        name = pci_info_xs_read(gc, new, "name");
+        if (name) new->name = strdup(name);
+
+        (*num)++;
+    }
 #else
-    libxl_device_pci *new;
     struct dirent *de;
     DIR *dir;
 
