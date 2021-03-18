@@ -136,6 +136,16 @@ static void free_list(struct list_head *head)
     }
 }
 
+static void free_list_rsc(struct list_resources *head)
+{
+    struct list_resources* tmp;
+
+    while (head != NULL) {
+        tmp = head;
+        head = head->next;
+        free(tmp);
+    }
+}
 static char *vchan_prepare_cmd(struct pcid__json_object *result,
                                int id)
 {
@@ -146,6 +156,7 @@ static char *vchan_prepare_cmd(struct pcid__json_object *result,
     yajl_gen_status s;
     char *ret = NULL;
     struct list_head *resp_list;
+    struct list_resources *resp_rsc_list;
 
     hand = libxl_yajl_gen_alloc(NULL);
     if (!hand) {
@@ -174,6 +185,15 @@ static char *vchan_prepare_cmd(struct pcid__json_object *result,
                     resp_list = resp_list->next;
                 }
                 free_list(result->u.list);
+            } else if (result->u.list_rsc) {
+                resp_rsc_list = result->u.list_rsc;
+                while (resp_rsc_list) {
+                    yajl_gen_integer(hand, resp_rsc_list->start);
+                    yajl_gen_integer(hand, resp_rsc_list->end);
+                    yajl_gen_integer(hand, resp_rsc_list->flags);
+                    resp_rsc_list = resp_rsc_list->next;
+                }
+                free_list_rsc(result->u.list_rsc);
             }
             yajl_gen_array_close(hand);
         } else if (result->type == JSON_STRING) {
@@ -405,6 +425,88 @@ static long long handle_read_hex_cmd(char *sysfs_path)
     }
 
     return result;
+}
+
+static int handle_read_resources_cmd(char *pci_path,
+                                     struct list_resources **result)
+{
+    unsigned long long start, end, flags;
+    struct list_resources *list = NULL, *head = NULL, *prev = NULL;
+    int i;
+    char *sysfs_path;
+    FILE *f;
+
+    head = (struct list_resources*)pcid_zalloc(sizeof(struct list_resources));
+    list = head;
+
+    sysfs_path = (char *)pcid_zalloc(strlen(SYSFS_PCI_DEV) + strlen(pci_path) + 1);
+    sprintf(sysfs_path, SYSFS_PCI_DEV"%s", pci_path);
+    f = fopen(sysfs_path, "r");
+    if (!f) {
+        fprintf(stderr, "Failed to open %s\n", sysfs_path);
+        free(sysfs_path);
+        return -1;
+    }
+    for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
+        if (fscanf(f, "0x%llx 0x%llx 0x%llx\n", &start, &end, &flags) != 3)
+            continue;
+
+        if (!list) {
+            list = (struct list_resources*)pcid_zalloc(sizeof(struct list_resources));
+            prev->next = list;
+        }
+        list->start = start;
+        list->end = end;
+        list->flags = flags;
+        prev = list;
+        list = list->next;
+    }
+    fclose(f);
+    free(sysfs_path);
+    *result = head;
+
+    return 0;
+}
+
+static int handle_unbind_cmd(char *pci_path, char *pci_info, char **result)
+{
+    char *spath, *new_path, *dp = NULL;
+    struct stat st;
+
+    spath = (char *)pcid_zalloc(strlen(SYSFS_PCI_DEV) + strlen(pci_path) + 1);
+    sprintf(spath, SYSFS_PCI_DEV"%s", pci_path);
+
+    if (!lstat(spath, &st)) {
+        /* Find the canonical path to the driver. */
+        dp = (char *)pcid_zalloc(PATH_MAX);
+        if (!(realpath(spath, dp))) {
+            fprintf(stderr, "realpath() failed\n");
+            goto fail;
+        }
+        *result = dp;
+        new_path = (char *)pcid_zalloc(strlen(dp) + strlen("/unbind") + 1);
+        /* Unbind from the old driver */
+        sprintf(new_path, "%s/unbind", dp);
+
+        if (handle_write_cmd(new_path, pci_info) != 0) {
+            fprintf(stderr, "Couldn't unbind device\n");
+            goto fail_write;
+        }
+        free(new_path);
+    } else {
+        *result = (char *)pcid_zalloc(strlen("nolstat") + 1);
+        sprintf(*result, "nolstat");
+    }
+    free(spath);
+
+    return 0;
+
+fail_write:
+    free(new_path);
+fail:
+    free(spath);
+
+    return -1;
 }
 
 static inline bool pcid__json_object_is_array(const struct pcid__json_object *o)
@@ -825,6 +927,65 @@ out:
     return result;
 }
 
+static struct pcid__json_object *process_read_rsc_cmd(struct pcid__json_object *resp)
+{
+    struct pcid__json_object *result = NULL, *args, *pci_info;
+    struct list_resources *resources_list = NULL;
+    int ret;
+
+    args = pcid__json_map_get(XENPCID_MSG_FIELD_ARGS, resp, JSON_MAP);
+    if (!args)
+        goto out;
+    pci_info = pcid__json_map_get(XENPCID_CMD_PCI_INFO, args, JSON_ANY);
+    if (!pci_info)
+        goto free_args;
+
+    ret = handle_read_resources_cmd(pci_info->u.string, &resources_list);
+    free(pci_info->u.string);
+    if (ret < 0)
+        goto free_args;
+
+    result = pcid__json_object_alloc(JSON_LIST);
+    result->u.list_rsc = resources_list;
+
+free_args:
+    free_pcid_obj_map(args);
+out:
+    return result;
+}
+
+static struct pcid__json_object *process_unbind_cmd(struct pcid__json_object *resp)
+{
+    struct pcid__json_object *result = NULL, *args, *pci_path, *pci_info;
+    char *full_path;
+    int ret;
+
+    args = pcid__json_map_get(XENPCID_MSG_FIELD_ARGS, resp, JSON_MAP);
+    if (!args)
+        goto out;
+    pci_info = pcid__json_map_get(XENPCID_CMD_PCI_INFO, args, JSON_ANY);
+    if (!pci_info)
+        goto free_args;
+    pci_path = pcid__json_map_get(XENPCID_CMD_PCI_PATH, args, JSON_ANY);
+    if (!pci_path)
+        goto free_pci_info;
+
+    ret = handle_unbind_cmd(pci_path->u.string, pci_info->u.string, &full_path);
+    free(pci_path->u.string);
+    if (ret < 0)
+        goto free_pci_info;
+
+    result = pcid__json_object_alloc(JSON_STRING);
+    result->u.string = full_path;
+
+free_pci_info:
+    free(pci_info->u.string);
+free_args:
+    free_pcid_obj_map(args);
+out:
+    return result;
+}
+
 static int vchan_handle_message(struct vchan_state *state,
                                 struct pcid__json_object *resp,
                                 struct pcid__json_object **result)
@@ -843,6 +1004,10 @@ static int vchan_handle_message(struct vchan_state *state,
         (*result) = process_read_hex_cmd(resp);
     else if (strcmp(command_name, XENPCID_CMD_EXISTS) == 0)
         (*result) = process_exists_cmd(resp);
+    else if (strcmp(command_name, XENPCID_CMD_READ_RESOURCES) == 0)
+        (*result) = process_read_rsc_cmd(resp);
+    else if (strcmp(command_name, XENPCID_CMD_UNBIND) == 0)
+        (*result) = process_unbind_cmd(resp);
     else
         fprintf(stderr, "Unknown command\n");
     free(command_name);
