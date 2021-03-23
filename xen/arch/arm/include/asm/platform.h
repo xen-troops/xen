@@ -13,6 +13,7 @@ struct platform_desc {
     const char *const *compatible;
     /* Platform initialization */
     int (*init)(void);
+    int (*late_init)(void);
     int (*init_time)(void);
 #ifdef CONFIG_ARM_32
     /* SMP */
@@ -50,6 +51,7 @@ struct platform_desc {
 #define PLATFORM_QUIRK_GIC_64K_STRIDE (1 << 0)
 
 void platform_init(void);
+int platform_late_init(void);
 int platform_init_time(void);
 int platform_specific_mapping(struct domain *d);
 #ifdef CONFIG_ARM_32

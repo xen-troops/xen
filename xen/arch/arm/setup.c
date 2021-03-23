@@ -871,6 +871,9 @@ void asmlinkage __init start_xen(unsigned long boot_phys_offset,
     enable_errata_workarounds();
     enable_cpu_features();
 
+    if (platform_late_init())
+        panic("platform_late_init() failed\n");
+
     /* Create initial domain 0. */
     if ( !is_dom0less_mode() )
         create_dom0();

@@ -65,6 +65,16 @@ void __init platform_init(void)
         panic("Unable to initialize the platform\n");
 }
 
+int __init platform_late_init(void)
+{
+    int res = 0;
+
+    if ( platform && platform->late_init )
+        res = platform->late_init();
+
+    return res;
+}
+
 int __init platform_init_time(void)
 {
     int res = 0;
