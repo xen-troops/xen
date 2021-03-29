@@ -37,6 +37,22 @@
 #define MFIS_SMC_ERR_BUSY               0x01
 #define MFIS_SMC_ERR_NOT_AVAILABLE      0x02
 
+#define RPMSG_MAX_VQS 8
+
+#define RPMSG_SMC_GET_VDEV_INFO  ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
+                                                    ARM_SMCCC_CONV_32,  \
+                                                    ARM_SMCCC_OWNER_SIP, \
+                                                    0x200)
+#define RPMSG_SMC_GET_VRING_INFO  ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
+                                                     ARM_SMCCC_CONV_32, \
+                                                     ARM_SMCCC_OWNER_SIP, \
+                                                     0x201)
+#define RPMSG_SMC_SET_VRING_DATA  ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
+                                                     ARM_SMCCC_CONV_32, \
+                                                     ARM_SMCCC_OWNER_SIP, \
+                                                     0x202)
+
+#define RPROC_SMC_ERR_NOT_AVAILABLE      0x01
 
 struct mfis_data
 {
@@ -46,7 +62,60 @@ struct mfis_data
     struct domain* domains[MFIS_MAX_CHANNELS];
 };
 
+struct resource_table {
+    u32 ver;
+    u32 num;
+    u32 reserved[2];
+    u32 offset[0];
+} __packed;
+
+struct fw_rsc_hdr {
+    u32 type;
+	u8 data[0];
+} __packed;
+
+enum fw_resource_type {
+	RSC_CARVEOUT	= 0,
+	RSC_DEVMEM	= 1,
+	RSC_TRACE	= 2,
+	RSC_VDEV	= 3,
+	RSC_LAST	= 4,
+};
+
+struct fw_rsc_vdev_vring {
+	u32 da;
+	u32 align;
+	u32 num;
+	u32 notifyid;
+	u32 pa;
+} __packed;
+
+struct fw_rsc_vdev {
+	u32 id;
+	u32 notifyid;
+	u32 dfeatures;
+	u32 gfeatures;
+	u32 config_len;
+	u8 status;
+	u8 num_of_vrings;
+	u8 reserved[2];
+	struct fw_rsc_vdev_vring vring[0];
+} __packed;
+
+struct rproc_data
+{
+    void *base;
+    uint8_t vq_cnt;
+    int irqs[RPMSG_MAX_VQS];
+    struct {
+        struct domain* d;
+        struct page_info *vring_pg[2];
+        struct fw_rsc_vdev *vdev;
+    } channels[RPMSG_MAX_VQS];
+};
+
 static struct mfis_data *mfis_data;
+static struct rproc_data *rproc_data;
 
 static const char *const rcar3_dt_compat[] __initconst =
 {
@@ -210,10 +279,245 @@ err:
     return -ENODEV;
 }
 
+static int rproc_handle_vdev(struct fw_rsc_vdev *vdev)
+{
+    int n = rproc_data->vq_cnt;
+
+    rproc_data->channels[n].vdev = vdev;
+    rproc_data->vq_cnt = n + 1;
+
+    return 0;
+}
+
+static int rproc_parse_rtable(void)
+{
+
+    struct resource_table *rtable;
+    struct fw_rsc_hdr *hdr;
+    struct fw_rsc_vdev *vdev;
+    int entry;
+    int ret;
+
+    ASSERT(rproc_data && rproc_data->base);
+
+    rtable = rproc_data->base;
+
+    if ( rtable->ver != 1 )
+    {
+        printk(XENLOG_ERR"rproc: unknown resource table version %d\n", rtable->ver);
+        return -EINVAL;
+    }
+
+    printk(XENLOG_INFO"rproc: found %d entries\n", rtable->num);
+
+    for ( entry = 0; entry < rtable->num; entry++ )
+    {
+        hdr = rproc_data->base + rtable->offset[entry];
+        switch (hdr->type)
+        {
+        case RSC_CARVEOUT:
+            /* TODO: Handle carveout */
+            break;
+        case RSC_TRACE:
+            break;
+        case RSC_DEVMEM:
+            /* TODO: Hadnle devmem */
+            break;
+        case RSC_VDEV:
+            vdev = (void*)hdr->data;
+            ret = rproc_handle_vdev(vdev);
+            if ( ret )
+                return ret;
+
+            break;
+        default:
+            printk(XENLOG_INFO"rproc: found unknown entry %d. Skipping\n", hdr->type); ////
+            break;
+        }
+    }
+
+    return 0;
+}
+
+static int __init rproc_probe(void)
+{
+    struct dt_device_node *node;
+    paddr_t start, len;
+    int ret;
+    mfn_t rtable_mfn;
+
+    node = dt_find_compatible_node(NULL, NULL, "renesas,rproc");
+    if ( !node )
+        return -ENODEV;
+
+    rproc_data = xzalloc(struct rproc_data);
+    if ( !rproc_data )
+        return -ENOMEM;
+
+    ret = dt_device_get_address(node, 0, &start, &len);
+    if ( ret )
+    {
+        printk(XENLOG_ERR"rproc: Cannot read rproc resource table addr\n");
+        goto err;
+    }
+
+    if ( len > PAGE_SIZE )
+    {
+        /* TODO: Support bigger tables */
+        printk(XENLOG_ERR"rpro: resource table does not fit into page\n");
+        goto err;
+    }
+
+    rtable_mfn = maddr_to_mfn(start);
+    rproc_data->base = vmap(&rtable_mfn, 1);
+    if ( !rproc_data->base )
+    {
+        printk(XENLOG_ERR"Unable to map rproc resource table!\n");
+        goto err;
+    }
+
+    ret = rproc_parse_rtable();
+    if ( ret )
+        goto err;
+
+    dt_device_set_used_by(node, DOMID_XEN);
+
+    return 0;
+
+err:
+    vunmap(rproc_data->base);
+    xfree(rproc_data);
+
+    return -ENODEV;
+}
+
+static int rproc_assign_domain(struct domain *d, int chan)
+{
+    if ( chan >= rproc_data->vq_cnt )
+        return -EINVAL;
+
+    rproc_data->channels[chan].d = d;
+
+    return 0;
+}
+
+static int rproc_find_chan(struct domain *d)
+{
+    int i;
+
+    for ( i = 0; i < rproc_data->vq_cnt; i++)
+        if ( rproc_data->channels[i].d == d )
+            return i;
+
+    return -ENOENT;
+}
+
+static int rproc_handle_get_vdev_info(struct domain *d,
+                                      struct cpu_user_regs *regs)
+{
+    int ch = rproc_find_chan(d);
+
+    if ( ch < 0 )
+    {
+        set_user_reg(regs, 0, RPROC_SMC_ERR_NOT_AVAILABLE);
+        return ch;
+    }
+
+    set_user_reg(regs, 0, ARM_SMCCC_SUCCESS);
+    set_user_reg(regs, 1, rproc_data->channels[ch].vdev->id);
+    set_user_reg(regs, 2, rproc_data->channels[ch].vdev->dfeatures);
+
+    return 0;
+}
+
+static int rproc_handle_get_vring_info(struct domain *d,
+                                       struct cpu_user_regs *regs)
+{
+    int ch = rproc_find_chan(d);
+    uint32_t ring = (uint32_t)get_user_reg(regs, 1);
+
+
+    if ( ch < 0 || ring > 1 )
+    {
+        set_user_reg(regs, 0, RPROC_SMC_ERR_NOT_AVAILABLE);
+        return ch;
+    }
+
+    set_user_reg(regs, 0, ARM_SMCCC_SUCCESS);
+    set_user_reg(regs, 1, rproc_data->channels[ch].vdev->vring[ring].align);
+    set_user_reg(regs, 2, rproc_data->channels[ch].vdev->vring[ring].num);
+    set_user_reg(regs, 3, rproc_data->channels[ch].vdev->vring[ring].notifyid);
+
+    return 0;
+}
+
+static int rproc_handle_set_vring_data(struct domain *d,
+                                       struct cpu_user_regs *regs)
+{
+    int ch = rproc_find_chan(d);
+    uint32_t ring = (uint32_t)get_user_reg(regs, 1);
+    paddr_t pa, ga;
+    uint32_t notify_id;
+    struct page_info *pg;
+    p2m_type_t t;
+
+    if ( ch < 0 || ring > 1 )
+    {
+        set_user_reg(regs, 0, RPROC_SMC_ERR_NOT_AVAILABLE);
+        return ch;
+    }
+
+    ga = get_user_reg(regs, 2);
+    notify_id = (uint32_t)get_user_reg(regs, 3);
+
+    pg = get_page_from_gfn(d, paddr_to_pfn(ga) , &t, P2M_ALLOC);
+    /* HACK: Dirty hack for Dom0 direct mapped dma area */
+    if ( t == p2m_mmio_direct_c )
+    {
+        pa = ga;
+        goto got_pa;
+    }
+    if ( !pg || t != p2m_ram_rw )
+    {
+        if ( pg )
+            goto put_pg;
+
+        goto err;
+    }
+
+    pa = page_to_maddr(pg);
+got_pa:
+    printk("remoteproc: pa = %lx\n", pa);
+    if ( pa & 0xFFFFFFFF00000000UL )
+    {
+        printk(XENLOG_ERR"rproc: provided page is above 4GB\n");
+        goto put_pg;
+    }
+
+    rproc_data->channels[ch].vdev->vring[ring].notifyid = notify_id;
+    rproc_data->channels[ch].vdev->vring[ring].da = pa;
+    rproc_data->channels[ch].vring_pg[ring] = pg;
+
+    set_user_reg(regs, 0, ARM_SMCCC_SUCCESS);
+
+    return 0;
+
+put_pg:
+    put_page(pg);
+
+err:
+    set_user_reg(regs, 0, RPROC_SMC_ERR_NOT_AVAILABLE);
+
+    return -EINVAL;
+}
+
 static int __init rcar3_late_init(void)
 {
     if ( mfis_probe() < 0 )
         printk(XENLOG_ERR" **** MFIS will be not available! **** \n");
+
+    if ( rproc_probe() < 0 )
+        printk(XENLOG_ERR" **** RPROC/RPMSG will be not available! **** \n");
 
     return 0;
 }
@@ -222,6 +526,9 @@ static int rcar3_specific_mapping(struct domain *d)
 {
     if ( mfis_data )
         mfis_add_domain(d, 0);
+
+    if ( rproc_data )
+        rproc_assign_domain(d, 0);
 
     return 0;
 }
@@ -245,6 +552,15 @@ static bool rcar3_smc(struct cpu_user_regs *regs)
             set_user_reg(regs, 0, ARM_SMCCC_ERR_UNKNOWN_FUNCTION);
         return true;
     }
+    case RPMSG_SMC_GET_VDEV_INFO:
+        rproc_handle_get_vdev_info(current->domain, regs);
+        return true;
+    case RPMSG_SMC_GET_VRING_INFO:
+        rproc_handle_get_vring_info(current->domain, regs);
+        return true;
+    case RPMSG_SMC_SET_VRING_DATA:
+        rproc_handle_set_vring_data(current->domain, regs);
+        return true;
     default:
         return false;
     }
