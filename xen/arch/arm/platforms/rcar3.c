@@ -23,8 +23,9 @@
 #include <asm/regs.h>
 #include <asm/smccc.h>
 
+#include <public/arch-arm.h>
+
 #define MFIS_MAX_CHANNELS 8
-#define MFIS_SPI          265 /* "Reserved" on Gen3 */
 #define MFIS_IICR(n) (0x0400 + n * 0x8)
 #define MFIS_EICR(n) (0x0404 + n * 0x8)
 #define MFIS_IMBR(n) (0x0440 + n * 0x4)
@@ -148,7 +149,7 @@ static void mfis_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)
             writel(val & ~0x1, mfis_data->base + MFIS_EICR(i));
 
             if ( mfis_data->domains[i] )
-                vgic_inject_irq(mfis_data->domains[i], NULL, MFIS_SPI, true);
+                vgic_inject_irq(mfis_data->domains[i], NULL, GUEST_MFIS_SPI, true);
             else
                 printk(XENLOG_WARNING"MFIS: IRQ for chan %d without domain\n", i);
 
@@ -163,7 +164,7 @@ static int mfis_add_domain(struct domain* d, int chan)
     if ( chan >= mfis_data->chan_cnt )
         return -EINVAL;
 
-    ret = vgic_reserve_virq(d, MFIS_SPI);
+    ret = vgic_reserve_virq(d, GUEST_MFIS_SPI);
     if ( ret < 0)
         return ret;
 
