@@ -184,6 +184,11 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     uint32_t virtio_mmio_irq = GUEST_VIRTIO_MMIO_SPI_FIRST;
     int rc;
 
+    if (d_config->b_info.arch_arm.rproc >= 0) {
+        if (nr_spis < (GUEST_MFIS_SPI - 32))
+            nr_spis = (GUEST_MFIS_SPI - 32) + 1;
+    }
+
     /*
      * If pl011 vuart is enabled then increment the nr_spis to allow allocation
      * of SPI VIRQ for pl011.
@@ -2084,6 +2089,16 @@ int libxl__arch_build_dom_finish(libxl__gc *gc,
                                  libxl__domain_build_state *state)
 {
     int rc = 0, ret;
+
+    if (info->arch_arm.rproc >=0 ) {
+        ret = xc_domain_setrproc(CTX->xch, dom->guest_domid,
+                                info->arch_arm.rproc);
+        if ( ret < 0) {
+            rc = ERROR_FAIL;
+            LOG(ERROR, "xc_domain_setrproc failed: %d\n", ret);
+            goto out;
+        }
+    }
 
     if (info->arch_arm.vuart != LIBXL_VUART_TYPE_SBSA_UART) {
         rc = 0;

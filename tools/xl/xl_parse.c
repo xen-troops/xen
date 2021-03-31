@@ -3305,6 +3305,11 @@ skip_usbdev:
         }
     }
 
+    if (!xlu_cfg_get_long (config, "rproc", &l, 0))
+        b_info->arch_arm.rproc = l;
+    else
+        b_info->arch_arm.rproc = -1;
+
     parse_vkb_list(config, d_config);
     parse_vgsx_list(config, d_config);
     parse_vcamera_list(config, d_config);
