@@ -175,6 +175,17 @@ static int mfis_add_domain(struct domain* d, int chan)
     return 0;
 }
 
+static int mfis_remove_domain(int chan)
+{
+
+    if ( chan >= mfis_data->chan_cnt )
+        return -EINVAL;
+
+    mfis_data->domains[chan] = NULL;
+
+    return 0;
+}
+
 static int mfis_trigger_chan(struct domain *d)
 {
     int i;
@@ -567,11 +578,42 @@ static bool rcar3_smc(struct cpu_user_regs *regs)
     }
 }
 
+static int rcar3_do_domctl(struct xen_domctl *domctl, struct domain *d,
+                           XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
+{
+    switch ( domctl->cmd )
+    {
+    case XEN_DOMCTL_enable_rproc:
+    {
+        int ret;
+        int chan = domctl->u.enable_rproc.chan_id;
+
+        if ( !mfis_data || !rproc_data )
+            return -ENODEV;
+
+        ret = mfis_add_domain(d, chan);
+        if ( ret )
+            return ret;
+
+        ret = rproc_assign_domain(d, chan);
+        if ( ret ) {
+            mfis_remove_domain(chan);
+            return ret;
+        }
+
+        return 0;
+    }
+    default:
+        return -ENOSYS;
+    }
+}
+
 PLATFORM_START(rcar3, "Renesas R-Car Gen3")
     .compatible = rcar3_dt_compat,
     .smc = rcar3_smc,
     .late_init = rcar3_late_init,
     .specific_mapping = rcar3_specific_mapping,
+    .do_domctl = rcar3_do_domctl,
 PLATFORM_END
 
 /*
