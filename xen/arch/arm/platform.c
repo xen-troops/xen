@@ -136,6 +136,15 @@ bool platform_smc(struct cpu_user_regs *regs)
     return false;
 }
 
+int platform_do_domctl(struct xen_domctl *domctl, struct domain *d,
+                       XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
+{
+    if ( likely(platform && platform->do_domctl) )
+        return platform->do_domctl(domctl, d, u_domctl);
+
+    return -ENOSYS;
+}
+
 bool platform_has_quirk(uint32_t quirk)
 {
     uint32_t quirks = 0;

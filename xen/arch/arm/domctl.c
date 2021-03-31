@@ -16,6 +16,8 @@
 #include <xsm/xsm.h>
 #include <public/domctl.h>
 
+#include <asm/platform.h>
+
 void arch_get_domain_info(const struct domain *d,
                           struct xen_domctl_getdomaininfo *info)
 {
@@ -177,7 +179,17 @@ long arch_do_domctl(struct xen_domctl *domctl, struct domain *d,
         return rc;
     }
     default:
-        return subarch_do_domctl(domctl, d, u_domctl);
+    {
+        int rc;
+
+        rc = subarch_do_domctl(domctl, d, u_domctl);
+
+        if ( rc == -ENOSYS )
+            rc = platform_do_domctl(domctl, d, u_domctl);
+
+
+        return rc;
+    }
     }
 }
 
