@@ -2207,6 +2207,18 @@ int xc_domain_soft_reset(xc_interface *xch,
     domctl.domain = domid;
     return do_domctl(xch, &domctl);
 }
+
+int xc_domain_setrproc(xc_interface *xch,
+                       uint32_t domid,
+                       uint32_t chan_id)
+{
+    struct xen_domctl domctl = {};
+    domctl.cmd = XEN_DOMCTL_enable_rproc;
+    domctl.domain = domid;
+    domctl.u.enable_rproc.chan_id = chan_id;
+    return do_domctl(xch, &domctl);
+}
+
 /*
  * Local variables:
  * mode: C

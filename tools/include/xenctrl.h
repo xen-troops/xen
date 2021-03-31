@@ -2667,6 +2667,9 @@ int xc_dt_overlay(xc_interface *xch, void *overlay_fdt,
                   uint32_t overlay_fdt_size, uint8_t overlay_op);
 #endif
 
+int xc_domain_setrproc(xc_interface *xch,
+                       uint32_t domid,
+                       uint32_t chan_id);
 /* Compat shims */
 #include "xenctrl_compat.h"
 
