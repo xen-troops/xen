@@ -536,12 +536,6 @@ static int __init rcar3_late_init(void)
 
 static int rcar3_specific_mapping(struct domain *d)
 {
-    if ( mfis_data )
-        mfis_add_domain(d, 0);
-
-    if ( rproc_data )
-        rproc_assign_domain(d, 0);
-
     return 0;
 }
 
