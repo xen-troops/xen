@@ -37,6 +37,8 @@ struct platform_desc {
     int (*do_domctl)(struct xen_domctl *domctl, struct domain *d,
                      XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl);
 
+    void (*domain_destroy)(struct domain *d);
+
     uint32_t (*quirks)(void);
     /*
      * Platform blacklist devices
@@ -69,6 +71,7 @@ bool platform_has_quirk(uint32_t quirk);
 bool platform_device_is_blacklisted(const struct dt_device_node *node);
 int  platform_do_domctl(struct xen_domctl *domctl, struct domain *d,
                         XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl);
+void platform_domain_destroy(struct domain *d);
 
 #define PLATFORM_START(_name, _namestr)                         \
 static const struct platform_desc  __plat_desc_##_name __used   \

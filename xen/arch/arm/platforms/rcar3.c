@@ -602,12 +602,27 @@ static int rcar3_do_domctl(struct xen_domctl *domctl, struct domain *d,
     }
 }
 
+static void rcar3_domain_destroy(struct domain *d)
+{
+    int i;
+
+    for ( i = 0; i < mfis_data->chan_cnt; i++)
+    {
+        if ( mfis_data->domains[i] == d )
+        {
+            mfis_remove_domain(i);
+            break;
+        }
+    }
+}
+
 PLATFORM_START(rcar3, "Renesas R-Car Gen3")
     .compatible = rcar3_dt_compat,
     .smc = rcar3_smc,
     .late_init = rcar3_late_init,
     .specific_mapping = rcar3_specific_mapping,
     .do_domctl = rcar3_do_domctl,
+    .domain_destroy = rcar3_domain_destroy,
 PLATFORM_END
 
 /*
