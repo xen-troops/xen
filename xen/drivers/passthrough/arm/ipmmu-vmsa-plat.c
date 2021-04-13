@@ -27,6 +27,7 @@
 #include <xen/vmap.h>
 #include <asm/io.h>
 #include <asm/device.h>
+#include <xen/mm.h>
 
 static void __iomem *rcar_sysc_base = NULL;
 
