@@ -1611,16 +1611,6 @@ void libxl__device_pci_add(libxl__egc *egc, uint32_t domid,
     pas->starting = starting;
     pas->callback = device_pci_add_stubdom_done;
 
-/* FIXME: CONFIG_ARM is not defined for this project. */
-/*#ifdef CONFIG_ARM*/
-    rc = xc_assign_device(ctx->xch, domid, pci_encode_bdf(pci), /*flags*/0);
-    if (rc < 0) {
-        LOGED(ERROR, domid, "xc_assign_device failed");
-        rc = ERROR_FAIL;
-    }
-    goto out;
-/*#endif*/
-
     if (libxl__domain_type(gc, domid) == LIBXL_DOMAIN_TYPE_HVM) {
         rc = xc_test_assign_device(ctx->xch, domid, pci_encode_bdf(pci));
         if (rc) {
