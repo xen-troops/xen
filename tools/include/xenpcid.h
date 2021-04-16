@@ -33,11 +33,13 @@
 #define XENPCID_MSG_FIELD_ARGS      "arguments"
 
 #define XENPCID_CMD_LIST            "ls"
+#define XENPCID_CMD_UNBIND          "unbind"
 #define XENPCID_CMD_DIR_ID          "dir_id"
 
 #define XENPCID_CMD_WRITE           "write"
 #define XENPCID_CMD_READ_HEX        "read_hex"
 #define XENPCID_CMD_EXISTS          "exists"
+#define XENPCID_CMD_READ_RESOURCES  "read_resources"
 #define XENPCID_CMD_PCI_PATH        "pci_path"
 #define XENPCID_CMD_PCI_INFO        "pci_info"
 
