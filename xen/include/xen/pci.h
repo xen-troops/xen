@@ -134,6 +134,22 @@ struct pci_dev {
     struct vpci *vpci;
 };
 
+struct vpci_dev {
+    struct list_head list;
+    /* Physical PCI device this virtual device is connected to. */
+    const struct pci_dev *pdev;
+    /* Virtual SBDF of the device. */
+    const union {
+        struct {
+            uint8_t devfn;
+            uint8_t bus;
+            uint16_t seg;
+        };
+        pci_sbdf_t sbdf;
+    };
+    struct domain *domain;
+};
+
 #define for_each_pdev(domain, pdev) \
     list_for_each_entry(pdev, &(domain)->pdev_list, domain_list)
 
@@ -163,7 +179,9 @@ int pci_add_segment(u16 seg);
 const unsigned long *pci_get_ro_map(u16 seg);
 int pci_add_device(u16 seg, u8 bus, u8 devfn,
                    const struct pci_dev_info *, nodeid_t node);
+int pci_add_virtual_device(struct domain *d, const struct pci_dev *pdev);
 int pci_remove_device(u16 seg, u8 bus, u8 devfn);
+int pci_remove_virtual_device(struct domain *d, const struct pci_dev *pdev);
 int pci_ro_device(int seg, int bus, int devfn);
 int pci_hide_device(unsigned int seg, unsigned int bus, unsigned int devfn);
 struct pci_dev *pci_get_pdev(int seg, int bus, int devfn);

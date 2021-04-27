@@ -855,6 +855,61 @@ int pci_remove_device(u16 seg, u8 bus, u8 devfn)
     return ret;
 }
 
+static struct vpci_dev *pci_find_virtual_device(const struct domain *d,
+                                                const struct pci_dev *pdev)
+{
+    struct vpci_dev *vdev;
+
+    list_for_each_entry ( vdev, &d->vdev_list, list )
+        if ( vdev->pdev == pdev )
+            return vdev;
+    return NULL;
+}
+
+int pci_add_virtual_device(struct domain *d, const struct pci_dev *pdev)
+{
+    struct vpci_dev *vdev;
+
+    ASSERT(!pci_find_virtual_device(d, pdev));
+
+    vdev = xzalloc(struct vpci_dev);
+    if ( !vdev )
+        return -ENOMEM;
+
+    /*
+     * TODO:
+     * 1. Segment needs to be aligned with the number of emulated
+     *    host bridges: hardcode to 0 for a single emulated bridge
+     * 2. Bus need to be aligned to Linux view of the emulated device
+     * 3. For now bus is hardcoded to 1, so virtual devices are seen
+     *    as being behind the emulated bridge.
+     */
+    *(u16*) &vdev->seg = 0;
+    *((u8*) &vdev->bus) = 1;
+    *((u8*) &vdev->devfn) = PCI_DEVFN(d->vpci_dev_next++,
+                                      PCI_FUNC(pdev->sbdf.bdf));
+    vdev->pdev = pdev;
+    vdev->domain = d;
+
+    pcidevs_lock();
+    list_add_tail(&vdev->list, &d->vdev_list);
+    pcidevs_unlock();
+
+    return 0;
+}
+
+int pci_remove_virtual_device(struct domain *d, const struct pci_dev *pdev)
+{
+    struct vpci_dev *vdev;
+
+    pcidevs_lock();
+    vdev = pci_find_virtual_device(d, pdev);
+    list_del(&vdev->list);
+    pcidevs_unlock();
+    xfree(vdev);
+    return 0;
+}
+
 /* Caller should hold the pcidevs_lock */
 static int deassign_device(struct domain *d, uint16_t seg, uint8_t bus,
                            uint8_t devfn)

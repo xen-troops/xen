@@ -438,6 +438,13 @@ struct domain
 
 #ifdef CONFIG_HAS_PCI
     struct list_head pdev_list;
+    struct list_head vdev_list;
+    /* TODO: Handle this for multiple emulated host bridges. */
+    /*
+     * Current device number used by the virtual PCI bus topology
+     * to assign a unique SBDF to a passed through virtual PCI device.
+     */
+    int vpci_dev_next;
 #endif
 
 #ifdef CONFIG_HAS_PASSTHROUGH

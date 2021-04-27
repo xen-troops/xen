@@ -27,12 +27,10 @@ typedef int vpci_register_init_t(struct pci_dev *dev);
 int __must_check vpci_add_handlers(struct pci_dev *dev);
 
 /* Notify vPCI that device is assigned to guest. */
-int __must_check vpci_assign_device(const struct domain *d,
-                                    struct pci_dev *dev);
+int __must_check vpci_assign_device(struct domain *d, struct pci_dev *dev);
 
 /* Notify vPCI that device is de-assigned from guest. */
-int __must_check vpci_deassign_device(const struct domain *d,
-                                      struct pci_dev *dev);
+int __must_check vpci_deassign_device(struct domain *d, struct pci_dev *dev);
 
 /* Remove all handlers and free vpci related structures. */
 void vpci_remove_device(struct pci_dev *pdev);
@@ -240,14 +238,12 @@ static inline int vpci_add_handlers(struct pci_dev *pdev)
     return 0;
 }
 
-static inline int vpci_assign_device(const struct domain *d,
-                                     struct pci_dev *dev)
+static inline int vpci_assign_device(struct domain *d, struct pci_dev *dev)
 {
     return 0;
 };
 
-static inline int vpci_deassign_device(const struct domain *d,
-                                       struct pci_dev *dev)
+static inline int vpci_deassign_device(struct domain *d, struct pci_dev *dev)
 {
     return 0;
 };

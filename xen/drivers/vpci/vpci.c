@@ -90,20 +90,38 @@ int __hwdom_init vpci_add_handlers(struct pci_dev *pdev)
 }
 
 /* Notify vPCI that device is assigned to guest. */
-int vpci_assign_device(const struct domain *d, struct pci_dev *dev)
+int vpci_assign_device(struct domain *d, struct pci_dev *dev)
 {
+    int rc;
+
     if ( !has_vpci(d) )
         return 0;
 
-    return vpci_bar_add_handlers(d, dev);
+    /* It only makes sense to assign for hwdom or guest domain. */
+    if ( d->domain_id >= DOMID_FIRST_RESERVED )
+        return 0;
+
+    rc = vpci_bar_add_handlers(d, dev);
+    if ( rc )
+        return rc;
+    return pci_add_virtual_device(d, dev);
 }
 
 /* Notify vPCI that device is de-assigned from guest. */
-int vpci_deassign_device(const struct domain *d, struct pci_dev *dev)
+int vpci_deassign_device(struct domain *d, struct pci_dev *dev)
 {
+    int rc;
+
     if ( !has_vpci(d) )
         return 0;
 
+    /* It only makes sense to de-assign for hwdom or guest domain. */
+    if ( d->domain_id >= DOMID_FIRST_RESERVED )
+        return 0;
+
+    rc = pci_remove_virtual_device(d, dev);
+    if ( rc )
+        return rc;
     return vpci_bar_remove_handlers(d, dev);
 }
 
