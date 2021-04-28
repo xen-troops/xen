@@ -37,7 +37,7 @@ static int vpci_mmio_read(struct vcpu *v, mmio_info_t *info,
     uint32_t data = 0;
     unsigned int size = 1U << info->dabt.size;
 
-    sbdf.bdf = (((info->gpa) & 0x0ffff000) >> 12);
+    sbdf.sbdf = (((info->gpa) & 0x0ffff000) >> 12);
     reg = (((info->gpa) & 0x00000ffc) | (info->gpa & 3));
 
     if ( !vpci_mmio_access_allowed(reg, size) )
@@ -58,7 +58,7 @@ static int vpci_mmio_write(struct vcpu *v, mmio_info_t *info,
     uint32_t data = r;
     unsigned int size = 1U << info->dabt.size;
 
-    sbdf.bdf = (((info->gpa) & 0x0ffff000) >> 12);
+    sbdf.sbdf = (((info->gpa) & 0x0ffff000) >> 12);
     reg = (((info->gpa) & 0x00000ffc) | (info->gpa & 3));
 
     if ( !vpci_mmio_access_allowed(reg, size) )
