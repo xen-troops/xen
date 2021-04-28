@@ -71,7 +71,8 @@ struct pci_ops {
                  uint32_t reg, uint32_t len, uint32_t value);
     int (*register_mmio_handler)(struct domain *d,
                                  struct pci_host_bridge *bridge,
-                                 const struct mmio_handler_ops *ops);
+                                 const struct mmio_handler_ops *ops,
+                                 void *priv);
     int (*need_mapping)(struct domain *d, struct pci_host_bridge *bridge,
                         u64 addr, u64 len);
 };
@@ -101,6 +102,7 @@ struct pci_host_bridge {
     u8 bus_end;                      /* Bus end of this bridge. */
     void *sysdata;                   /* Pointer to the config space window*/
     const struct pci_ops *ops;
+    void *mmio_priv;                 /* MMIO handler's private data. */
 };
 
 int pci_generic_config_read(struct pci_host_bridge *bridge, uint32_t sbdf,

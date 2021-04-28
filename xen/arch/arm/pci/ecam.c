@@ -44,11 +44,12 @@ void __iomem *pci_ecam_map_bus(struct pci_host_bridge *bridge,
 
 static int pci_ecam_register_mmio_handler(struct domain *d,
                                           struct pci_host_bridge *bridge,
-                                          const struct mmio_handler_ops *ops)
+                                          const struct mmio_handler_ops *ops,
+                                          void *priv)
 {
     struct pci_config_window *cfg = bridge->sysdata;
 
-    register_mmio_handler(d, ops, cfg->phys_addr, cfg->size, NULL);
+    register_mmio_handler(d, ops, cfg->phys_addr, cfg->size, priv);
     return 0;
 }
 

@@ -445,6 +445,8 @@ struct domain
      * to assign a unique SBDF to a passed through virtual PCI device.
      */
     int vpci_dev_next;
+    /* Virtual PCI MMIO handler's private data. */
+    void *vpci_mmio_priv;
 #endif
 
 #ifdef CONFIG_HAS_PASSTHROUGH
