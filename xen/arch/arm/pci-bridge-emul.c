@@ -17,13 +17,57 @@
  * default behavior.
  */
 
-#include <linux/pci.h>
+#include <xen/pci.h>
 #include "pci-bridge-emul.h"
+
+#define PCI_STD_HEADER_SIZEOF	64
+
+#define PCI_EXP_SLTSTA2		58	/* Slot Status 2 */
+
+#define PCI_EXP_SLTSTA		26	/* Slot Status */
+#define  PCI_EXP_SLTSTA_ABP	0x0001	/* Attention Button Pressed */
+#define  PCI_EXP_SLTSTA_PFD	0x0002	/* Power Fault Detected */
+#define  PCI_EXP_SLTSTA_MRLSC	0x0004	/* MRL Sensor Changed */
+#define  PCI_EXP_SLTSTA_PDC	0x0008	/* Presence Detect Changed */
+#define  PCI_EXP_SLTSTA_CC	0x0010	/* Command Completed */
+#define  PCI_EXP_SLTSTA_MRLSS	0x0020	/* MRL Sensor State */
+#define  PCI_EXP_SLTSTA_PDS	0x0040	/* Presence Detect State */
+#define  PCI_EXP_SLTSTA_EIS	0x0080	/* Electromechanical Interlock Status */
+#define  PCI_EXP_SLTSTA_DLLSC	0x0100	/* Data Link Layer State Changed */
+#define PCI_EXP_RTCAP		30	/* Root Capabilities */
+#define  PCI_EXP_RTCAP_CRSVIS	0x0001	/* CRS Software Visibility capability */
+#define PCI_EXP_RTSTA		32	/* Root Status */
+#define  PCI_EXP_RTSTA_PME	0x00010000 /* PME status */
+#define  PCI_EXP_RTSTA_PENDING	0x00020000 /* PME pending */
+
+/* Error values that may be returned by PCI functions */
+#define PCIBIOS_SUCCESSFUL		0x00
+#define PCIBIOS_FUNC_NOT_SUPPORTED	0x81
+#define PCIBIOS_BAD_VENDOR_ID		0x83
+#define PCIBIOS_DEVICE_NOT_FOUND	0x86
+#define PCIBIOS_BAD_REGISTER_NUMBER	0x87
+#define PCIBIOS_SET_FAILED		0x88
+#define PCIBIOS_BUFFER_TOO_SMALL	0x89
+
+/**
+ * lower_32_bits - return bits 0-31 of a number
+ * @n: the number we're accessing
+ */
+#define lower_32_bits(n)	((u32)((n) & 0xffffffff))
+
+#define PCI_CLASS_BRIDGE_PCI	0x0604
 
 #define PCI_BRIDGE_CONF_END	PCI_STD_HEADER_SIZEOF
 #define PCI_CAP_PCIE_SIZEOF	(PCI_EXP_SLTSTA2 + 2)
 #define PCI_CAP_PCIE_START	PCI_BRIDGE_CONF_END
 #define PCI_CAP_PCIE_END	(PCI_CAP_PCIE_START + PCI_CAP_PCIE_SIZEOF)
+
+#define PCI_STATUS_ERROR_BITS (PCI_STATUS_DETECTED_PARITY  | \
+			       PCI_STATUS_SIG_SYSTEM_ERROR | \
+			       PCI_STATUS_REC_MASTER_ABORT | \
+			       PCI_STATUS_REC_TARGET_ABORT | \
+			       PCI_STATUS_SIG_TARGET_ABORT | \
+			       PCI_STATUS_PARITY)
 
 /**
  * struct pci_bridge_reg_behavior - register bits behaviors
@@ -139,8 +183,9 @@ struct pci_bridge_reg_behavior pci_regs_behavior[PCI_STD_HEADER_SIZEOF / 4] = {
 		.ro = GENMASK(7, 0),
 	},
 
+	/* We do not implement an Expansion ROM. */
 	[PCI_ROM_ADDRESS1 / 4] = {
-		.rw = GENMASK(31, 11) | BIT(0),
+		.ro = ~0,
 	},
 
 	/*
@@ -157,12 +202,12 @@ struct pci_bridge_reg_behavior pci_regs_behavior[PCI_STD_HEADER_SIZEOF / 4] = {
 			 PCI_BRIDGE_CTL_VGA |
 			 PCI_BRIDGE_CTL_MASTER_ABORT |
 			 PCI_BRIDGE_CTL_BUS_RESET |
-			 BIT(8) | BIT(9) | BIT(11)) << 16)),
+			 BIT(8, U) | BIT(9, 0) | BIT(11, 0)) << 16)),
 
 		/* Interrupt pin is RO */
 		.ro = (GENMASK(15, 8) | ((PCI_BRIDGE_CTL_FAST_BACK) << 16)),
 
-		.w1c = BIT(10) << 16,
+		.w1c = BIT(10, U) << 16,
 	},
 };
 
@@ -188,13 +233,13 @@ struct pci_bridge_reg_behavior pcie_cap_regs_behavior[PCI_CAP_PCIE_SIZEOF / 4] =
 		 * Device status register has bits 6 and [3:0] W1C, [5:4] RO,
 		 * the rest is reserved
 		 */
-		.w1c = (BIT(6) | GENMASK(3, 0)) << 16,
+		.w1c = (BIT(6, U) | GENMASK(3, 0)) << 16,
 		.ro = GENMASK(5, 4) << 16,
 	},
 
 	[PCI_EXP_LNKCAP / 4] = {
 		/* All bits are RO, except bit 23 which is reserved */
-		.ro = lower_32_bits(~BIT(23)),
+		.ro = lower_32_bits(~BIT(23, U)),
 	},
 
 	[PCI_EXP_LNKCTL / 4] = {
@@ -269,9 +314,8 @@ int pci_bridge_emul_init(struct pci_bridge_emul *bridge,
 	bridge->conf.header_type = PCI_HEADER_TYPE_BRIDGE;
 	bridge->conf.cache_line_size = 0x10;
 	bridge->conf.status = cpu_to_le16(PCI_STATUS_CAP_LIST);
-	bridge->pci_regs_behavior = kmemdup(pci_regs_behavior,
-					    sizeof(pci_regs_behavior),
-					    GFP_KERNEL);
+	bridge->pci_regs_behavior = xmemdup_bytes(&pci_regs_behavior,
+						  sizeof(pci_regs_behavior));
 	if (!bridge->pci_regs_behavior)
 		return -ENOMEM;
 
@@ -280,14 +324,13 @@ int pci_bridge_emul_init(struct pci_bridge_emul *bridge,
 		bridge->pcie_conf.cap_id = PCI_CAP_ID_EXP;
 		/* Set PCIe v2, root port, slot support */
 		bridge->pcie_conf.cap =
-			cpu_to_le16(PCI_EXP_TYPE_ROOT_PORT << 4 | 2 |
+			cpu_to_le16(PCI_EXP_TYPE_PCI_BRIDGE << 4 | 2 |
 				    PCI_EXP_FLAGS_SLOT);
 		bridge->pcie_cap_regs_behavior =
-			kmemdup(pcie_cap_regs_behavior,
-				sizeof(pcie_cap_regs_behavior),
-				GFP_KERNEL);
+			xmemdup_bytes(&pcie_cap_regs_behavior,
+				      sizeof(pcie_cap_regs_behavior));
 		if (!bridge->pcie_cap_regs_behavior) {
-			kfree(bridge->pci_regs_behavior);
+			xfree(bridge->pci_regs_behavior);
 			return -ENOMEM;
 		}
 	}
@@ -299,7 +342,6 @@ int pci_bridge_emul_init(struct pci_bridge_emul *bridge,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(pci_bridge_emul_init);
 
 /*
  * Cleanup a pci_bridge_emul structure that was previously initialized
@@ -308,10 +350,9 @@ EXPORT_SYMBOL_GPL(pci_bridge_emul_init);
 void pci_bridge_emul_cleanup(struct pci_bridge_emul *bridge)
 {
 	if (bridge->has_pcie)
-		kfree(bridge->pcie_cap_regs_behavior);
-	kfree(bridge->pci_regs_behavior);
+		xfree(bridge->pcie_cap_regs_behavior);
+	xfree(bridge->pci_regs_behavior);
 }
-EXPORT_SYMBOL_GPL(pci_bridge_emul_cleanup);
 
 /*
  * Should be called by the PCI controller driver when reading the PCI
@@ -373,7 +414,6 @@ int pci_bridge_emul_conf_read(struct pci_bridge_emul *bridge, int where,
 
 	return PCIBIOS_SUCCESSFUL;
 }
-EXPORT_SYMBOL_GPL(pci_bridge_emul_conf_read);
 
 /*
  * Should be called by the PCI controller driver when writing the PCI
@@ -384,7 +424,7 @@ int pci_bridge_emul_conf_write(struct pci_bridge_emul *bridge, int where,
 			       int size, u32 value)
 {
 	int reg = where & ~3;
-	int mask, ret, old, new, shift;
+	u32 mask, ret, old, new, shift;
 	void (*write_op)(struct pci_bridge_emul *bridge, int reg,
 			 u32 old, u32 new, u32 mask);
 	__le32 *cfgspace;
@@ -438,4 +478,3 @@ int pci_bridge_emul_conf_write(struct pci_bridge_emul *bridge, int where,
 
 	return PCIBIOS_SUCCESSFUL;
 }
-EXPORT_SYMBOL_GPL(pci_bridge_emul_conf_write);
