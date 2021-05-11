@@ -15,6 +15,8 @@
 #include <xen/sched.h>
 #include <asm/mmio.h>
 
+#include "vhostbridge.h"
+
 struct vpci_mmio_priv {
     /*
      * Set to true if the MMIO handlers were set up for the emulated
@@ -57,6 +59,16 @@ static bool vpci_mmio_find_pdev(struct vcpu *v, pci_sbdf_t *sbdf)
     return false;
 }
 
+static bool vpci_is_virt_bridge(pci_sbdf_t sbdf)
+{
+    /*
+     * TODO: Assume for now that virtual device with SBDF 0000:00:0.0 is
+     * a virtual host bridge. When we emulate multiple host bridges then
+     * we need to deal with that.
+     */
+    return sbdf.sbdf == PCI_SBDF(0, 0, 0, 0).sbdf;
+}
+
 static int vpci_mmio_read(struct vcpu *v, mmio_info_t *info,
                           register_t *r, void *p)
 {
@@ -76,11 +88,20 @@ static int vpci_mmio_read(struct vcpu *v, mmio_info_t *info,
      * For the passed through devices we need to map their virtual SBDF
      * to the physical PCI device being passed through.
      */
-    if ( priv->is_virt_ecam && !vpci_mmio_find_pdev(v, &sbdf) )
+    if ( priv->is_virt_ecam )
+    {
+        if ( vpci_is_virt_bridge(sbdf) )
+        {
+            data = vhostbridge_read(v->domain, sbdf, reg, size);
+            goto out;
+        }
+        else if ( !vpci_mmio_find_pdev(v, &sbdf) )
             return 1;
+    }
 
     data = vpci_read(sbdf, reg, size);
 
+out:
     memcpy(r, &data, size);
 
     return 1;
@@ -105,8 +126,16 @@ static int vpci_mmio_write(struct vcpu *v, mmio_info_t *info,
      * For the passed through devices we need to map their virtual SBDF
      * to the physical PCI device being passed through.
      */
-    if ( priv->is_virt_ecam && !vpci_mmio_find_pdev(v, &sbdf) )
+    if ( priv->is_virt_ecam )
+    {
+        if ( vpci_is_virt_bridge(sbdf) )
+        {
+            vhostbridge_write(v->domain, sbdf, reg, size, data);
             return 1;
+        }
+        if ( !vpci_mmio_find_pdev(v, &sbdf) )
+            return 1;
+    }
 
     vpci_write(sbdf, reg, size, data);
 
@@ -154,12 +183,24 @@ static int vpci_setup_mmio_handler(struct domain *d,
     }
     else
     {
+        struct pci_dev *pdev;
+
         /* TODO: free memory on domain destroy */
         d->vpci_mmio_priv = priv;
         priv->is_virt_ecam = true;
         /* Guest domains use what is programmed in their device tree. */
         register_mmio_handler(d, &vpci_mmio_handler,
                 GUEST_VPCI_ECAM_BASE,GUEST_VPCI_ECAM_SIZE, priv);
+        /*
+         * Get physical host bridge that this virtual one will emulate.
+         * TODO: this looks not so good in terms of locking and pdev
+         * life cycle: we cannot refcount the pci_dev we get here, so
+         * leave it as is.
+         */
+        pcidevs_lock();
+        pdev = pci_get_pdev(bridge->segment, bridge->bus_start, 0);
+        pcidevs_unlock();
+        return vhostbridge_init(d, pdev);
     }
     return 0;
 }
