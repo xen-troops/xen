@@ -139,7 +139,7 @@ struct vpci_dev {
     /* Physical PCI device this virtual device is connected to. */
     const struct pci_dev *pdev;
     /* Virtual SBDF of the device. */
-    const union {
+    union {
         struct {
             uint8_t devfn;
             uint8_t bus;
@@ -182,6 +182,8 @@ int pci_add_device(u16 seg, u8 bus, u8 devfn,
 int pci_add_virtual_device(struct domain *d, const struct pci_dev *pdev);
 int pci_remove_device(u16 seg, u8 bus, u8 devfn);
 int pci_remove_virtual_device(struct domain *d, const struct pci_dev *pdev);
+void pci_set_virtual_device_bus_number(struct domain *d, uint16_t seg,
+                                       uint8_t bus);
 int pci_ro_device(int seg, int bus, int devfn);
 int pci_hide_device(unsigned int seg, unsigned int bus, unsigned int devfn);
 struct pci_dev *pci_get_pdev(int seg, int bus, int devfn);

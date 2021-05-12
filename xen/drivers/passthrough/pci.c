@@ -880,12 +880,14 @@ int pci_add_virtual_device(struct domain *d, const struct pci_dev *pdev)
      * TODO:
      * 1. Segment needs to be aligned with the number of emulated
      *    host bridges: hardcode to 0 for a single emulated bridge
-     * 2. Bus need to be aligned to Linux view of the emulated device
-     * 3. For now bus is hardcoded to 1, so virtual devices are seen
-     *    as being behind the emulated bridge.
      */
     *(u16*) &vdev->seg = 0;
-    *((u8*) &vdev->bus) = 1;
+    /*
+     * Set the bus number to ~0 initially: after the guest OS configures the
+     * virtual host bridge and assigns secondary bus number this will be updated
+     * accordingly.
+     */
+    *((u8*) &vdev->bus) = ~0;
     *((u8*) &vdev->devfn) = PCI_DEVFN(d->vpci_dev_next++,
                                       PCI_FUNC(pdev->sbdf.bdf));
     vdev->pdev = pdev;
@@ -908,6 +910,18 @@ int pci_remove_virtual_device(struct domain *d, const struct pci_dev *pdev)
     pcidevs_unlock();
     xfree(vdev);
     return 0;
+}
+
+void pci_set_virtual_device_bus_number(struct domain *d, uint16_t seg,
+                                       uint8_t bus)
+{
+    struct vpci_dev *vdev;
+
+    pcidevs_lock();
+    list_for_each_entry ( vdev, &d->vdev_list, list )
+        if ( vdev->seg == seg )
+            vdev->bus = bus;
+    pcidevs_unlock();
 }
 
 /* Caller should hold the pcidevs_lock */

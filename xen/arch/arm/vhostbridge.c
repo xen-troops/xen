@@ -26,6 +26,13 @@ struct vhostbridge_priv {
     /* Physical host bridge we are emulating. */
     const struct pci_dev *pdev;
     struct pci_bridge_emul bridge;
+    struct domain *d;
+    /*
+     * Helper variable to track secondary bus changes: registers are often
+     * written as 32-bit values and the secondary bus is 8-bit, so not all
+     * the register writes at PCI_PRIMARY_BUS change the secondary bus number.
+     */
+    uint8_t secondary_bus;
 };
 
 static pci_bridge_emul_read_status_t
@@ -47,9 +54,25 @@ vhostbridge_emul_ops_conf_write(struct pci_bridge_emul *bridge,
     priv = priv;
 }
 
+static void
+vhostbridge_emul_ops_conf_write_base(struct pci_bridge_emul *bridge,
+                                     int reg, u32 old, u32 new, u32 mask)
+{
+    struct vhostbridge_priv *priv = bridge->data;
+
+    if ( (reg / 4 == PCI_PRIMARY_BUS / 4) &&
+         (bridge->conf.secondary_bus != priv->secondary_bus) )
+    {
+        pci_set_virtual_device_bus_number(priv->d, 0,
+                                          bridge->conf.secondary_bus);
+        priv->secondary_bus = bridge->conf.secondary_bus;
+    }
+}
+
 static struct pci_bridge_emul_ops vhostbridge_emul_ops = {
     .read_pcie = vhostbridge_emul_ops_conf_read,
     .write_pcie = vhostbridge_emul_ops_conf_write,
+    .write_base = vhostbridge_emul_ops_conf_write_base,
 };
 
 int vhostbridge_init(struct domain *d, const struct pci_dev *pdev)
@@ -72,6 +95,7 @@ int vhostbridge_init(struct domain *d, const struct pci_dev *pdev)
     d->vhostbridge_priv = priv;
 
     priv->pdev = pdev;
+    priv->d = d;
 
     bridge = &priv->bridge;
 
