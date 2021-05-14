@@ -1,0 +1,32 @@
+###############################################################################
+#
+# Domain creation
+#
+###############################################################################
+
+declare_domain(domD_t)
+domain_self_comms(domD_t)
+create_domain(dom0_t, domD_t)
+manage_domain(dom0_t, domD_t)
+domain_comms(dom0_t, domD_t)
+domain_comms(domD_t, domD_t)
+migrate_domain_out(dom0_t, domD_t)
+domain_self_comms(domD_t)
+
+# This is required for PCI (or other device) passthrough
+delegate_devices(dom0_t, domD_t)
+
+# Domain type can be created using the default (system) role
+role system_r types { domD_t };
+
+use_device_iommu_nointremap(domD_t, irq_t)
+use_device_iommu_nointremap(domD_t, iomem_t)
+use_device_iommu_nointremap(domD_t, device_t)
+use_device_iommu_nointremap(domD_t, ioport_t)
+
+domain_comms(domD_t, domU_t)
+allow domD_t domU_t:mmu { map_read map_write };
+allow domD_t domU_t:domain2 resource_map;
+allow domD_t domU_t_channel:event create;
+allow domD_t domU_t:hvm dm;
+allow domD_t xen_t:xen physinfo;
