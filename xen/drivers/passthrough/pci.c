@@ -886,10 +886,17 @@ int pci_add_virtual_device(struct domain *d, const struct pci_dev *pdev)
      * Set the bus number to ~0 initially: after the guest OS configures the
      * virtual host bridge and assigns secondary bus number this will be updated
      * accordingly.
+     * For SR-IOV virtual function always set function to 0, so it appears
+     * as a normal device in the guest and can be discovered, e.g. it may
+     * have function number 10.4 in the hardware domain and won't be visible to
+     * the guest OS as such.
      */
     *((u8*) &vdev->bus) = ~0;
-    *((u8*) &vdev->devfn) = PCI_DEVFN(d->vpci_dev_next++,
-                                      PCI_FUNC(pdev->sbdf.bdf));
+    if ( pdev->info.is_virtfn )
+        *((u8*) &vdev->devfn) = PCI_DEVFN(d->vpci_dev_next++, 0);
+    else
+        *((u8*) &vdev->devfn) = PCI_DEVFN(d->vpci_dev_next++,
+                                          PCI_FUNC(pdev->sbdf.bdf));
     vdev->pdev = pdev;
     vdev->domain = d;
 
