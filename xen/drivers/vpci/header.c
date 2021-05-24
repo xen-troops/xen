@@ -608,6 +608,64 @@ static uint32_t guest_rom_read(const struct pci_dev *pdev, unsigned int reg,
     return 0xffffffff;
 }
 
+static const struct pci_dev *get_physfn_pdev(const struct pci_dev *pdev)
+{
+    if ( !pdev->info.is_virtfn )
+        return NULL;
+
+    return pci_get_pdev(/*seg*/0, pdev->info.physfn.bus,
+                        pdev->info.physfn.devfn);
+}
+
+static uint32_t guest_vendor_id_read(const struct pci_dev *pdev,
+                                     unsigned int reg, void *data)
+{
+    struct vpci_header *header = &pdev->vpci->header;
+
+    if ( !pdev->info.is_virtfn )
+        return vpci_hw_read32(pdev, reg, data);
+    return header->vf_ven_dev_id;
+}
+
+static void guest_vendor_id_write(const struct pci_dev *pdev, unsigned int reg,
+                                  uint32_t val, void *data)
+{
+}
+
+static uint32_t guest_get_vf_ven_dev_id(const struct pci_dev *pdev)
+{
+    const struct pci_dev *physfn_pdev;
+    uint32_t dev_ven_id, pos;
+
+    /*
+     * Find the physical function for this virtual function device
+     * and use its VendorID and read our DeviceID.
+     */
+    physfn_pdev = get_physfn_pdev(pdev);
+    if ( !physfn_pdev )
+    {
+        gprintk(XENLOG_ERR, "%pp cannot find physfn\n",
+                &pdev->sbdf);
+        return ~0;
+    }
+
+    /* Vendor ID is the same as the PF's Venodr ID. */
+    dev_ven_id = pci_conf_read16(physfn_pdev->sbdf, PCI_VENDOR_ID);
+    /* Device ID comes from the SR-IOV extended capability. */
+    pos = pci_find_ext_capability(physfn_pdev->sbdf.seg,
+                                  physfn_pdev->sbdf.bus,
+                                  physfn_pdev->sbdf.devfn,
+                                  PCI_EXT_CAP_ID_SRIOV);
+    if ( !pos )
+    {
+        gprintk(XENLOG_ERR, "%pp cannot find SR-IOV extended capability, PF %pp\n",
+                &pdev->sbdf, &physfn_pdev->sbdf);
+        return ~0;
+    }
+    return dev_ven_id | pci_conf_read16(physfn_pdev->sbdf,
+                                        pos + PCI_SRIOV_VF_DID) << 16;
+}
+
 static int add_bar_handlers(struct pci_dev *pdev, bool is_hwdom)
 {
     unsigned int i;
@@ -620,6 +678,23 @@ static int add_bar_handlers(struct pci_dev *pdev, bool is_hwdom)
                            2, header);
     if ( rc )
         return rc;
+
+    /*
+     * Setup a handler for VENDOR_ID for guests only and allow hwdom reading
+     * directly: the handler is used for SR-IOV virtual functions.
+     */
+    if ( !is_hwdom && pdev->info.is_virtfn )
+    {
+        header->vf_ven_dev_id = guest_get_vf_ven_dev_id(pdev);
+        if ( header->vf_ven_dev_id == ~0 )
+            return -EINVAL;
+
+        rc = vpci_add_register(pdev->vpci,
+                               guest_vendor_id_read, guest_vendor_id_write,
+                               PCI_VENDOR_ID, 4, header);
+        if ( rc )
+            return rc;
+    }
 
     if ( pdev->ignore_bars )
         return 0;

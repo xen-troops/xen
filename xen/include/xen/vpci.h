@@ -104,7 +104,13 @@ struct vpci {
          * is mapped into guest p2m) if there's a ROM BAR on the device.
          */
         bool rom_enabled      : 1;
-        /* FIXME: currently there's no support for SR-IOV. */
+        /*
+         * Vendor and Device IDs for this virtual function if applicable.
+         * This is always guest's view as VFs do not provide
+         * PCI_VENDOR_ID:PCI_DEVICE_ID pair in their configuration space
+         * and always return 0xffffffff by SR-IOV specification.
+         */
+        uint32_t vf_ven_dev_id;
     } header;
 
 #ifdef CONFIG_HAS_PCI_MSI
