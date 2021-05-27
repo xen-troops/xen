@@ -666,9 +666,18 @@ static uint32_t guest_get_vf_ven_dev_id(const struct pci_dev *pdev)
                                         pos + PCI_SRIOV_VF_DID) << 16;
 }
 
+static unsigned int get_sriov_pf_pos(const struct pci_dev *pdev)
+{
+    if ( pdev->info.is_virtfn )
+        return 0;
+
+    return pci_find_ext_capability(pdev->seg, pdev->bus, pdev->devfn,
+                                   PCI_EXT_CAP_ID_SRIOV);
+}
+
 static int add_bar_handlers(struct pci_dev *pdev, bool is_hwdom)
 {
-    unsigned int i;
+    unsigned int i, vf_pos;
     struct vpci_header *header = &pdev->vpci->header;
     struct vpci_bar *bars = header->bars;
     int rc;
@@ -740,6 +749,37 @@ static int add_bar_handlers(struct pci_dev *pdev, bool is_hwdom)
         }
         bars[i].guest_addr = 0;
     }
+
+    vf_pos = get_sriov_pf_pos(pdev);
+    if ( !vf_pos )
+        return 0;
+
+    /* Also add handlers for the SR-IOV PF/VF BARs. */
+    bars = pdev->vpci->vf_bars;
+    for ( i = 0; i < PCI_SRIOV_NUM_BARS; i++)
+    {
+        /*
+         * FIXME: VFs ROM BAR is read-only and is all zeros. VF may provide
+         * access to the PFs ROM via emulation though.
+         */
+        if ( (bars[i].type == VPCI_BAR_IO) ||
+             (bars[i].type == VPCI_BAR_EMPTY) ||
+             (bars[i].type == VPCI_BAR_ROM) )
+            continue;
+
+        /* This is either VPCI_BAR_MEM32 or VPCI_BAR_MEM64_{LO|HI}. */
+        if ( is_hwdom )
+            rc = vpci_add_register(pdev->vpci, vpci_hw_read32, bar_write,
+                                   vf_pos + PCI_SRIOV_BAR + i * 4, 4, &bars[i]);
+        else
+            rc = vpci_add_register(pdev->vpci,
+                                   guest_bar_read, guest_bar_write,
+                                   PCI_BASE_ADDRESS_0 + i * 4, 4, &bars[i]);
+        if ( rc )
+            return rc;
+        bars[i].guest_addr = 0;
+    }
+
     return 0;
 }
 
@@ -751,6 +791,10 @@ static int init_bars(struct pci_dev *pdev)
     struct vpci_header *header = &pdev->vpci->header;
     struct vpci_bar *bars = header->bars;
     int rc;
+
+    /* No need to init for virtual functions. */
+    if ( pdev->info.is_virtfn )
+        return 0;
 
     switch ( pci_conf_read8(pdev->sbdf, PCI_HEADER_TYPE) & 0x7f )
     {
@@ -841,6 +885,110 @@ static int init_bars(struct pci_dev *pdev)
     return (cmd & PCI_COMMAND_MEMORY) ? modify_bars(pdev, cmd, false) : 0;
 }
 REGISTER_VPCI_INIT(init_bars, VPCI_PRIORITY_MIDDLE);
+
+static int vf_init_bars_guest(struct pci_dev *pdev)
+{
+    const struct pci_dev *physfn_pdev = get_physfn_pdev(pdev);
+    struct vpci_bar *bars;
+    struct vpci_bar *physfn_vf_bars;
+    unsigned int i, vf_pos;
+
+    if ( !physfn_pdev )
+    {
+        gprintk(XENLOG_ERR, "%pp cannot find physfn\n",
+                &pdev->sbdf);
+        return -ENODEV;
+    }
+
+    /*
+     * Set up BARs for this VF out of PF's VF BARs taking into account
+     * the index of the VF.
+     */
+    bars = pdev->vpci->header.bars;
+    physfn_vf_bars = physfn_pdev->vpci->vf_bars;
+
+    vf_pos = get_sriov_pf_pos(physfn_pdev);
+    for ( i = 0; i < PCI_SRIOV_NUM_BARS; i++)
+    {
+        uint16_t offset = pci_conf_read16(physfn_pdev->sbdf,
+                                          vf_pos + PCI_SRIOV_VF_OFFSET);
+        uint16_t stride = pci_conf_read16(physfn_pdev->sbdf,
+                                          vf_pos + PCI_SRIOV_VF_STRIDE);
+        int vf_idx;
+
+        vf_idx = pdev->sbdf.sbdf;
+        vf_idx -= physfn_pdev->sbdf.sbdf + offset;
+        if ( vf_idx < 0 )
+            return -EINVAL;
+        if ( stride )
+        {
+            if ( vf_idx % stride )
+                return -EINVAL;
+            vf_idx /= stride;
+        }
+
+        bars[i].type = physfn_vf_bars[i].type;
+        bars[i].addr = physfn_vf_bars[i].addr + vf_idx * physfn_vf_bars[i].size;
+        bars[i].size = physfn_vf_bars[i].size;
+        bars[i].prefetchable = physfn_vf_bars[i].prefetchable;
+    }
+    return 0;
+}
+
+static int vf_init_bars(struct pci_dev *pdev)
+{
+    struct vpci_bar *bars;
+    unsigned int i, vf_pos;
+
+    if ( pdev->info.is_virtfn )
+        return vf_init_bars_guest(pdev);
+
+    vf_pos = get_sriov_pf_pos(pdev);
+    if ( !vf_pos )
+        return 0;
+
+    /* Read BARs for VFs out of PF's SR-IOV extended capability. */
+    bars = pdev->vpci->vf_bars;
+    for ( i = 0; i < PCI_SRIOV_NUM_BARS; i++)
+    {
+        unsigned int idx = vf_pos + PCI_SRIOV_BAR + i * 4;
+        uint32_t bar;
+
+        /* FIXME: pdev->vf_rlen already has the size of the BAR after sizing. */
+        bars[i].size = pdev->vf_rlen[i];
+        bars[i].type = VPCI_BAR_EMPTY;
+
+        if ( i && bars[i - 1].type == VPCI_BAR_MEM64_LO )
+        {
+            bars[i].type = VPCI_BAR_MEM64_HI;
+            continue;
+        }
+
+        if ( !bars[i].size )
+            continue;
+
+        bar = pci_conf_read32(pdev->sbdf, idx);
+        /* No VPCI_BAR_ROM or VPCI_BAR_IO expected for VF. */
+        if ( (bar & PCI_BASE_ADDRESS_SPACE) ==
+              PCI_BASE_ADDRESS_SPACE_IO )
+        {
+            printk(XENLOG_WARNING
+                   "SR-IOV device %pp with vf BAR%u in IO space\n",
+                   &pdev->sbdf, i);
+            continue;
+        }
+
+        if ( (bar & PCI_BASE_ADDRESS_MEM_TYPE_MASK) ==
+             PCI_BASE_ADDRESS_MEM_TYPE_64 )
+            bars[i].type = VPCI_BAR_MEM64_LO;
+        else
+            bars[i].type = VPCI_BAR_MEM32;
+
+        bars[i].prefetchable = bar & PCI_BASE_ADDRESS_MEM_PREFETCH;
+    }
+    return 0;
+}
+REGISTER_VPCI_INIT(vf_init_bars, VPCI_PRIORITY_MIDDLE);
 
 int vpci_bar_add_handlers(const struct domain *d, struct pci_dev *pdev)
 {

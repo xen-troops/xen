@@ -160,6 +160,7 @@ struct vpci {
         } entries[];
     } *msix;
 #endif /* CONFIG_HAS_PCI_MSI */
+    struct vpci_bar vf_bars[PCI_SRIOV_NUM_BARS];
 #endif
 };
 
