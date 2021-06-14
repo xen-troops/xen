@@ -314,7 +314,8 @@ bool ipmmu_is_mmu_tlb_disable_needed(struct dt_device_node *np)
 
 	/* W/A is not actual for H3 ES3.0 and M3 any revisions */
 	if (is_soc_h3_es30() ||
-			dt_device_is_compatible(np, "renesas,ipmmu-r8a7796"))
+			dt_device_is_compatible(np, "renesas,ipmmu-r8a7796") ||
+			dt_device_is_compatible(np, "renesas,ipmmu-r8a77961"))
 		return false;
 
 	pd = ipmmu_get_mmu_pd(np);
