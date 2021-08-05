@@ -249,6 +249,8 @@ class domain2
     resource_map
 # XEN_DOMCTL_get_cpu_policy
     get_cpu_policy
+# XEN_DOMCTL_enable_rproc
+    enable_rproc
 }
 
 # Similar to class domain, but primarily contains domctls related to HVM domains

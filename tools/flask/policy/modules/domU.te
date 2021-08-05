@@ -34,3 +34,6 @@ use_device_iommu_nointremap(domU_t, irq_t)
 use_device_iommu_nointremap(domU_t, iomem_t)
 use_device_iommu_nointremap(domU_t, device_t)
 use_device_iommu_nointremap(domU_t, ioport_t)
+
+allow dom0_t domU_t:domain2 enable_rproc;
+

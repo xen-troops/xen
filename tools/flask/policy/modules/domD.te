@@ -31,3 +31,4 @@ allow domD_t domU_t_channel:event create;
 allow domD_t domU_t:hvm dm;
 allow domD_t xen_t:xen physinfo;
 allow domD_t domU_t:domain getdomaininfo;
+allow dom0_t domD_t:domain2 enable_rproc;
