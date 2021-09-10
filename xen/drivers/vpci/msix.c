@@ -97,6 +97,7 @@ static void cf_check control_write(
         for ( i = 0; i < msix->max_entries; i++ )
             if ( !msix->entries[i].masked && msix->entries[i].updated )
                 update_entry(&msix->entries[i], pdev, i);
+
     }
     else if ( !new_enabled && msix->enabled )
     {
@@ -134,6 +135,10 @@ static void cf_check control_write(
             }
         }
     }
+
+    /* Make sure domU doesn't enable INTx while enabling MSI-X. */
+    if ( new_enabled && !msix->enabled && !is_hardware_domain(pdev->domain) )
+        pci_intx(pdev, false);
 
     msix->masked = new_masked;
     msix->enabled = new_enabled;

@@ -168,6 +168,9 @@ static void modify_decoding(const struct pci_dev *pdev, uint16_t cmd,
     if ( !rom_only )
     {
         pci_conf_write16(pdev->sbdf, PCI_COMMAND, cmd);
+        /* Show DomU that we updated P2M */
+        header->guest_cmd &= ~PCI_COMMAND_MEMORY;
+        header->guest_cmd = (cmd & PCI_COMMAND_MEMORY);
         header->bars_mapped = map;
     }
     else
@@ -519,14 +522,40 @@ static int modify_bars(const struct pci_dev *pdev, uint16_t cmd, bool rom_only)
     return 0;
 }
 
+/* TODO: Add proper emulation for all bits of the command register. */
 static void cf_check cmd_write(
     const struct pci_dev *pdev, unsigned int reg, uint32_t cmd, void *data)
 {
     struct vpci_header *header = data;
 
+    if ( !is_hardware_domain(pdev->domain) )
+    {
+        const struct vpci *vpci = pdev->vpci;
+        uint16_t excluded = PCI_COMMAND_PARITY | PCI_COMMAND_SERR |
+            PCI_COMMAND_FAST_BACK | PCI_COMMAND_IO;
+
+        if ( (vpci->msi && vpci->msi->enabled) ||
+             (vpci->msix && vpci->msix->enabled) )
+            excluded |= PCI_COMMAND_INTX_DISABLE;
+
+        cmd &= ~excluded;
+
+        /*
+         * Show guest that we allowed it to change bits that are not
+         * immediately excluded. Do not show change to
+         * PCI_COMMAND_MEMORY bit till we finish with P2M
+         */
+        header->guest_cmd = (header->guest_cmd &
+                             (excluded | PCI_COMMAND_MEMORY)) |
+            (cmd & ~PCI_COMMAND_MEMORY);
+
+        cmd |= pci_conf_read16(pdev->sbdf, reg) & excluded;
+    }
+
     /*
      * Let Dom0 play with all the bits directly except for the memory
-     * decoding one.
+     * decoding one. Bits that are not allowed for DomU are already
+     * handled above.
      */
     if ( header->bars_mapped != !!(cmd & PCI_COMMAND_MEMORY) )
         /*
@@ -538,6 +567,14 @@ static void cf_check cmd_write(
         modify_bars(pdev, cmd, false);
     else
         pci_conf_write16(pdev->sbdf, reg, cmd);
+}
+
+static uint32_t cf_check guest_cmd_read(
+    const struct pci_dev *pdev, unsigned int reg, void *data)
+{
+    const struct vpci_header *header = data;
+
+    return header->guest_cmd;
 }
 
 static void cf_check bar_write(
@@ -757,8 +794,9 @@ static int cf_check init_header(struct pci_dev *pdev)
     }
 
     /* Setup a handler for the command register. */
-    rc = vpci_add_register(pdev->vpci, vpci_hw_read16, cmd_write, PCI_COMMAND,
-                           2, header);
+    rc = vpci_add_register(pdev->vpci,
+                           is_hwdom ? vpci_hw_read16 : guest_cmd_read,
+                           cmd_write, PCI_COMMAND, 2, header);
     if ( rc )
         return rc;
 
@@ -842,6 +880,15 @@ static int cf_check init_header(struct pci_dev *pdev)
     cmd = pci_conf_read16(pdev->sbdf, PCI_COMMAND);
     if ( cmd & PCI_COMMAND_MEMORY )
         pci_conf_write16(pdev->sbdf, PCI_COMMAND, cmd & ~PCI_COMMAND_MEMORY);
+
+    /*
+     * Clear PCI_COMMAND_MEMORY for DomUs, so they will always start with
+     * memory decoding disabled and to ensure that we will not call modify_bars()
+     * at the end of this function.
+     */
+    if ( !is_hwdom )
+        cmd &= ~ (PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    header->guest_cmd = cmd;
 
     for ( i = 0; i < num_bars; i++ )
     {
