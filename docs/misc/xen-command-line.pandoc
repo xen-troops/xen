@@ -1960,6 +1960,13 @@ All numbers specified must be hexadecimal ones.
 
 This option can be specified more than once (up to 8 times at present).
 
+### pci-scan (arm)
+> `= <boolean>`
+
+> Default: `false`
+
+Flag to enable or disable Xen PCI scan at boot.
+
 ### pcid (x86)
 > `= <boolean> | xpti=<bool>`
 
