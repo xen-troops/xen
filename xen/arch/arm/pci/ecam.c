@@ -20,12 +20,10 @@
 /*
  * Function to implement the pci_ops->map_bus method.
  */
-void __iomem *pci_ecam_map_bus(struct pci_host_bridge *bridge,
-                               pci_sbdf_t sbdf, uint32_t where)
+void __iomem *pci_ecam_map_bus_generic(const struct pci_config_window *cfg,
+                                       const struct pci_ecam_ops *ops,
+                                       pci_sbdf_t sbdf, uint32_t where)
 {
-    const struct pci_config_window *cfg = bridge->cfg;
-    const struct pci_ecam_ops *ops =
-        container_of(bridge->ops, const struct pci_ecam_ops, pci_ops);
     unsigned int devfn_shift = ops->bus_shift - 8;
     void __iomem *base;
     unsigned int busn = sbdf.bus;
@@ -37,6 +35,15 @@ void __iomem *pci_ecam_map_bus(struct pci_host_bridge *bridge,
     base = cfg->win + (busn << ops->bus_shift);
 
     return base + (sbdf.devfn << devfn_shift) + where;
+}
+
+void __iomem *pci_ecam_map_bus(struct pci_host_bridge *bridge,
+                               pci_sbdf_t sbdf, uint32_t where)
+{
+    const struct pci_ecam_ops *ops =
+        container_of(bridge->ops, const struct pci_ecam_ops, pci_ops);
+
+    return pci_ecam_map_bus_generic(bridge->cfg, ops, sbdf, where);
 }
 
 bool __init pci_ecam_need_p2m_hwdom_mapping(struct domain *d,

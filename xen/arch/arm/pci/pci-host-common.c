@@ -57,17 +57,12 @@ static void pci_ecam_free(struct pci_config_window *cfg)
     xfree(cfg);
 }
 
-static struct pci_config_window * __init
-gen_pci_init(struct dt_device_node *dev, const struct pci_ecam_ops *ops)
+static void __init gen_pci_init_bus_range(struct dt_device_node *dev,
+                                          struct pci_host_bridge *bridge,
+                                          struct pci_config_window *cfg)
 {
-    int err, cfg_reg_idx;
     u32 bus_range[2];
-    paddr_t addr, size;
-    struct pci_config_window *cfg;
-
-    cfg = xzalloc(struct pci_config_window);
-    if ( !cfg )
-        return NULL;
+    int err;
 
     err = dt_property_read_u32_array(dev, "bus-range", bus_range,
                                      ARRAY_SIZE(bus_range));
@@ -82,6 +77,36 @@ gen_pci_init(struct dt_device_node *dev, const struct pci_ecam_ops *ops)
         if ( cfg->busn_end > cfg->busn_start + 0xff )
             cfg->busn_end = cfg->busn_start + 0xff;
     }
+}
+
+static void __init gen_pci_init_bus_range_child(struct dt_device_node *dev,
+                                                struct pci_host_bridge *bridge,
+                                                struct pci_config_window *cfg)
+{
+    cfg->busn_start = bridge->cfg->busn_start + 1;
+    cfg->busn_end = bridge->cfg->busn_end;
+    bridge->cfg->busn_end = bridge->cfg->busn_start;
+
+    printk(XENLOG_INFO "Root bus end updated: [bus %x-%x]\n",
+           bridge->cfg->busn_start, bridge->cfg->busn_end);
+}
+
+static struct pci_config_window * __init
+gen_pci_init(struct dt_device_node *dev, struct pci_host_bridge *bridge,
+             const struct pci_ecam_ops *ops,
+             void (*init_bus_range)(struct dt_device_node *dev,
+                                    struct pci_host_bridge *bridge,
+                                    struct pci_config_window *cfg))
+{
+    int err, cfg_reg_idx;
+    paddr_t addr, size;
+    struct pci_config_window *cfg;
+
+    cfg = xzalloc(struct pci_config_window);
+    if ( !cfg )
+        return NULL;
+
+    init_bus_range(dev, bridge, cfg);
 
     if ( ops->cfg_reg_index )
     {
@@ -231,9 +256,11 @@ static int pci_bus_find_domain_nr(struct dt_device_node *dev)
     return domain;
 }
 
-struct pci_host_bridge *pci_host_common_probe(struct dt_device_node *dev,
-                                              const struct pci_ecam_ops *ops,
-                                              size_t priv_sz)
+struct pci_host_bridge *
+pci_host_common_probe(struct dt_device_node *dev,
+                      const struct pci_ecam_ops *ops,
+                      const struct pci_ecam_ops *child_ops,
+                      size_t priv_sz)
 {
     struct pci_host_bridge *bridge;
     struct pci_config_window *cfg;
@@ -248,7 +275,7 @@ struct pci_host_bridge *pci_host_common_probe(struct dt_device_node *dev,
         return ERR_PTR(-ENOMEM);
 
     /* Parse and map our Configuration Space windows */
-    cfg = gen_pci_init(dev, ops);
+    cfg = gen_pci_init(dev, bridge, ops, gen_pci_init_bus_range);
     if ( !cfg )
     {
         err = -ENOMEM;
@@ -268,6 +295,21 @@ struct pci_host_bridge *pci_host_common_probe(struct dt_device_node *dev,
 
     bridge->segment = domain;
 
+    if ( child_ops )
+    {
+        /* Parse and map child's Configuration Space windows */
+        cfg = gen_pci_init(dev, bridge, child_ops,
+                           gen_pci_init_bus_range_child);
+        if ( !cfg )
+        {
+            err = -ENOMEM;
+            goto err_child;
+        }
+
+        bridge->child_cfg = cfg;
+        bridge->child_ops = &child_ops->pci_ops;
+    }
+
     if ( priv_sz )
     {
         bridge->priv = xzalloc_bytes(priv_sz);
@@ -286,6 +328,9 @@ struct pci_host_bridge *pci_host_common_probe(struct dt_device_node *dev,
 
 err_priv:
     xfree(bridge->priv);
+
+err_child:
+    xfree(bridge->cfg);
 
 err_exit:
     xfree(bridge);
@@ -321,9 +366,11 @@ struct pci_host_bridge *pci_find_host_bridge(uint16_t segment, uint8_t bus)
     {
         if ( bridge->segment != segment )
             continue;
-        if ( (bus < bridge->cfg->busn_start) || (bus > bridge->cfg->busn_end) )
-            continue;
-        return bridge;
+        if ( bridge->child_cfg && (bus >= bridge->child_cfg->busn_start) &&
+             (bus <= bridge->child_cfg->busn_end) )
+             return bridge;
+        if ( (bus >= bridge->cfg->busn_start) && (bus <= bridge->cfg->busn_end) )
+             return bridge;
     }
 
     return NULL;
@@ -389,6 +436,7 @@ int __init pci_host_bridge_mappings(struct domain *d)
     {
         const struct dt_device_node *dev = bridge->dt_node;
         unsigned int i;
+        bool need_mapping;
 
         for ( i = 0; i < dt_number_of_address(dev); i++ )
         {
@@ -404,7 +452,11 @@ int __init pci_host_bridge_mappings(struct domain *d)
                 return err;
             }
 
-            if ( bridge->ops->need_p2m_hwdom_mapping(d, bridge, addr) )
+            need_mapping = bridge->ops->need_p2m_hwdom_mapping(d, bridge, addr);
+            if ( need_mapping && bridge->child_ops )
+                  need_mapping = bridge->child_ops->
+                      need_p2m_hwdom_mapping(d, bridge, addr);
+            if ( need_mapping )
             {
                 err = map_range_to_domain(dev, addr, size, &mr_data);
                 if ( err )

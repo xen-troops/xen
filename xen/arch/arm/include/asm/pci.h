@@ -70,6 +70,9 @@ struct pci_host_bridge {
     const struct pci_ops *ops;
     void *priv;                      /* Private data of the bridge. */
     uint64_t its_msi_base;
+    /* Child bus */
+    struct pci_config_window* child_cfg;
+    const struct pci_ops *child_ops;
 };
 
 struct pci_ops {
@@ -98,15 +101,20 @@ struct pci_ecam_ops {
 /* Default ECAM ops */
 extern const struct pci_ecam_ops pci_generic_ecam_ops;
 
-struct pci_host_bridge *pci_host_common_probe(struct dt_device_node *dev,
-                                              const struct pci_ecam_ops *ops,
-                                              size_t priv_sz);
+struct pci_host_bridge *
+pci_host_common_probe(struct dt_device_node *dev,
+                      const struct pci_ecam_ops *ops,
+                      const struct pci_ecam_ops *child_ops,
+                      size_t priv_sz);
 int pci_generic_config_read(struct pci_host_bridge *bridge, pci_sbdf_t sbdf,
                             uint32_t reg, uint32_t len, uint32_t *value);
 int pci_generic_config_write(struct pci_host_bridge *bridge, pci_sbdf_t sbdf,
                              uint32_t reg, uint32_t len, uint32_t value);
 void __iomem *pci_ecam_map_bus(struct pci_host_bridge *bridge,
                                pci_sbdf_t sbdf, uint32_t where);
+void __iomem *pci_ecam_map_bus_generic(const struct pci_config_window *cfg,
+                                       const struct pci_ecam_ops *ops,
+                                       pci_sbdf_t sbdf, uint32_t where);
 bool pci_ecam_need_p2m_hwdom_mapping(struct domain *d,
                                      struct pci_host_bridge *bridge,
                                      uint64_t addr);
