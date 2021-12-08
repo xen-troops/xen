@@ -19,8 +19,10 @@
 
 #include <xen/msi.h>
 #include <xen/sched.h>
+#include <xen/vmap.h>
 #include <xen/vpci.h>
 
+#include <asm/io.h>
 #include <asm/p2m.h>
 
 static uint32_t cf_check control_read(
@@ -155,7 +157,12 @@ static bool access_allowed(const struct pci_dev *pdev, unsigned long addr,
 static struct vpci_msix_entry *get_entry(struct vpci_msix *msix,
                                          paddr_t addr)
 {
-    paddr_t start = vmsix_table_addr(msix->pdev->vpci, VPCI_MSIX_TABLE);
+    paddr_t start;
+
+    if ( is_hardware_domain(current->domain) )
+        start = vmsix_table_addr(msix->pdev->vpci, VPCI_MSIX_TABLE);
+    else
+        start = vmsix_guest_table_addr(msix->pdev->vpci, VPCI_MSIX_TABLE);
 
     return &msix->entries[(addr - start) / PCI_MSIX_ENTRY_SIZE];
 }
