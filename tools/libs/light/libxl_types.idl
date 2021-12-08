@@ -560,6 +560,11 @@ libxl_sve_type = Enumeration("sve_type", [
     (2048, "2048")
     ], init_val = "LIBXL_SVE_TYPE_DISABLED")
 
+libxl_arm_sci_type = Enumeration("arm_sci_type", [
+    (0, "none"),
+    (1, "scmi_smc")
+    ], init_val = "LIBXL_ARM_SCI_TYPE_NONE")
+
 libxl_rdm_reserve = Struct("rdm_reserve", [
     ("strategy",    libxl_rdm_reserve_strategy),
     ("policy",      libxl_rdm_reserve_policy),
@@ -663,6 +668,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
     ("tee",              libxl_tee_type),
     ("tpm",              libxl_defbool),
     ("virtio_pci_hosts", Array(libxl_virtio_pci_host, "num_virtio_pci_hosts")),
+    ("arm_sci",          libxl_arm_sci_type),
     ("u", KeyedUnion(None, libxl_domain_type, "type",
                 [("hvm", Struct(None, [("firmware",         string),
                                        ("bios",             libxl_bios_type),

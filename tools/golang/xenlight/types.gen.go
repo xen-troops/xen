@@ -513,6 +513,12 @@ SveType1920 SveType = 1920
 SveType2048 SveType = 2048
 )
 
+type ArmSciType int
+const(
+ArmSciTypeNone ArmSciType = 0
+ArmSciTypeScmi ArmSciType = 1
+)
+
 type RdmReserve struct {
 Strategy RdmReserveStrategy
 Policy RdmReservePolicy
@@ -584,6 +590,7 @@ NestedHvm Defbool
 Apic Defbool
 DmRestrict Defbool
 Tee TeeType
+ArmSci ArmSciType
 Type DomainType
 TypeUnion DomainBuildInfoTypeUnion
 ArchArm struct {
