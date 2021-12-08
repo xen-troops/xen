@@ -774,6 +774,18 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
      */
     assert(libxl_domid_valid_guest(*domid));
 
+    if (d_config->b_info.arm_sci == LIBXL_ARM_SCI_TYPE_SCMI_SMC) {
+        ret = xc_domain_get_sci_info(ctx->xch, *domid, &state->arm_sci_agent_paddr,
+                &state->arm_sci_agent_funcid);
+        LOGD(DEBUG, *domid,"sci_agent_paddr = %lx", state->arm_sci_agent_paddr);
+        if (ret) {
+            LOGED(ERROR, *domid, "failed to get sci paddr");
+            rc = ERROR_FAIL;
+            goto out;
+        }
+
+    }
+
     dom_path = libxl__xs_get_dompath(gc, *domid);
     if (!dom_path) {
         rc = ERROR_FAIL;
