@@ -3310,6 +3310,15 @@ skip_usbdev:
     else
         b_info->arch_arm.rproc = -1;
 
+    if (!xlu_cfg_get_string (config, "arm_sci", &buf, 1)) {
+        e = libxl_arm_sci_type_from_string(buf, &b_info->arm_sci);
+        if (e) {
+            fprintf(stderr,
+                    "Unknown arm_sci \"%s\" specified\n", buf);
+            exit(-ERROR_FAIL);
+        }
+    }
+
     parse_vkb_list(config, d_config);
     parse_vgsx_list(config, d_config);
     parse_vcamera_list(config, d_config);
