@@ -9,6 +9,7 @@
 #include <libfdt.h>
 #include <assert.h>
 #include <xen/device_tree_defs.h>
+#include <xenhypfs.h>
 
 /*
  * There is no clear requirements for the total size of Virtio MMIO region.
@@ -358,6 +359,19 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
 
     if (d_config->num_pcidevs)
         config->arch.pci_flags = XEN_DOMCTL_CONFIG_PCI_VPCI;
+
+    switch (d_config->b_info.arm_sci) {
+    case LIBXL_ARM_SCI_TYPE_NONE:
+        config->arch.arm_sci_type = XEN_DOMCTL_CONFIG_ARM_SCI_NONE;
+        break;
+    case LIBXL_ARM_SCI_TYPE_SCMI_SMC:
+        config->arch.arm_sci_type = XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC;
+        break;
+    default:
+        LOG(ERROR, "Unknown ARM_SCI type %d",
+            d_config->b_info.arm_sci);
+        return ERROR_FAIL;
+    }
 
     return 0;
 }
@@ -786,9 +800,6 @@ static int make_optee_node(libxl__gc *gc, void *fdt)
     int res;
     LOG(DEBUG, "Creating OP-TEE node in dtb");
 
-    res = fdt_begin_node(fdt, "firmware");
-    if (res) return res;
-
     res = fdt_begin_node(fdt, "optee");
     if (res) return res;
 
@@ -796,9 +807,6 @@ static int make_optee_node(libxl__gc *gc, void *fdt)
     if (res) return res;
 
     res = fdt_property_string(fdt, "method", "hvc");
-    if (res) return res;
-
-    res = fdt_end_node(fdt);
     if (res) return res;
 
     res = fdt_end_node(fdt);
@@ -1601,10 +1609,9 @@ static int copy_node(libxl__gc *gc, void *fdt, void *pfdt,
     return 0;
 }
 
-static int copy_node_by_path(libxl__gc *gc, const char *path,
-                             void *fdt, void *pfdt)
+static int get_path_nodeoff(const char *path, void *pfdt)
 {
-    int nodeoff, r;
+    int nodeoff;
     const char *name = strrchr(path, '/');
 
     if (!name)
@@ -1624,8 +1631,273 @@ static int copy_node_by_path(libxl__gc *gc, const char *path,
     if (strcmp(fdt_get_name(pfdt, nodeoff, NULL), name))
         return -FDT_ERR_NOTFOUND;
 
+    return nodeoff;
+}
+
+static int copy_node_by_path(libxl__gc *gc, const char *path,
+                             void *fdt, void *pfdt)
+{
+    int nodeoff, r;
+
+    nodeoff = get_path_nodeoff(path, pfdt);
+    if (nodeoff < 0)
+        return nodeoff;
+
     r = copy_node(gc, fdt, pfdt, nodeoff, 0);
     if (r) return r;
+
+    return 0;
+}
+
+static int map_sci_page(libxl__gc *gc, uint32_t domid, uint64_t paddr,
+                         uint64_t guest_addr)
+{
+    int ret;
+    uint64_t _paddr_pfn = paddr >> XC_PAGE_SHIFT;
+    uint64_t _guest_pfn = guest_addr >> XC_PAGE_SHIFT;
+
+    assert(paddr && guest_addr);
+    LOG(DEBUG, "[%d] mapping sci shmem page %"PRIx64, domid, _paddr_pfn);
+
+    ret = xc_domain_iomem_permission(CTX->xch, domid, _paddr_pfn, 1, 1);
+    if (ret < 0) {
+        LOG(ERROR,
+              "failed give domain access to iomem page %"PRIx64,
+             _paddr_pfn);
+        return ret;
+    }
+
+    ret = xc_domain_memory_mapping(CTX->xch, domid,
+                                   _guest_pfn, _paddr_pfn,
+                                   1, 1);
+    if (ret < 0) {
+        LOG(ERROR,
+              "failed to map to domain iomem page %"PRIx64
+              " to guest address %"PRIx64,
+              _paddr_pfn, _guest_pfn);
+        return ret;
+    }
+
+    return 0;
+}
+
+static int scmi_dt_make_shmem_node(libxl__gc *gc, void *fdt)
+{
+    int res;
+    char buf[64];
+
+    snprintf(buf, sizeof(buf), "scmi-shmem@%llx", GUEST_SCI_SHMEM_BASE);
+
+    res = fdt_begin_node(fdt, buf);
+    if (res) return res;
+
+    res = fdt_property_compat(gc, fdt, 1, "arm,scmi-shmem");
+    if (res) return res;
+
+    res = fdt_property_regs(gc, fdt, GUEST_ROOT_ADDRESS_CELLS,
+                    GUEST_ROOT_SIZE_CELLS, 1,
+                    GUEST_SCI_SHMEM_BASE, GUEST_SCI_SHMEM_SIZE);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_SCMI);
+    if (res) return res;
+
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    return 0;
+}
+
+static const char *name_from_path(const char *path)
+{
+    return strrchr(path, '/') + 1;
+}
+
+static int dt_copy_properties(libxl__gc *gc, void* fdt, void *xen_fdt,
+        const char *full_name)
+{
+    int propoff, nameoff, r, nodeoff;
+    const struct fdt_property *prop;
+
+    LOG(DEBUG, "Copy properties for node: %s", full_name);
+    nodeoff = get_path_nodeoff(full_name, xen_fdt);
+    if (nodeoff < 0)
+        return -FDT_ERR_NOTFOUND;
+
+    for (propoff = fdt_first_property_offset(xen_fdt, nodeoff);
+         propoff >= 0;
+         propoff = fdt_next_property_offset(xen_fdt, propoff)) {
+
+        if (!(prop = fdt_get_property_by_offset(xen_fdt, propoff, NULL)))
+            return -FDT_ERR_INTERNAL;
+
+        nameoff = fdt32_to_cpu(prop->nameoff);
+
+        /* Skipping phandle nodes in xen device-tree */
+        if (strcmp(fdt_string(xen_fdt,nameoff), "phandle") == 0 ||
+            strcmp(fdt_string(xen_fdt, nameoff), "linux,phandle") == 0)
+            continue;
+
+        r = fdt_property(fdt, fdt_string(xen_fdt, nameoff),
+                         prop->data, fdt32_to_cpu(prop->len));
+        if (r) return r;
+    }
+
+    return (propoff != -FDT_ERR_NOTFOUND)? propoff : 0;
+}
+
+static int scmi_dt_scan_node(libxl__gc *gc, void *fdt, void *pfdt,
+                             void *xen_fdt, int nodeoff)
+{
+    int rc;
+    int node_next;
+    char full_name[128];
+    uint32_t phandle;
+
+    node_next = fdt_first_subnode(pfdt, nodeoff);
+    while (node_next > 0)
+    {
+        LOG(DEBUG,"Processing node %s",
+                fdt_get_name(pfdt, node_next, NULL));
+
+        phandle = fdt_get_phandle(pfdt, node_next);
+
+        rc = fdt_get_path(pfdt, node_next, full_name, sizeof(full_name));
+        if (rc) return rc;
+
+        rc = fdt_begin_node(fdt, name_from_path(full_name));
+        if (rc) return rc;
+
+        rc = dt_copy_properties(gc, fdt, xen_fdt, full_name);
+        if (rc) return rc;
+
+        if (phandle) {
+            rc = fdt_property_cell(fdt, "phandle", phandle);
+            if (rc) return rc;
+        }
+
+        rc = scmi_dt_scan_node(gc, fdt, pfdt, xen_fdt, node_next);
+        if (rc) return rc;
+
+        rc = fdt_end_node(fdt);
+        if (rc) return rc;
+
+        node_next = fdt_next_subnode(pfdt, node_next);
+    }
+
+    return 0;
+}
+
+static int scmi_hypfs_fdt_check(libxl__gc *gc, void *fdt)
+{
+    int r;
+
+    if (fdt_magic(fdt) != FDT_MAGIC) {
+         LOG(ERROR, "FDT is not a valid Flat Device Tree");
+         return ERROR_FAIL;
+     }
+
+     r = fdt_check_header(fdt);
+     if (r) {
+         LOG(ERROR, "Failed to check the FDT (%d)", r);
+         return ERROR_FAIL;
+     }
+
+     return r;
+}
+
+static int scmi_dt_copy_subnodes(libxl__gc *gc, void *fdt, void *pfdt)
+{
+    struct xenhypfs_handle *hdl;
+    struct xenhypfs_dirent *ent;
+    void *xen_fdt;
+    int rc, nodeoff;
+
+    hdl = xenhypfs_open(NULL, 0);
+    if (!hdl)
+        return -EINVAL;
+
+    xen_fdt = xenhypfs_read_raw(hdl, "/devicetree", &ent);
+    if (!xen_fdt) {
+        rc = errno;
+        LOG(ERROR, "Unable to read hypfs entry: %d", rc);
+        goto out;
+    }
+
+    rc = scmi_hypfs_fdt_check(gc, xen_fdt);
+    if (rc) {
+        LOG(ERROR, "Hypfs device tree is invalid");
+        goto out;
+    }
+
+    nodeoff = get_path_nodeoff("/firmware/scmi", pfdt);
+    if (nodeoff <= 0) {
+        rc = -ENODEV;
+        goto out;
+    }
+
+    rc = scmi_dt_scan_node(gc, fdt, pfdt, xen_fdt, nodeoff);
+
+out:
+    xenhypfs_close(hdl);
+    return rc;
+}
+
+static int scmi_dt_create_node(libxl__gc *gc, void *fdt, void *pfdt,
+                               uint32_t func_id)
+{
+    int rc = 0;
+
+    rc = fdt_begin_node(fdt, "scmi");
+    if (rc) return rc;
+
+    rc = fdt_property_compat(gc, fdt, 1, "arm,scmi-smc");
+    if (rc) return rc;
+
+    rc = fdt_property_cell(fdt, "shmem", GUEST_PHANDLE_SCMI);
+    if (rc) return rc;
+
+    rc = fdt_property_cell(fdt, "#addrets-cells", 1);
+    if (rc) return rc;
+
+    rc = fdt_property_cell(fdt, "#size-cells", 0);
+    if (rc) return rc;
+
+    rc = fdt_property_cell(fdt, "arm,smc-id", func_id);
+    if (rc) return rc;
+
+    rc = scmi_dt_copy_subnodes(gc, fdt, pfdt);
+    if (rc) return rc;
+
+    rc = fdt_end_node(fdt);
+    if (rc) return rc;
+
+    return rc;
+}
+
+static int make_firmware_node(libxl__gc *gc, void *fdt, void *pfdt, int tee,
+                              int sci, uint32_t func_id)
+{
+    int res;
+
+    if ((tee == LIBXL_TEE_TYPE_NONE) && (sci == LIBXL_ARM_SCI_TYPE_NONE))
+        return 0;
+
+    res = fdt_begin_node(fdt, "firmware");
+    if (res) return res;
+
+    if (tee == LIBXL_TEE_TYPE_OPTEE) {
+       res = make_optee_node(gc, fdt);
+       if (res) return res;
+    }
+
+    if (sci == LIBXL_ARM_SCI_TYPE_SCMI_SMC) {
+        res = scmi_dt_create_node(gc, fdt, pfdt, func_id);
+        if (res) return res;
+    }
+
+    res = fdt_end_node(fdt);
+    if (res) return res;
 
     return 0;
 }
@@ -1801,8 +2073,11 @@ next_resize:
         if (info->arch_arm.vuart == LIBXL_VUART_TYPE_SBSA_UART)
             FDT( make_vpl011_uart_node(gc, fdt, ainfo, dom) );
 
-        if (info->tee == LIBXL_TEE_TYPE_OPTEE)
-            FDT( make_optee_node(gc, fdt) );
+        if (info->arm_sci == LIBXL_ARM_SCI_TYPE_SCMI_SMC)
+            FDT( scmi_dt_make_shmem_node(gc, fdt) );
+
+        FDT( make_firmware_node(gc, fdt, pfdt, info->tee, info->arm_sci,
+                state->arm_sci_agent_funcid) );
 
         if (d_config->num_pcidevs)
             FDT( make_vpci_node(gc, fdt, ainfo, dom) );
@@ -2096,6 +2371,16 @@ int libxl__arch_build_dom_finish(libxl__gc *gc,
         if ( ret < 0) {
             rc = ERROR_FAIL;
             LOG(ERROR, "xc_domain_setrproc failed: %d\n", ret);
+            goto out;
+        }
+    }
+
+    if (info->arm_sci == LIBXL_ARM_SCI_TYPE_SCMI_SMC) {
+        ret = map_sci_page(gc, dom->guest_domid, state->arm_sci_agent_paddr,
+                           GUEST_SCI_SHMEM_BASE);
+        if (ret < 0) {
+            LOG(ERROR, "map_sci_page failed\n");
+            rc = ERROR_FAIL;
             goto out;
         }
     }

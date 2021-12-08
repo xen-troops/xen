@@ -5,6 +5,7 @@
  * Copyright (c) 2012, Citrix Systems
  */
 
+#include <asm/sci/sci.h>
 #include <xen/errno.h>
 #include <xen/guest_access.h>
 #include <xen/hypercall.h>
@@ -48,6 +49,17 @@ static int handle_vuart_init(struct domain *d,
         vuart_op->evtchn = info.evtchn;
 
     return rc;
+}
+
+static int get_sci_info(struct domain *d, struct xen_domctl_sci_info *sci_info)
+{
+#ifdef CONFIG_ARM_SCI
+    sci_info->paddr = d->arch.sci_channel.paddr;
+    sci_info->func_id = d->arch.sci_channel.guest_func_id;
+    return 0;
+#else
+    return -ENODEV;
+#endif
 }
 
 long arch_do_domctl(struct xen_domctl *domctl, struct domain *d,
@@ -172,6 +184,15 @@ long arch_do_domctl(struct xen_domctl *domctl, struct domain *d,
             rc = -EINVAL;
             break;
         }
+
+        if ( !rc )
+            rc = copy_to_guest(u_domctl, domctl, 1);
+
+        return rc;
+    }
+    case XEN_DOMCTL_get_sci_info:
+    {
+        int rc = get_sci_info(d, &domctl->u.sci_info);
 
         if ( !rc )
             rc = copy_to_guest(u_domctl, domctl, 1);
