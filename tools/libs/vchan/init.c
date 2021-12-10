@@ -46,6 +46,8 @@
 #include <xen/sys/gntdev.h>
 #include <libxenvchan.h>
 
+#include "vchan.h"
+
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT 12
 #endif
@@ -251,6 +253,10 @@ static int init_xs_srv(struct libxenvchan *ctrl, int domain, const char* xs_base
 	char ref[16];
 	char* domid_str = NULL;
 	xs_transaction_t xs_trans = XBT_NULL;
+
+	// store the base path so we can clean up on server closure
+	ctrl->xs_path = strdup(xs_base);
+
 	xs = xs_open(0);
 	if (!xs)
 		goto fail;
@@ -296,6 +302,23 @@ retry_transaction:
 	xs_close(xs);
  fail:
 	return ret;
+}
+
+void close_xs_srv(struct libxenvchan *ctrl)
+{
+	struct xs_handle *xs;
+
+	if (!ctrl->xs_path)
+		return;
+
+	xs = xs_open(0);
+	if (!xs)
+		goto fail;
+
+	xs_rm(xs, XBT_NULL, ctrl->xs_path);
+
+fail:
+	free(ctrl->xs_path);
 }
 
 static int min_order(size_t siz)
