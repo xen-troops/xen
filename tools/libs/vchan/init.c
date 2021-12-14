@@ -245,7 +245,7 @@ static int init_xs_srv(struct libxenvchan *ctrl, int domain, const char* xs_base
 	int ret = -1;
 	struct xs_handle *xs;
 	struct xs_permissions perms[2];
-	char buf[64];
+	char *buf;
 	char ref[16];
 	char* domid_str = NULL;
 	xs_transaction_t xs_trans = XBT_NULL;
@@ -254,6 +254,12 @@ static int init_xs_srv(struct libxenvchan *ctrl, int domain, const char* xs_base
 	ctrl->xs_path = strdup(xs_base);
 	if (!ctrl->xs_path)
 		return -1; 
+
+	buf = malloc(XENSTORE_ABS_PATH_MAX);
+	if (!buf) {
+		free(ctrl);
+		return 0;
+	}
 
 	xs = xs_open(0);
 	if (!xs)
@@ -276,14 +282,14 @@ retry_transaction:
 		goto fail_xs_open;
 
 	snprintf(ref, sizeof ref, "%d", ring_ref);
-	snprintf(buf, sizeof buf, "%s/ring-ref", xs_base);
+	snprintf(buf, XENSTORE_ABS_PATH_MAX, "%s/ring-ref", xs_base);
 	if (!xs_write(xs, xs_trans, buf, ref, strlen(ref)))
 		goto fail_xs_open;
 	if (!xs_set_permissions(xs, xs_trans, buf, perms, 2))
 		goto fail_xs_open;
 
 	snprintf(ref, sizeof ref, "%d", ctrl->event_port);
-	snprintf(buf, sizeof buf, "%s/event-channel", xs_base);
+	snprintf(buf, XENSTORE_ABS_PATH_MAX, "%s/event-channel", xs_base);
 	if (!xs_write(xs, xs_trans, buf, ref, strlen(ref)))
 		goto fail_xs_open;
 	if (!xs_set_permissions(xs, xs_trans, buf, perms, 2))
@@ -299,6 +305,7 @@ retry_transaction:
 	free(domid_str);
 	xs_close(xs);
  fail:
+	free(buf);
 	return ret;
 }
 
@@ -415,13 +422,20 @@ struct libxenvchan *libxenvchan_client_init(struct xentoollog_logger *logger,
 {
 	struct libxenvchan *ctrl = malloc(sizeof(struct libxenvchan));
 	struct xs_handle *xs = NULL;
-	char buf[64];
+	char *buf;
 	char *ref;
 	int ring_ref;
 	unsigned int len;
 
 	if (!ctrl)
 		return 0;
+
+	buf = malloc(XENSTORE_ABS_PATH_MAX);
+	if (!buf) {
+		free(ctrl);
+		return 0;
+	}
+
 	ctrl->ring = NULL;
 	ctrl->event = NULL;
 	ctrl->gnttab = NULL;
@@ -432,8 +446,9 @@ struct libxenvchan *libxenvchan_client_init(struct xentoollog_logger *logger,
 	if (!xs)
 		goto fail;
 
+
 // find xenstore entry
-	snprintf(buf, sizeof buf, "%s/ring-ref", xs_path);
+	snprintf(buf, XENSTORE_ABS_PATH_MAX, "%s/ring-ref", xs_path);
 	ref = xs_read(xs, 0, buf, &len);
 	if (!ref)
 		goto fail;
@@ -441,7 +456,7 @@ struct libxenvchan *libxenvchan_client_init(struct xentoollog_logger *logger,
 	free(ref);
 	if (!ring_ref)
 		goto fail;
-	snprintf(buf, sizeof buf, "%s/event-channel", xs_path);
+	snprintf(buf, XENSTORE_ABS_PATH_MAX, "%s/event-channel", xs_path);
 	ref = xs_read(xs, 0, buf, &len);
 	if (!ref)
 		goto fail;
@@ -471,6 +486,7 @@ struct libxenvchan *libxenvchan_client_init(struct xentoollog_logger *logger,
  out:
 	if (xs)
 		xs_close(xs);
+	free(buf);
 	return ctrl;
  fail:
 	libxenvchan_close(ctrl);
