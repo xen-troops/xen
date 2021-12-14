@@ -29,6 +29,18 @@
 #define PCI_BDF_XSPATH         "%04x-%02x-%02x-%01x"
 #define PCI_PT_QDEV_ID         "pci-pt-%02x_%02x.%01x"
 
+static int process_list_assignable(libxl__gc *gc,
+                                   const libxl__json_object *response,
+                                   libxl__json_object **result)
+{
+    *result = (libxl__json_object *)libxl__json_map_get(PCID_MSG_FIELD_DEVICES,
+                                                        response, JSON_ANY);
+    if (!*result)
+        return ERROR_INVAL;
+
+    return 0;
+}
+
 static int pci_handle_response(libxl__gc *gc,
                                const libxl__json_object *response,
                                libxl__json_object **result)
@@ -68,6 +80,9 @@ static int pci_handle_response(libxl__gc *gc,
     command_name = command_obj->u.string;
     LOG(DEBUG, "command: %s", command_name);
 
+    if (strcmp(command_name, PCID_CMD_LIST_ASSIGNABLE) == 0)
+       ret = process_list_assignable(gc, response, result);
+
     return ret;
 }
 
@@ -99,8 +114,7 @@ static char *pci_prepare_request(libxl__gc *gc, yajl_gen gen, char *cmd,
     return request;
 }
 
-struct vchan_info *pci_vchan_get_client(libxl__gc *gc);
-struct vchan_info *pci_vchan_get_client(libxl__gc *gc)
+static struct vchan_info *pci_vchan_get_client(libxl__gc *gc)
 {
     static struct vchan_info *vchan = NULL;
 
@@ -123,8 +137,7 @@ out:
     return vchan;
 }
 
-void pci_vchan_free(libxl__gc *gc, struct vchan_info *vchan);
-void pci_vchan_free(libxl__gc *gc, struct vchan_info *vchan)
+static void pci_vchan_free(libxl__gc *gc, struct vchan_info *vchan)
 {
     vchan_fini_one(gc, vchan->state);
 }
@@ -537,26 +550,29 @@ libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
 {
     GC_INIT(ctx);
     libxl_device_pci *pcis = NULL, *new;
-    struct dirent *de;
-    DIR *dir;
+    struct vchan_info *vchan;
+    libxl__json_object *result, *dev_obj;
+    int i;
 
     *num = 0;
 
-    dir = opendir(SYSFS_PCIBACK_DRIVER);
-    if (NULL == dir) {
-        if (errno == ENOENT) {
-            LOG(ERROR, "Looks like pciback driver not loaded");
-        } else {
-            LOGE(ERROR, "Couldn't open %s", SYSFS_PCIBACK_DRIVER);
-        }
+    vchan = pci_vchan_get_client(gc);
+    if (!vchan)
         goto out;
-    }
 
-    while((de = readdir(dir))) {
+    result = vchan_send_command(gc, vchan, PCID_CMD_LIST_ASSIGNABLE, NULL);
+    if (!result)
+        goto vchan_free;
+
+    for (i = 0; (dev_obj = libxl__json_array_get(result, i)); i++) {
+        const char *sbdf_str = libxl__json_object_get_string(dev_obj);
         unsigned int dom, bus, dev, func;
-        char *name;
+        const char *name;
 
-        if (sscanf(de->d_name, PCI_BDF, &dom, &bus, &dev, &func) != 4)
+        if (!sbdf_str)
+            continue;
+
+        if (sscanf(sbdf_str, PCID_SBDF_FMT, &dom, &bus, &dev, &func) != 4)
             continue;
 
         new = realloc(pcis, ((*num) + 1) * sizeof(*new));
@@ -578,7 +594,9 @@ libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
         (*num)++;
     }
 
-    closedir(dir);
+vchan_free:
+    pci_vchan_free(gc, vchan);
+
 out:
     GC_FREE;
     return pcis;

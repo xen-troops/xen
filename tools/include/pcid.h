@@ -79,6 +79,25 @@
 
 #define PCID_SBDF_FMT           "%04x:%02x:%02x.%01x"
 
+/*
+ *******************************************************************************
+ * List assignable devices
+ *
+ * This command lists PCI devices that can be passed through to a guest domain.
+ *
+ * Request (see other mandatory fields above):
+ *  - "cmd" field of the request must be set to "list_assignable".
+ *
+ * Response (see other mandatory fields above):
+ *  - "resp" field of the response must be set to "list_assignable".
+ * Command specific response data:
+ * +-------------+--------------+----------------------------------------------+
+ * | devices     | list         | List of of pci_device objects                |
+ * +-------------+--------------+----------------------------------------------+
+ */
+#define PCID_CMD_LIST_ASSIGNABLE        "list_assignable"
+#define PCID_MSG_FIELD_DEVICES          "devices"
+
 int libxl_pcid_process(libxl_ctx *ctx);
 
 #endif /* PCID_H */

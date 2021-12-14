@@ -84,6 +84,41 @@ static int make_error_reply(libxl__gc *gc, yajl_gen gen, char *desc,
     return 0;
 }
 
+static int process_list_assignable(libxl__gc *gc, yajl_gen gen,
+                                   char *command_name,
+                                   const struct libxl__json_object *request,
+                                   struct libxl__json_object **response)
+{
+    struct dirent *de;
+    DIR *dir = NULL;
+
+    dir = opendir(SYSFS_PCIBACK_DRIVER);
+    if (dir == NULL) {
+        make_error_reply(gc, gen, strerror(errno), command_name);
+        return ERROR_FAIL;
+    }
+
+    libxl__yajl_gen_asciiz(gen, PCID_MSG_FIELD_DEVICES);
+
+    *response = libxl__json_object_alloc(gc, JSON_ARRAY);
+
+    while ((de = readdir(dir))) {
+        unsigned int dom, bus, dev, func;
+
+        if (sscanf(de->d_name, PCID_SBDF_FMT, &dom, &bus, &dev, &func) != 4)
+            continue;
+
+        struct libxl__json_object *node =
+            libxl__json_object_alloc(gc, JSON_STRING);
+        node->u.string = de->d_name;
+        flexarray_append((*response)->u.array, node);
+    }
+
+    closedir(dir);
+
+    return 0;
+}
+
 static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
                                const libxl__json_object *request)
 {
@@ -104,14 +139,19 @@ static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
 
     command_name = command_obj->u.string;
 
-    /*
-     * This is an unsupported command: make a reply and proceed over
-     * the error path.
-     */
-    ret = make_error_reply(gc, gen, "Unsupported command",
-                           command_name);
-    if (!ret)
-        ret = ERROR_NOTFOUND;
+    if (strcmp(command_name, PCID_CMD_LIST_ASSIGNABLE) == 0)
+       ret = process_list_assignable(gc, gen, command_name,
+                                     request, &command_response);
+    else {
+        /*
+         * This is an unsupported command: make a reply and proceed over
+         * the error path.
+         */
+        ret = make_error_reply(gc, gen, "Unsupported command",
+                               command_name);
+        if (!ret)
+            ret = ERROR_NOTFOUND;
+    }
 
     if (ret) {
         /*
