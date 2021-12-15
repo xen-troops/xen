@@ -77,6 +77,7 @@ SRCS-y += libxl.c
 SRCS-y += libxl_create.c
 SRCS-y += libxl_dm.c
 SRCS-y += libxl_pci.c
+SRCS-y += libxl_pcid.c
 SRCS-y += libxl_vchan.c
 SRCS-y += libxl_dom.c
 SRCS-y += libxl_exec.c
