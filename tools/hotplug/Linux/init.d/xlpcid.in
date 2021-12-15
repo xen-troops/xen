@@ -1,0 +1,76 @@
+#! /bin/bash
+#
+# xlpcid
+#
+# description: Run xlpcid daemon
+### BEGIN INIT INFO
+# Provides:          xlpcid
+# Short-Description: Start/stop xlpcid
+# Description:       Run xlpcid daemon
+### END INIT INFO
+#
+
+. @XEN_SCRIPT_DIR@/hotplugpath.sh
+
+xencommons_config=@CONFIG_DIR@/@CONFIG_LEAF_DIR@
+
+test -f $xencommons_config/xencommons && . $xencommons_config/xencommons
+
+XLPCID_PIDFILE="@XEN_RUN_DIR@/xlpcid.pid"
+
+# Source function library.
+if [ -e  /etc/init.d/functions ] ; then
+    . /etc/init.d/functions
+elif [ -e /lib/lsb/init-functions ] ; then
+    . /lib/lsb/init-functions
+    success () {
+        log_success_msg $*
+    }
+    failure () {
+        log_failure_msg $*
+    }
+else
+    success () {
+        echo $*
+    }
+    failure () {
+        echo $*
+    }
+fi
+
+start() {
+  echo Starting xl pcid...
+  ${sbindir}/xl pcid --pidfile=$XLPCID_PIDFILE $XLPCID_ARGS
+}
+
+stop() {
+  echo Stopping xl pcid...
+  if read 2>/dev/null <$XLPCID_PIDFILE pid; then
+    kill $pid
+    while kill -9 $pid >/dev/null 2>&1; do sleep 1; done
+    rm -f $XLPCID_PIDFILE
+  fi
+}
+
+case "$1" in
+  start)
+    start
+	;;
+  stop)
+	stop
+	;;
+  restart)
+	stop
+	start
+	;;
+  status)
+	;;
+  condrestart)
+	stop
+	start
+	;;
+  *)
+	echo $"Usage: $0 {start|stop|status|restart|condrestart}"
+	exit 1
+esac
+

@@ -71,6 +71,7 @@ OBJS-y += libxl_create.o
 OBJS-y += libxl_dm.o
 OBJS-y += libxl_pci.o
 OBJS-y += libxl_vchan.o
+OBJS-y += libxl_pcid.o
 OBJS-y += libxl_dom.o
 OBJS-y += libxl_exec.o
 OBJS-y += libxl_xshelp.o

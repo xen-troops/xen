@@ -207,6 +207,7 @@ int main_loadpolicy(int argc, char **argv);
 int main_remus(int argc, char **argv);
 #endif
 int main_devd(int argc, char **argv);
+int main_pcid(int argc, char **argv);
 #if defined(__i386__) || defined(__x86_64__)
 int main_psr_hwinfo(int argc, char **argv);
 int main_psr_cmt_attach(int argc, char **argv);

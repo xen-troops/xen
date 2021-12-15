@@ -1,0 +1,10 @@
+[Unit]
+Description=Xen PCI host daemon
+ConditionVirtualization=xen
+
+[Service]
+Type=forking
+ExecStart=@sbindir@/xl pcid
+
+[Install]
+WantedBy=multi-user.target

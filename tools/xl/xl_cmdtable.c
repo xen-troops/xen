@@ -561,6 +561,13 @@ const struct cmd_spec cmd_table[] = {
       "-F                      Run in the foreground.\n"
       "-p, --pidfile [FILE]    Write PID to pidfile when daemonizing.",
     },
+    { "pcid",
+      &main_pcid, 0, 1,
+      "Daemon that acts as a server for the client in the libxl PCI",
+      "[options]",
+      "-f                      Run in the foreground.\n"
+      "-p, --pidfile [FILE]    Write PID to pidfile when daemonizing.",
+    },
 #if defined(__i386__) || defined(__x86_64__)
     { "psr-hwinfo",
       &main_psr_hwinfo, 0, 1,
