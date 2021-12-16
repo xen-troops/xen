@@ -773,7 +773,7 @@ static int cf_check init_header(struct pci_dev *pdev)
     struct vpci_bar *bars = header->bars;
     int rc;
     bool mask_cap_list = false;
-    bool is_hwdom = is_hardware_domain(pdev->domain);
+    bool is_hwdom = is_hardware_pci_domain(pdev->domain);
 
     ASSERT(rw_is_write_locked(&pdev->domain->pci_lock));
 

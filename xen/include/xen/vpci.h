@@ -344,6 +344,8 @@ static inline bool vpci_translate_virtual_device(const struct domain *d,
 }
 #endif
 
+#define is_hardware_pci_domain(d) (is_hardware_domain(d) && !hwdom_uses_vpci())
+
 #endif
 
 /*
