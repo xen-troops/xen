@@ -101,6 +101,13 @@ static char *pci_prepare_request(libxl__gc *gc, yajl_gen gen, char *cmd,
     if (rc)
         return NULL;
 
+    if (args) {
+        rc = libxl__json_object_to_yajl_gen(gc, gen, args);
+        /* TODO: close gen? */
+        if (rc)
+            return NULL;
+    }
+
     yajl_gen_map_close(gen);
 
     sts = yajl_gen_get_buf(gen, &buf, &len);
