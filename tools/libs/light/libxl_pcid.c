@@ -129,7 +129,7 @@ static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
 
     yajl_gen_map_open(gen);
 
-    command_obj = libxl__json_map_get(PCID_MSG_FIELD_CMD, request, JSON_ANY);
+    command_obj = libxl__json_map_get(PCID_MSG_FIELD_CMD, request, JSON_STRING);
     if (!command_obj) {
         /* This is an unsupported or bad request. */
         ret = make_error_reply(gc, gen, "Unsupported request or bad packet",
