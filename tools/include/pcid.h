@@ -98,6 +98,44 @@
 #define PCID_CMD_LIST_ASSIGNABLE        "list_assignable"
 #define PCID_MSG_FIELD_DEVICES          "devices"
 
+/*
+ *******************************************************************************
+ * Make device assignable
+ *
+ * This command makes given device assignable by ensuring that OS
+ * will not try to access it.
+ *
+ * Request (see other mandatory fields above):
+ *  - "cmd" field of the request must be set to "make_assignable".
+ *  - "sbdf" SBDF of the device in format defined by PCID_SBDF_FMT.
+ *  - "rebind" = true if daemon needs to save original driver name,
+ *    so device later can be rebound back.
+ *
+ * Response (see other mandatory fields above):
+ *  - "resp" field of the response must be set to "make_assignable".
+ */
+#define PCID_CMD_MAKE_ASSIGNABLE        "make_assignable"
+#define PCID_MSG_FIELD_REBIND           "rebind"
+
+/*
+ *******************************************************************************
+ * Revert device from assignable state
+ *
+ * This command reverts effect of "make_assignable" command. Basically,
+ * now device can be used by OS again.
+ *
+ * Request (see other mandatory fields above):
+ *  - "cmd" field of the request must be set to "revert_assignable".
+ *  - "sbdf" SBDF of the device in format defined by PCID_SBDF_FMT.
+ *  - "rebind" = true if daemon needs to rebind device back to it's
+ *    original driver, which name was saved by "make_assignable" command
+ *
+ * Response (see other mandatory fields above):
+ *  - "resp" field of the response must be set to "revert_assignable".
+ */
+#define PCID_CMD_REVERT_ASSIGNABLE      "revert_assignable"
+
+
 int libxl_pcid_process(libxl_ctx *ctx);
 
 #endif /* PCID_H */
