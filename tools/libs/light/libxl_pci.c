@@ -34,7 +34,7 @@ static int process_list_assignable(libxl__gc *gc,
                                    libxl__json_object **result)
 {
     *result = (libxl__json_object *)libxl__json_map_get(PCID_MSG_FIELD_DEVICES,
-                                                        response, JSON_ANY);
+                                                        response, JSON_ARRAY);
     if (!*result)
         return ERROR_INVAL;
 
@@ -52,13 +52,13 @@ static int pci_handle_response(libxl__gc *gc,
 
     *result = NULL;
 
-    command_obj = libxl__json_map_get(PCID_MSG_FIELD_RESP, response, JSON_ANY);
+    command_obj = libxl__json_map_get(PCID_MSG_FIELD_RESP, response, JSON_STRING);
     if (!command_obj) {
         /* This is an unsupported or bad response. */
         return 0;
     }
 
-    err_obj = libxl__json_map_get(PCID_MSG_FIELD_ERR, response, JSON_ANY);
+    err_obj = libxl__json_map_get(PCID_MSG_FIELD_ERR, response, JSON_STRING);
     if (!err_obj) {
         /* Bad packet without error code field. */
         return 0;
@@ -69,7 +69,7 @@ static int pci_handle_response(libxl__gc *gc,
 
         /* The response may contain an optional error string. */
         err_desc_obj = libxl__json_map_get(PCID_MSG_FIELD_ERR_DESC,
-                                           response, JSON_ANY);
+                                           response, JSON_STRING);
         if (err_desc_obj)
             LOG(ERROR, "%s", err_desc_obj->u.string);
         else
