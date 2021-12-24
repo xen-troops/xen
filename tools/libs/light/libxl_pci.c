@@ -82,6 +82,10 @@ static int pci_handle_response(libxl__gc *gc,
 
     if (strcmp(command_name, PCID_CMD_LIST_ASSIGNABLE) == 0)
        ret = process_list_assignable(gc, response, result);
+    else if (strcmp(command_name, PCID_CMD_MAKE_ASSIGNABLE) == 0)
+        *result = libxl__json_object_alloc(gc, JSON_NULL);
+    else if (strcmp(command_name, PCID_CMD_REVERT_ASSIGNABLE) == 0)
+        *result = libxl__json_object_alloc(gc, JSON_NULL);
 
     return ret;
 }
@@ -619,44 +623,6 @@ void libxl_device_pci_assignable_list_free(libxl_device_pci *list, int num)
     free(list);
 }
 
-/* Unbind device from its current driver, if any.  If driver_path is non-NULL,
- * store the path to the original driver in it. */
-static int sysfs_dev_unbind(libxl__gc *gc, libxl_device_pci *pci,
-                            char **driver_path)
-{
-    char * spath, *dp = NULL;
-    struct stat st;
-
-    spath = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/driver",
-                           pci->domain,
-                           pci->bus,
-                           pci->dev,
-                           pci->func);
-    if ( !lstat(spath, &st) ) {
-        /* Find the canonical path to the driver. */
-        dp = libxl__zalloc(gc, PATH_MAX);
-        dp = realpath(spath, dp);
-        if ( !dp ) {
-            LOGE(ERROR, "realpath() failed");
-            return -1;
-        }
-
-        LOG(DEBUG, "Driver re-plug path: %s", dp);
-
-        /* Unbind from the old driver */
-        spath = GCSPRINTF("%s/unbind", dp);
-        if ( sysfs_write_bdf(gc, spath, pci) < 0 ) {
-            LOGE(ERROR, "Couldn't unbind device");
-            return -1;
-        }
-    }
-
-    if ( driver_path )
-        *driver_path = dp;
-
-    return 0;
-}
-
 static uint16_t sysfs_dev_get_vendor(libxl__gc *gc, libxl_device_pci *pci)
 {
     char *pci_device_vendor_path =
@@ -768,49 +734,6 @@ bool libxl__is_igd_vga_passthru(libxl__gc *gc,
     return false;
 }
 
-/*
- * A brief comment about slots.  I don't know what slots are for; however,
- * I have by experimentation determined:
- * - Before a device can be bound to pciback, its BDF must first be listed
- *   in pciback/slots
- * - The way to get the BDF listed there is to write BDF to
- *   pciback/new_slot
- * - Writing the same BDF to pciback/new_slot is not idempotent; it results
- *   in two entries of the BDF in pciback/slots
- * It's not clear whether having two entries in pciback/slots is a problem
- * or not.  Just to be safe, this code does the conservative thing, and
- * first checks to see if there is a slot, adding one only if one does not
- * already exist.
- */
-
-/* Scan through /sys/.../pciback/slots looking for pci's BDF */
-static int pciback_dev_has_slot(libxl__gc *gc, libxl_device_pci *pci)
-{
-    FILE *f;
-    int rc = 0;
-    unsigned dom, bus, dev, func;
-
-    f = fopen(SYSFS_PCIBACK_DRIVER"/slots", "r");
-
-    if (f == NULL) {
-        LOGE(ERROR, "Couldn't open %s", SYSFS_PCIBACK_DRIVER"/slots");
-        return ERROR_FAIL;
-    }
-
-    while (fscanf(f, "%x:%x:%x.%d\n", &dom, &bus, &dev, &func) == 4) {
-        if (dom == pci->domain
-            && bus == pci->bus
-            && dev == pci->dev
-            && func == pci->func) {
-            rc = 1;
-            goto out;
-        }
-    }
-out:
-    fclose(f);
-    return rc;
-}
-
 static int pciback_dev_is_assigned(libxl__gc *gc, libxl_device_pci *pci)
 {
     char * spath;
@@ -839,132 +762,45 @@ static int pciback_dev_is_assigned(libxl__gc *gc, libxl_device_pci *pci)
     return -1;
 }
 
-static int pciback_dev_assign(libxl__gc *gc, libxl_device_pci *pci)
-{
-    int rc;
-
-    if ( (rc = pciback_dev_has_slot(gc, pci)) < 0 ) {
-        LOGE(ERROR, "Error checking for pciback slot");
-        return ERROR_FAIL;
-    } else if (rc == 0) {
-        if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/new_slot",
-                             pci) < 0 ) {
-            LOGE(ERROR, "Couldn't bind device to pciback!");
-            return ERROR_FAIL;
-        }
-    }
-
-    if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/bind", pci) < 0 ) {
-        LOGE(ERROR, "Couldn't bind device to pciback!");
-        return ERROR_FAIL;
-    }
-    return 0;
-}
-
-static int pciback_dev_unassign(libxl__gc *gc, libxl_device_pci *pci)
-{
-    /* Remove from pciback */
-    if ( sysfs_dev_unbind(gc, pci, NULL) < 0 ) {
-        LOG(ERROR, "Couldn't unbind device!");
-        return ERROR_FAIL;
-    }
-
-    /* Remove slot if necessary */
-    if ( pciback_dev_has_slot(gc, pci) > 0 ) {
-        if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/remove_slot",
-                             pci) < 0 ) {
-            LOGE(ERROR, "Couldn't remove pciback slot");
-            return ERROR_FAIL;
-        }
-    }
-    return 0;
-}
-
 static int libxl__device_pci_assignable_add(libxl__gc *gc,
                                             libxl_device_pci *pci,
                                             int rebind)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
-    unsigned dom, bus, dev, func;
-    char *spath, *driver_path = NULL;
-    const char *name;
+    struct vchan_info *vchan;
     int rc;
-    struct stat st;
+    libxl__json_object *args, *temp_obj, *result;
 
-    /* Local copy for convenience */
-    dom = pci->domain;
-    bus = pci->bus;
-    dev = pci->dev;
-    func = pci->func;
-    name = pci->name;
-
-    /* Sanitise any name that is set */
-    if (name) {
-        unsigned int i, n = strlen(name);
-
-        if (n > 64) { /* Reasonable upper bound on name length */
-            LOG(ERROR, "Name too long");
-            return ERROR_FAIL;
-        }
-
-        for (i = 0; i < n; i++) {
-            if (!isgraph(name[i])) {
-                LOG(ERROR, "Names may only include printable characters");
-                return ERROR_FAIL;
-            }
-        }
+    vchan = pci_vchan_get_client(gc);
+    if (!vchan) {
+        rc = ERROR_NOT_READY;
+        goto out;
     }
 
-    /* See if the device exists */
-    spath = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF, dom, bus, dev, func);
-    if ( lstat(spath, &st) ) {
-        LOGE(ERROR, "Couldn't lstat %s", spath);
-        return ERROR_FAIL;
+    args = libxl__json_object_alloc(gc, JSON_MAP);
+    temp_obj = libxl__json_object_alloc(gc, JSON_STRING);
+    if (!temp_obj) {
+        rc = ERROR_NOMEM;
+        goto vchan_free;
     }
+    temp_obj->u.string = GCSPRINTF(PCID_SBDF_FMT, pci->domain, pci->bus,
+                                   pci->dev, pci->func);
+    flexarray_append_pair(args->u.map, PCID_MSG_FIELD_SBDF, temp_obj);
 
-    /* Check to see if it's already assigned to pciback */
-    rc = pciback_dev_is_assigned(gc, pci);
-    if ( rc < 0 ) {
-        return ERROR_FAIL;
+    args = libxl__json_object_alloc(gc, JSON_MAP);
+    temp_obj = libxl__json_object_alloc(gc, JSON_BOOL);
+    if (!temp_obj) {
+        rc = ERROR_NOMEM;
+        goto vchan_free;
     }
-    if ( rc ) {
-        LOG(WARN, PCI_BDF" already assigned to pciback", dom, bus, dev, func);
-        goto name;
-    }
+    temp_obj->u.b = rebind;
+    flexarray_append_pair(args->u.map, PCID_MSG_FIELD_REBIND, temp_obj);
 
-    /* Check to see if there's already a driver that we need to unbind from */
-    if ( sysfs_dev_unbind(gc, pci, &driver_path ) ) {
-        LOG(ERROR, "Couldn't unbind "PCI_BDF" from driver",
-            dom, bus, dev, func);
-        return ERROR_FAIL;
+    result = vchan_send_command(gc, vchan, PCID_CMD_MAKE_ASSIGNABLE, args);
+    if (!result) {
+        rc = ERROR_FAIL;
+        goto vchan_free;
     }
-
-    /* Store driver_path for rebinding to dom0 */
-    if ( rebind ) {
-        if ( driver_path ) {
-            pci_info_xs_write(gc, pci, "driver_path", driver_path);
-        } else if ( (driver_path =
-                     pci_info_xs_read(gc, pci, "driver_path")) != NULL ) {
-            LOG(INFO, PCI_BDF" not bound to a driver, will be rebound to %s",
-                dom, bus, dev, func, driver_path);
-        } else {
-            LOG(WARN, PCI_BDF" not bound to a driver, will not be rebound.",
-                dom, bus, dev, func);
-        }
-    } else {
-        pci_info_xs_remove(gc, pci, "driver_path");
-    }
-
-    if ( pciback_dev_assign(gc, pci) ) {
-        LOG(ERROR, "Couldn't bind device to pciback!");
-        return ERROR_FAIL;
-    }
-
-name:
-    if (name)
-        pci_info_xs_write(gc, pci, "name", name);
-    else
-        pci_info_xs_remove(gc, pci, "name");
 
     /*
      * DOMID_IO is just a sentinel domain, without any actual mappings,
@@ -973,12 +809,15 @@ name:
      */
     rc = xc_assign_device(ctx->xch, DOMID_IO, pci_encode_bdf(pci),
                           XEN_DOMCTL_DEV_RDM_RELAXED);
-    if ( rc < 0 ) {
-        LOG(ERROR, "failed to quarantine "PCI_BDF, dom, bus, dev, func);
-        return ERROR_FAIL;
-    }
+    if ( rc < 0 )
+        LOG(ERROR, "failed to quarantine "PCI_BDF, pci->domain, pci->bus,
+            pci->dev, pci->func);
 
-    return 0;
+vchan_free:
+    pci_vchan_free(gc, vchan);
+
+out:
+    return rc;
 }
 
 static int name2bdf(libxl__gc *gc, libxl_device_pci *pci)
@@ -1021,13 +860,8 @@ static int libxl__device_pci_assignable_remove(libxl__gc *gc,
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
     int rc;
-    char *driver_path;
-
-    /* If the device is named then we need to look up the BDF */
-    if (pci->name) {
-        rc = name2bdf(gc, pci);
-        if (rc) return rc;
-    }
+    struct vchan_info *vchan;
+    libxl__json_object *args, *temp_obj, *result;
 
     /* De-quarantine */
     rc = xc_deassign_device(ctx->xch, DOMID_IO, pci_encode_bdf(pci));
@@ -1037,41 +871,43 @@ static int libxl__device_pci_assignable_remove(libxl__gc *gc,
         return ERROR_FAIL;
     }
 
-    /* Unbind from pciback */
-    if ( (rc = pciback_dev_is_assigned(gc, pci)) < 0 ) {
-        return ERROR_FAIL;
-    } else if ( rc ) {
-        pciback_dev_unassign(gc, pci);
-    } else {
-        LOG(WARN, "Not bound to pciback");
+    vchan = pci_vchan_get_client(gc);
+    if (!vchan) {
+        rc = ERROR_NOT_READY;
+        goto out;
     }
 
-    /* Rebind if necessary */
-    driver_path = pci_info_xs_read(gc, pci, "driver_path");
+    args = libxl__json_object_alloc(gc, JSON_MAP);
+    temp_obj = libxl__json_object_alloc(gc, JSON_STRING);
+    if (!temp_obj) {
+        rc = ERROR_NOMEM;
+        goto vchan_free;
+    }
+    temp_obj->u.string = GCSPRINTF(PCID_SBDF_FMT, pci->domain, pci->bus,
+                                   pci->dev, pci->func);
+    flexarray_append_pair(args->u.map, PCID_MSG_FIELD_SBDF, temp_obj);
 
-    if ( driver_path ) {
-        if ( rebind ) {
-            LOG(INFO, "Rebinding to driver at %s", driver_path);
-
-            if ( sysfs_write_bdf(gc,
-                                 GCSPRINTF("%s/bind", driver_path),
-                                 pci) < 0 ) {
-                LOGE(ERROR, "Couldn't bind device to %s", driver_path);
-                return -1;
-            }
-
-            pci_info_xs_remove(gc, pci, "driver_path");
-        }
-    } else {
-        if ( rebind ) {
-            LOG(WARN,
-                "Couldn't find path for original driver; not rebinding");
-        }
+    args = libxl__json_object_alloc(gc, JSON_MAP);
+    temp_obj = libxl__json_object_alloc(gc, JSON_BOOL);
+    if (!temp_obj) {
+        rc = ERROR_NOMEM;
+        goto vchan_free;
     }
 
-    pci_info_xs_remove(gc, pci, "name");
+    temp_obj->u.b = rebind;
+    flexarray_append_pair(args->u.map, PCID_MSG_FIELD_REBIND, temp_obj);
 
-    return 0;
+    result = vchan_send_command(gc, vchan, PCID_CMD_REVERT_ASSIGNABLE, args);
+    if (!result) {
+        rc = ERROR_FAIL;
+        goto vchan_free;
+    }
+
+vchan_free:
+    pci_vchan_free(gc, vchan);
+
+out:
+    return rc;
 }
 
 int libxl_device_pci_assignable_add(libxl_ctx *ctx, libxl_device_pci *pci,
