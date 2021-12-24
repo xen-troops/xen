@@ -123,7 +123,7 @@ static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
                                const libxl__json_object *request)
 {
     const libxl__json_object *command_obj;
-    libxl__json_object *command_response;
+    libxl__json_object *command_response = NULL;
     char *command_name;
     int ret = 0;
 
@@ -162,9 +162,11 @@ static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
         goto out;
     }
 
-    ret = libxl__json_object_to_yajl_gen(gc, gen, command_response);
-    if (ret)
-        goto out;
+    if (command_response) {
+	ret = libxl__json_object_to_yajl_gen(gc, gen, command_response);
+	if (ret)
+	    goto out;
+    }
 
     ret = libxl__vchan_field_add_string(gc, gen, PCID_MSG_FIELD_RESP,
                                         command_name);
