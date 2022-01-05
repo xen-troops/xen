@@ -2998,10 +2998,21 @@ static int arm_smmu_deassign_dev(struct domain *d, uint8_t devfn,
 static int arm_smmu_reassign_dev(struct domain *s, struct domain *t,
 				 u8 devfn,  struct device *dev)
 {
+	struct domain *hwdom;
 	int ret = 0;
 
+#ifdef CONFIG_HAS_PCI
+	if (dev_is_pci(dev))
+	{
+		struct pci_dev *pdev = dev_to_pci(dev);
+
+		hwdom = pci_get_hardware_domain(pdev->seg, pdev->bus);
+	} else
+#endif
+		hwdom = hardware_domain;
+
 	/* Don't allow remapping on other domain than hwdom */
-	if ( t && !is_hardware_domain(t) && t != dom_io )
+	if ( t && t != hwdom && t != dom_io )
 		return -EPERM;
 
 	if (t == s)

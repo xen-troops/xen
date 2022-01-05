@@ -1284,10 +1284,21 @@ static int ipmmu_deassign_device(struct domain *d, struct device *dev)
 static int ipmmu_reassign_device(struct domain *s, struct domain *t,
                                  u8 devfn,  struct device *dev)
 {
+    bool is_hwdom;
     int ret = 0;
 
+#ifdef CONFIG_HAS_PCI
+    if (dev_is_pci(dev))
+    {
+        struct pci_dev *pdev = dev_to_pci(dev);
+
+        is_hwdom = pci_is_hardware_domain(t, pdev->seg, pdev->bus);
+    } else
+#endif
+        is_hwdom = is_hardware_domain(t);
+
     /* Don't allow remapping on other domain than hwdom */
-    if ( t && !is_hardware_domain(t) )
+    if ( t && !is_hwdom )
         return -EPERM;
 
     if ( t == s )

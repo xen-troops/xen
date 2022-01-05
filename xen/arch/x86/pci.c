@@ -6,6 +6,7 @@
 
 #include <xen/spinlock.h>
 #include <xen/pci.h>
+#include <xen/sched.h>
 #include <asm/io.h>
 #include <xsm/xsm.h>
 
@@ -97,4 +98,14 @@ int pci_conf_write_intercept(unsigned int seg, unsigned int bdf,
     pcidevs_unlock();
 
     return rc;
+}
+
+bool pci_is_hardware_domain(const struct domain *d, u16 seg, u8 bus)
+{
+    return is_hardware_domain(d);
+}
+
+struct domain *pci_get_hardware_domain(u16 seg, u8 bus)
+{
+    return hardware_domain;
 }

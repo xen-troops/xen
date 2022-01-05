@@ -135,6 +135,9 @@ static int vpci_setup_mmio_handler_cb(struct domain *d,
     struct pci_config_window *cfg = bridge->cfg;
     int count = 1;
 
+    if ( !pci_is_hardware_domain(d, bridge->segment, cfg->busn_start) )
+        return 0;
+
     register_mmio_handler(d, &vpci_mmio_handler,
                           cfg->phys_addr, cfg->size, bridge);
 
@@ -152,6 +155,8 @@ static int vpci_setup_mmio_handler_cb(struct domain *d,
 
 int domain_vpci_init(struct domain *d)
 {
+    int count;
+
     if ( !has_vpci(d) )
         return 0;
 
@@ -159,16 +164,18 @@ int domain_vpci_init(struct domain *d)
      * The hardware domain gets as many MMIOs as required by the
      * physical host bridge.
      * Guests get the virtual platform layout: one virtual host bridge for now.
+     *
+     * We don't know if this domain has bridges assigned,
+     * so let's iterate the bridges and count them:
+     * if the count is 0 then this domain doesn't own any
+     * bridge and it can either be a control domain or just a
+     * regular guest.
      */
-    if ( is_hardware_pci_domain(d) )
-    {
-        int ret;
+    count = pci_host_iterate_bridges_and_count(d, vpci_setup_mmio_handler_cb);
+    if ( count )
+        return 0;
 
-        ret = pci_host_iterate_bridges_and_count(d, vpci_setup_mmio_handler_cb);
-        if ( ret < 0 )
-            return ret;
-    }
-    else
+    if ( !is_control_domain(d) )
     {
         register_mmio_handler(d, &vpci_mmio_handler,
                               GUEST_VPCI_ECAM_BASE, GUEST_VPCI_ECAM_SIZE, NULL);
@@ -197,36 +204,45 @@ static int vpci_get_num_handlers_cb(struct domain *d,
 unsigned int domain_vpci_get_num_mmio_handlers(struct domain *d)
 {
     unsigned int count;
+    int ret;
 
     if ( !has_vpci(d) )
         return 0;
 
-    if ( is_hardware_pci_domain(d) )
+    /*
+     * We don't know if this domain has bridges assigned,
+     * so let's iterate the bridges and count them:
+     * if the count is 0 then this domain doesn't own any
+     * bridge and it can either be a control domain or just a
+     * regular guest.
+     */
+    ret = pci_host_iterate_bridges_and_count(d, vpci_get_num_handlers_cb);
+    if ( ret < 0 )
     {
-        int ret = pci_host_iterate_bridges_and_count(d, vpci_get_num_handlers_cb);
-
-        if ( ret < 0 )
-        {
-            ASSERT_UNREACHABLE();
-            return 0;
-        }
-
-        return ret;
+        ASSERT_UNREACHABLE();
+        return 0;
     }
+    if ( ret )
+        return ret;
 
-    /*
-     * For guests each host bridge requires one region to cover the
-     * configuration space. At the moment, we only expose a single host bridge.
-     */
-    count = 1;
+    if ( is_control_domain(d) )
+        count = 0;
+    else
+    {
+        /*
+         * For guests each host bridge requires one region to cover the
+         * configuration space. At the moment, we only expose a single host bridge.
+         */
+        count = 1;
 
-    /*
-     * There's a single MSI-X MMIO handler that deals with both PBA
-     * and MSI-X tables per each PCI device being passed through.
-     * Maximum number of emulated virtual devices is VPCI_MAX_VIRT_DEV.
-     */
-    if ( IS_ENABLED(CONFIG_HAS_PCI_MSI) )
-        count += VPCI_MAX_VIRT_DEV;
+        /*
+         * There's a single MSI-X MMIO handler that deals with both PBA
+         * and MSI-X tables per each PCI device being passed through.
+         * Maximum number of emulated virtual devices is VPCI_MAX_VIRT_DEV.
+         */
+        if ( IS_ENABLED(CONFIG_HAS_PCI_MSI) )
+            count += VPCI_MAX_VIRT_DEV;
+    }
 
     return count;
 }

@@ -130,7 +130,8 @@ static void cf_check control_write(
     }
 
     /* Make sure domU doesn't enable INTx while enabling MSI-X. */
-    if ( new_enabled && !msix->enabled && !is_hardware_domain(pdev->domain) )
+    if ( new_enabled && !msix->enabled &&
+        !pci_is_hardware_domain(pdev->domain, pdev->seg, pdev->bus) )
         pci_intx(pdev, false);
 
     msix->masked = new_masked;
@@ -159,7 +160,8 @@ static struct vpci_msix_entry *get_entry(struct vpci_msix *msix,
 {
     paddr_t start;
 
-    if ( is_hardware_pci_domain(current->domain) )
+    if ( pci_is_hardware_domain(current->domain, msix->pdev->seg,
+                                msix->pdev->bus) )
         start = vmsix_table_addr(msix->pdev->vpci, VPCI_MSIX_TABLE);
     else
         start = vmsix_guest_table_addr(msix->pdev->vpci, VPCI_MSIX_TABLE);
@@ -422,7 +424,8 @@ static bool adjacent_write(const struct domain *d, const struct vpci_msix *msix,
      * handled here.
      */
     if ( VMSIX_ADDR_IN_RANGE(addr, vpci, VPCI_MSIX_PBA) &&
-         (!access_allowed(msix->pdev, addr, len) || !is_hardware_domain(d)) )
+         (!access_allowed(msix->pdev, addr, len) ||
+          !pci_is_hardware_domain(d, msix->pdev->seg, msix->pdev->bus)) )
         /* Ignore writes to PBA for DomUs, it's undefined behavior. */
         return true;
 

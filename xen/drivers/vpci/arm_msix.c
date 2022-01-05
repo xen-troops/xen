@@ -53,7 +53,7 @@ int vpci_make_msix_hole(const struct pci_dev *pdev)
 
     for ( int i = 0; msix && i < ARRAY_SIZE(msix->tables); i++ )
     {
-        if ( is_hardware_pci_domain(pdev->domain) )
+        if ( pci_is_hardware_domain(pdev->domain, pdev->seg, pdev->bus) )
             addr = vmsix_table_addr(pdev->vpci, VPCI_MSIX_TABLE);
         else
             addr = vmsix_guest_table_addr(pdev->vpci, VPCI_MSIX_TABLE);

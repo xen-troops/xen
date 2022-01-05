@@ -16,6 +16,7 @@ ret_t pci_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case PHYSDEVOP_pci_device_add: {
         struct physdev_pci_device_add add;
         struct pci_dev_info pdev_info;
+        struct domain *pci_hwdom;
         nodeid_t node = NUMA_NO_NODE;
 
         if ( hwdom_uses_vpci() )
@@ -48,8 +49,8 @@ ret_t pci_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             node = pxm_to_node(pxm);
         }
 #endif
-
-        ret = pci_add_device(hardware_domain, add.seg, add.bus, add.devfn,
+        pci_hwdom = pci_get_hardware_domain(add.seg, add.bus);
+        ret = pci_add_device(pci_hwdom, add.seg, add.bus, add.devfn,
                              &pdev_info, node);
         break;
     }

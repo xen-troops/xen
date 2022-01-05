@@ -46,7 +46,7 @@ static int add_virtual_device(struct pci_dev *pdev)
     struct domain *d = pdev->domain;
     unsigned int new_dev_number;
 
-    if ( is_hardware_domain(d) )
+    if ( pci_is_hardware_domain(d, pdev->seg, pdev->bus) )
         return 0;
 
     ASSERT(rw_is_write_locked(&pdev->domain->pci_lock));
