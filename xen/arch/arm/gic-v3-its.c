@@ -33,10 +33,6 @@
 #include <asm/io.h>
 #include <asm/page.h>
 
-#if 1
-#include <xen/warning.h>
-#endif
-
 #define ITS_CMD_QUEUE_SZ                SZ_1M
 
 /*
@@ -256,11 +252,6 @@ int gicv3_its_setup_collection(unsigned int cpu)
 {
     struct host_its *its;
     int ret;
-
-#if 1
-    warning_add("gicv3_its_setup_collection DOES NOT WORK!!!\n");
-    return 0;
-#endif
 
     list_for_each_entry(its, &host_its_list, entry)
     {
