@@ -26,26 +26,15 @@
 
 static spinlock_t dtdevs_lock = SPIN_LOCK_UNLOCKED;
 
-static bool is_xen_forced(const struct dt_device_node *dev)
-{
-    /*
-     * We allow {de}assignment of devices without IOMMU protection
-     * if they have "xen,force-assign-without-iommu" property set.
-     */
-    return dt_find_property(dev, "xen,force-assign-without-iommu", NULL) &&
-        !device_is_protected(dt_to_dev(dev));
-}
-
 int iommu_assign_dt_device(struct domain *d, struct dt_device_node *dev)
 {
-    int rc = 0;
+    int rc = -EBUSY;
     struct domain_iommu *hd = dom_iommu(d);
-    bool xen_forced = is_xen_forced(dev);
 
     if ( !is_iommu_enabled(d) )
         return -EINVAL;
 
-    if ( !xen_forced && !device_is_protected(dt_to_dev(dev)) )
+    if ( !device_is_protected(dt_to_dev(dev)) )
         return -EINVAL;
 
     spin_lock(&dtdevs_lock);
@@ -53,17 +42,11 @@ int iommu_assign_dt_device(struct domain *d, struct dt_device_node *dev)
     if ( !list_empty(&dev->domain_list) )
         goto fail;
 
-    if ( xen_forced )
-        printk(XENLOG_G_INFO "Allowing forced assignment for %s to %pd\n",
-               dt_node_full_name(dev), d);
-    else
-    {
-        /* The flag field doesn't matter to DT device. */
-        rc = hd->platform_ops->assign_device(d, 0, dt_to_dev(dev), 0);
+    /* The flag field doesn't matter to DT device. */
+    rc = hd->platform_ops->assign_device(d, 0, dt_to_dev(dev), 0);
 
-        if ( rc )
-            goto fail;
-    }
+    if ( rc )
+        goto fail;
 
     list_add(&dev->domain_list, &hd->dt_devices);
     dt_device_set_used_by(dev, d->domain_id);
@@ -77,23 +60,19 @@ fail:
 int iommu_deassign_dt_device(struct domain *d, struct dt_device_node *dev)
 {
     const struct domain_iommu *hd = dom_iommu(d);
-    int rc = 0;
-    bool xen_forced = is_xen_forced(dev);
+    int rc;
 
     if ( !is_iommu_enabled(d) )
         return -EINVAL;
 
-    if ( !xen_forced && !device_is_protected(dt_to_dev(dev)) )
+    if ( !device_is_protected(dt_to_dev(dev)) )
         return -EINVAL;
 
     spin_lock(&dtdevs_lock);
 
-    if ( !xen_forced )
-    {
-        rc = hd->platform_ops->reassign_device(d, NULL, 0, dt_to_dev(dev));
-        if ( rc )
-            goto fail;
-    }
+    rc = hd->platform_ops->reassign_device(d, NULL, 0, dt_to_dev(dev));
+    if ( rc )
+        goto fail;
 
     list_del_init(&dev->domain_list);
     dt_device_set_used_by(dev, DOMID_IO);
@@ -107,9 +86,8 @@ fail:
 static bool_t iommu_dt_device_is_assigned(const struct dt_device_node *dev)
 {
     bool_t assigned = 0;
-    bool xen_forced = is_xen_forced(dev);
 
-    if ( !xen_forced && !device_is_protected(dt_to_dev(dev)) )
+    if ( !device_is_protected(dt_to_dev(dev)) )
         return 0;
 
     spin_lock(&dtdevs_lock);
