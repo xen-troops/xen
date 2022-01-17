@@ -75,6 +75,10 @@ extern void xfree(void *p);
 extern void *_xmalloc(unsigned long size, unsigned long align);
 extern void *_xzalloc(unsigned long size, unsigned long align);
 extern void *_xrealloc(void *ptr, unsigned long size, unsigned long align);
+extern void *_xmalloc_whole_pages(unsigned long size, unsigned long align,
+                                  unsigned int memflags);
+extern void *_xzalloc_whole_pages(unsigned long size, unsigned long align,
+                                  unsigned int memflags);
 
 static inline void *_xmalloc_array(
     unsigned long size, unsigned long align, unsigned long num)

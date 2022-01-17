@@ -537,14 +537,15 @@ static void cf_check xmalloc_pool_put(void *p)
     free_xenheap_page(p);
 }
 
-static void *xmalloc_whole_pages(unsigned long size, unsigned long align)
+void *_xmalloc_whole_pages(unsigned long size, unsigned long align,
+                           unsigned int memflags)
 {
     unsigned int i, order;
     void *res, *p;
 
     order = get_order_from_bytes(max(align, size));
 
-    res = alloc_xenheap_pages(order, 0);
+    res = alloc_xenheap_pages(order, memflags);
     if ( res == NULL )
         return NULL;
 
@@ -560,6 +561,17 @@ static void *xmalloc_whole_pages(unsigned long size, unsigned long align)
     ASSERT(PFN_ORDER(virt_to_page(res)) == PFN_UP(size));
 
     return res;
+}
+
+void *_xzalloc_whole_pages(unsigned long size, unsigned long align,
+                           unsigned int memflags)
+{
+    void *p = _xmalloc_whole_pages(size, align, memflags);
+
+    if ( p )
+        memset(p, 0, size);
+
+    return p;
 }
 
 static void tlsf_init(void)
@@ -628,7 +640,7 @@ void *_xmalloc(unsigned long size, unsigned long align)
     if ( size < PAGE_SIZE )
         p = xmem_pool_alloc(size, xenpool);
     if ( p == NULL )
-        return xmalloc_whole_pages(size - align + MEM_ALIGN, align);
+        return _xmalloc_whole_pages(size - align + MEM_ALIGN, align, 0);
 
     /* Add alignment padding. */
     p = add_padding(p, align);

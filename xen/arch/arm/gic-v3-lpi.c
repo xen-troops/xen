@@ -237,7 +237,8 @@ static int gicv3_lpi_allocate_pendtable(unsigned int cpu)
      * The GICv3 imposes a 64KB alignment requirement, also requires
      * physically contiguous memory.
      */
-    pendtable = _xzalloc(lpi_data.max_host_lpi_ids / 8, SZ_64K);
+    pendtable = _xmalloc_whole_pages(lpi_data.max_host_lpi_ids / 8, SZ_64K,
+                                     gicv3_its_get_memflags());
     if ( !pendtable )
         return -ENOMEM;
 
@@ -272,9 +273,9 @@ static int gicv3_lpi_set_pendtable(void __iomem *rdist_base)
 
     ASSERT(!(virt_to_maddr(pendtable) & ~GENMASK(51, 16)));
 
-    val  = GIC_BASER_CACHE_RaWaWb << GICR_PENDBASER_INNER_CACHEABILITY_SHIFT;
+    val  = gicv3_its_get_cacheability() << GICR_PENDBASER_INNER_CACHEABILITY_SHIFT;
     val |= GIC_BASER_CACHE_SameAsInner << GICR_PENDBASER_OUTER_CACHEABILITY_SHIFT;
-    val |= GIC_BASER_InnerShareable << GICR_PENDBASER_SHAREABILITY_SHIFT;
+    val |= gicv3_its_get_shareability() << GICR_PENDBASER_SHAREABILITY_SHIFT;
     val |= GICR_PENDBASER_PTZ;
     val |= virt_to_maddr(pendtable);
 
@@ -301,9 +302,9 @@ static int gicv3_lpi_set_proptable(void __iomem * rdist_base)
 {
     uint64_t reg;
 
-    reg  = GIC_BASER_CACHE_RaWaWb << GICR_PROPBASER_INNER_CACHEABILITY_SHIFT;
+    reg  = gicv3_its_get_cacheability() << GICR_PROPBASER_INNER_CACHEABILITY_SHIFT;
     reg |= GIC_BASER_CACHE_SameAsInner << GICR_PROPBASER_OUTER_CACHEABILITY_SHIFT;
-    reg |= GIC_BASER_InnerShareable << GICR_PROPBASER_SHAREABILITY_SHIFT;
+    reg |= gicv3_its_get_shareability() << GICR_PROPBASER_SHAREABILITY_SHIFT;
 
     /*
      * The property table is shared across all redistributors, so allocate
@@ -312,7 +313,8 @@ static int gicv3_lpi_set_proptable(void __iomem * rdist_base)
     if ( !lpi_data.lpi_property )
     {
         /* The property table holds one byte per LPI. */
-        void *table = _xmalloc(lpi_data.max_host_lpi_ids, SZ_4K);
+        void *table = _xmalloc_whole_pages(lpi_data.max_host_lpi_ids, SZ_4K,
+                                           gicv3_its_get_memflags());
 
         if ( !table )
             return -ENOMEM;

@@ -50,6 +50,77 @@ struct its_device {
     struct pending_irq *pend_irqs;      /* One struct per event */
 };
 
+/*
+ * It is unlikely that a platform implements ITSes with different quirks,
+ * so assume they all share the same.
+ */
+struct its_quirk {
+    const char *desc;
+    bool (*init)(struct host_its *hw_its);
+    uint32_t iidr;
+    uint32_t mask;
+};
+
+uint32_t its_quirk_flags;
+
+static bool gicv3_its_enable_quirk_r8a779f0(struct host_its *hw_its)
+{
+    its_quirk_flags |= HOST_ITS_WORKAROUND_NC_NS |
+        HOST_ITS_WORKAROUND_32BIT_ADDR;
+
+    return true;
+}
+
+static const struct its_quirk its_quirks[] = {
+    {
+        .desc	= "R-Car S4",
+        .iidr	= 0x0201743b,
+        .mask	= 0xffffffff,
+        .init	= gicv3_its_enable_quirk_r8a779f0,
+    },
+    {
+        /* Sentinel. */
+    }
+};
+
+static void gicv3_its_enable_quirks(struct host_its *hw_its)
+{
+    const struct its_quirk *quirks = its_quirks;
+    uint32_t iidr = readl_relaxed(hw_its->its_base + GITS_IIDR);
+
+    for ( ; quirks->desc; quirks++ )
+    {
+        if ( quirks->iidr != (quirks->mask & iidr) )
+            continue;
+        if ( quirks->init(hw_its) )
+            printk("GICv3: enabling workaround for ITS: %s\n", quirks->desc);
+    }
+}
+
+uint64_t gicv3_its_get_cacheability(void)
+{
+    if ( its_quirk_flags & HOST_ITS_WORKAROUND_NC_NS )
+        return GIC_BASER_CACHE_nC;
+
+    return GIC_BASER_CACHE_RaWaWb;
+}
+
+uint64_t gicv3_its_get_shareability(void)
+{
+    if ( its_quirk_flags & HOST_ITS_WORKAROUND_NC_NS )
+        return GIC_BASER_NonShareable;
+
+    return GIC_BASER_InnerShareable;
+}
+
+unsigned int gicv3_its_get_memflags(void)
+{
+    if ( its_quirk_flags & HOST_ITS_WORKAROUND_32BIT_ADDR )
+        return MEMF_bits(32);
+
+    return 0;
+}
+
 bool gicv3_its_host_has_its(void)
 {
     return !list_empty(&host_its_list);
@@ -320,11 +391,12 @@ static void *its_map_cbaser(struct host_its *its)
     uint64_t reg;
     void *buffer;
 
-    reg  = GIC_BASER_InnerShareable << GITS_BASER_SHAREABILITY_SHIFT;
+    reg  = gicv3_its_get_shareability() << GITS_BASER_SHAREABILITY_SHIFT;
     reg |= GIC_BASER_CACHE_SameAsInner << GITS_BASER_OUTER_CACHEABILITY_SHIFT;
-    reg |= GIC_BASER_CACHE_RaWaWb << GITS_BASER_INNER_CACHEABILITY_SHIFT;
+    reg |= gicv3_its_get_cacheability() << GITS_BASER_INNER_CACHEABILITY_SHIFT;
 
-    buffer = _xzalloc(ITS_CMD_QUEUE_SZ, SZ_64K);
+    buffer = _xzalloc_whole_pages(ITS_CMD_QUEUE_SZ, SZ_64K,
+                                  gicv3_its_get_memflags());
     if ( !buffer )
         return NULL;
 
@@ -371,9 +443,9 @@ static int its_map_baser(void __iomem *basereg, uint64_t regc,
     unsigned int table_size;
     void *buffer;
 
-    attr  = GIC_BASER_InnerShareable << GITS_BASER_SHAREABILITY_SHIFT;
+    attr  = gicv3_its_get_shareability() << GITS_BASER_SHAREABILITY_SHIFT;
     attr |= GIC_BASER_CACHE_SameAsInner << GITS_BASER_OUTER_CACHEABILITY_SHIFT;
-    attr |= GIC_BASER_CACHE_RaWaWb << GITS_BASER_INNER_CACHEABILITY_SHIFT;
+    attr |= gicv3_its_get_cacheability() << GITS_BASER_INNER_CACHEABILITY_SHIFT;
 
     /*
      * Setup the BASE register with the attributes that we like. Then read
@@ -386,7 +458,8 @@ retry:
     /* The BASE registers support at most 256 pages. */
     table_size = min(table_size, 256U << BASER_PAGE_BITS(pagesz));
 
-    buffer = _xzalloc(table_size, BIT(BASER_PAGE_BITS(pagesz), UL));
+    buffer = _xzalloc_whole_pages(table_size, BIT(BASER_PAGE_BITS(pagesz), UL),
+                                  gicv3_its_get_memflags());
     if ( !buffer )
         return -ENOMEM;
 
@@ -481,6 +554,8 @@ static int gicv3_its_init_single_its(struct host_its *hw_its)
     ret = gicv3_disable_its(hw_its);
     if ( ret )
         return ret;
+
+    gicv3_its_enable_quirks(hw_its);
 
     reg = readq_relaxed(hw_its->its_base + GITS_TYPER);
     hw_its->devid_bits = GITS_TYPER_DEVICE_ID_BITS(reg);
@@ -737,7 +812,8 @@ int gicv3_its_map_guest_device(struct domain *d,
     ret = -ENOMEM;
 
     /* An Interrupt Translation Table needs to be 256-byte aligned. */
-    itt_addr = _xzalloc(nr_events * hw_its->itte_size, 256);
+    itt_addr = _xzalloc_whole_pages(nr_events * hw_its->itte_size, 256,
+                                    gicv3_its_get_memflags());
     if ( !itt_addr )
         goto out_unlock;
 
