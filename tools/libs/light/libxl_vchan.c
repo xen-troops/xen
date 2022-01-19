@@ -20,6 +20,12 @@
 #include "libxl_vchan.h"
 
 #define VCHAN_EOM       "\r\n"
+/*
+ * http://xenbits.xen.org/docs/unstable/misc/xenstore-paths.html
+ * 1.4.4 Domain Controlled Paths
+ * 1.4.4.1 ~/data [w]
+ * A domain writable path. Available for arbitrary domain use.
+ */
 #define VCHAN_SRV_DIR   "/local/domain"
 
 struct vchan_state {
@@ -273,8 +279,8 @@ static libxl_domid vchan_find_server(libxl__gc *gc, char *xs_dir, char *xs_file)
             continue;
 
         if (!libxl__xs_read_checked(gc, XBT_NULL,
-                                    GCSPRINTF("%s/%d/%s", xs_dir, d, xs_file),
-                                    &tmp)) {
+                                    GCSPRINTF("%s/%d/data/%s", xs_dir, d,
+                                              xs_file), &tmp)) {
             /* Found the domain where the server lives. */
             domid = d;
             break;
@@ -353,7 +359,7 @@ struct vchan_state *vchan_init_new_state(libxl__gc *gc, libxl_domid domid,
 
 char *vchan_get_server_xs_path(libxl__gc *gc, libxl_domid domid, char *srv_name)
 {
-    return GCSPRINTF(VCHAN_SRV_DIR "/%d/%s", domid, srv_name);
+    return GCSPRINTF(VCHAN_SRV_DIR "/%d/data/%s", domid, srv_name);
 }
 
 /*
