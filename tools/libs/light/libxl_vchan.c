@@ -278,10 +278,10 @@ static libxl_domid vchan_find_server(libxl__gc *gc, char *xs_dir, char *xs_file)
         if (sscanf(domains[i], "%d", &d) != 1)
             continue;
 
-        if (!libxl__xs_read_checked(gc, XBT_NULL,
-                                    GCSPRINTF("%s/%d/data/%s", xs_dir, d,
-                                              xs_file), &tmp)) {
-            /* Found the domain where the server lives. */
+        tmp = libxl__xs_read(gc, XBT_NULL,
+                             GCSPRINTF("%s/%d/data/%s", xs_dir, d, xs_file));
+        /* Found the domain where the server lives. */
+        if (tmp) {
             domid = d;
             break;
         }
