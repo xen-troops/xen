@@ -63,6 +63,42 @@ int libxl__vchan_field_add_string(libxl__gc *gc, yajl_gen gen,
     return libxl__json_object_to_yajl_gen(gc, gen, result);
 }
 
+static libxl__json_object *libxl__vchan_arg_new(libxl__gc *gc,
+                                                libxl__json_node_type type,
+                                                libxl__json_object *args,
+                                                char *key)
+{
+    libxl__json_map_node *arg;
+    libxl__json_object *obj;
+
+    obj = libxl__json_object_alloc(gc, type);
+
+    GCNEW(arg);
+
+    arg->map_key = key;
+    arg->obj = obj;
+
+    flexarray_append(args->u.map, arg);
+
+    return obj;
+}
+
+void libxl__vchan_arg_add_string(libxl__gc *gc, libxl__json_object *args,
+                                 char *key, char *val)
+{
+    libxl__json_object *obj = libxl__vchan_arg_new(gc, JSON_STRING, args, key);
+
+    obj->u.string = val;
+}
+
+void libxl__vchan_arg_add_bool(libxl__gc *gc, libxl__json_object *args,
+                               char *key, bool val)
+{
+    libxl__json_object *obj = libxl__vchan_arg_new(gc, JSON_BOOL, args, key);
+
+    obj->u.b = val;
+}
+
 static void reset_yajl_generator(struct vchan_state *state)
 {
     yajl_gen_clear(state->gen);

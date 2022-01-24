@@ -50,6 +50,16 @@ struct vchan_info {
 int libxl__vchan_field_add_string(libxl__gc *gc, yajl_gen hand,
                                   const char *field, char *val);
 
+static inline libxl__json_object *libxl__vchan_start_args(libxl__gc *gc)
+{
+    return libxl__json_object_alloc(gc, JSON_MAP);
+}
+
+void libxl__vchan_arg_add_string(libxl__gc *gc, libxl__json_object *args,
+                                 char *key, char *val);
+void libxl__vchan_arg_add_bool(libxl__gc *gc, libxl__json_object *args,
+                               char *key, bool val);
+
 libxl__json_object *vchan_send_command(libxl__gc *gc, struct vchan_info *vchan,
                                        char *cmd, libxl__json_object *args);
 
