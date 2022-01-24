@@ -605,6 +605,8 @@ static int rcar3_do_domctl(struct xen_domctl *domctl, struct domain *d,
 static void rcar3_domain_destroy(struct domain *d)
 {
     int i;
+    
+    if (!mfis_data) return;
 
     for ( i = 0; i < mfis_data->chan_cnt; i++)
     {
