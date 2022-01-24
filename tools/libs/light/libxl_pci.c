@@ -90,29 +90,47 @@ static int pci_handle_response(libxl__gc *gc,
     return ret;
 }
 
+#define CONVERT_YAJL_GEN_TO_STATUS(gen) \
+    ((gen) == yajl_gen_status_ok ? yajl_status_ok : yajl_status_error)
+
 static char *pci_prepare_request(libxl__gc *gc, yajl_gen gen, char *cmd,
                              libxl__json_object *args)
 {
     const unsigned char *buf;
     libxl_yajl_length len;
     yajl_gen_status sts;
+    yajl_status ret;
     char *request = NULL;
     int rc;
 
-    yajl_gen_map_open(gen);
+    ret = CONVERT_YAJL_GEN_TO_STATUS(yajl_gen_map_open(gen));
+    if (ret != yajl_status_ok)
+        return NULL;
 
     rc = libxl__vchan_field_add_string(gc, gen, PCID_MSG_FIELD_CMD, cmd);
     if (rc)
         return NULL;
 
     if (args) {
-        rc = libxl__json_object_to_yajl_gen(gc, gen, args);
-        /* TODO: close gen? */
-        if (rc)
-            return NULL;
-    }
+        int idx = 0;
+        libxl__json_map_node *node = NULL;
 
-    yajl_gen_map_close(gen);
+        assert(args->type == JSON_MAP);
+        for (idx = 0; idx < args->u.map->count; idx++) {
+            if (flexarray_get(args->u.map, idx, (void**)&node) != 0)
+                break;
+
+            ret = CONVERT_YAJL_GEN_TO_STATUS(libxl__yajl_gen_asciiz(gen, node->map_key));
+            if (ret != yajl_status_ok)
+                return NULL;
+            ret = libxl__json_object_to_yajl_gen(gc, gen, node->obj);
+            if (ret != yajl_status_ok)
+                return NULL;
+        }
+    }
+    ret = CONVERT_YAJL_GEN_TO_STATUS(yajl_gen_map_close(gen));
+    if (ret != yajl_status_ok)
+        return NULL;
 
     sts = yajl_gen_get_buf(gen, &buf, &len);
     if (sts != yajl_gen_status_ok)
@@ -769,7 +787,7 @@ static int libxl__device_pci_assignable_add(libxl__gc *gc,
     libxl_ctx *ctx = libxl__gc_owner(gc);
     struct vchan_info *vchan;
     int rc;
-    libxl__json_object *args, *temp_obj, *result;
+    libxl__json_object *args, *result;
 
     vchan = pci_vchan_get_client(gc);
     if (!vchan) {
@@ -777,24 +795,12 @@ static int libxl__device_pci_assignable_add(libxl__gc *gc,
         goto out;
     }
 
-    args = libxl__json_object_alloc(gc, JSON_MAP);
-    temp_obj = libxl__json_object_alloc(gc, JSON_STRING);
-    if (!temp_obj) {
-        rc = ERROR_NOMEM;
-        goto vchan_free;
-    }
-    temp_obj->u.string = GCSPRINTF(PCID_SBDF_FMT, pci->domain, pci->bus,
-                                   pci->dev, pci->func);
-    flexarray_append_pair(args->u.map, PCID_MSG_FIELD_SBDF, temp_obj);
+    args = libxl__vchan_start_args(gc);
 
-    args = libxl__json_object_alloc(gc, JSON_MAP);
-    temp_obj = libxl__json_object_alloc(gc, JSON_BOOL);
-    if (!temp_obj) {
-        rc = ERROR_NOMEM;
-        goto vchan_free;
-    }
-    temp_obj->u.b = rebind;
-    flexarray_append_pair(args->u.map, PCID_MSG_FIELD_REBIND, temp_obj);
+    libxl__vchan_arg_add_string(gc, args, PCID_MSG_FIELD_SBDF,
+                                GCSPRINTF(PCID_SBDF_FMT, pci->domain,
+                                          pci->bus, pci->dev, pci->func));
+    libxl__vchan_arg_add_bool(gc, args, PCID_MSG_FIELD_REBIND, rebind);
 
     result = vchan_send_command(gc, vchan, PCID_CMD_MAKE_ASSIGNABLE, args);
     if (!result) {
