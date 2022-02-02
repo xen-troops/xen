@@ -307,8 +307,6 @@ char *xenhypfs_read(xenhypfs_handle *fshdl, const char *path)
         errno = EISDIR;
         break;
     case xenhypfs_type_blob:
-        errno = EDOM;
-        break;
     case xenhypfs_type_string:
         ret_buf = buf;
         buf = NULL;
