@@ -22,6 +22,7 @@ obj-y += domain.o
 obj-y += domain_build.init.o
 obj-$(CONFIG_ARCH_MAP_DOMAIN_PAGE) += domain_page.o
 obj-y += domctl.o
+obj-$(CONFIG_HOST_DTB_EXPORT) += host_dtb_export.o
 obj-$(CONFIG_EARLY_PRINTK) += early_printk.o
 obj-y += efi/
 obj-y += gic.o

@@ -96,6 +96,22 @@ config DOM0LESS_BOOT
 	  Xen boot without the need of a control domain (Dom0), which could be
 	  present anyway.
 
+config HOST_DTB_EXPORT
+	bool "Export host device tree to hypfs if enabled"
+	depends on ARM && HYPFS && !ACPI
+	---help---
+
+	  Export host device-tree to hypfs so toolstack can have an access for the
+	  host device tree from Dom0. If you unsure say N.
+
+config HOST_DTB_MAX_SIZE
+	int "Max host dtb export size"
+	depends on HOST_DTB_EXPORT
+	default 8192
+	---help---
+
+	  Maximum size of the host device-tree exported to hypfs.
+
 config GICV3
 	bool "GICv3 driver"
 	depends on !NEW_VGIC
