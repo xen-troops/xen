@@ -263,7 +263,7 @@ REGISTER_VPCI_INIT(init_msi, VPCI_PRIORITY_LOW);
 
 void vpci_dump_msi(void)
 {
-    const struct domain *d;
+    struct domain *d;
 
     rcu_read_lock(&domlist_read_lock);
     for_each_domain ( d )
@@ -274,6 +274,9 @@ void vpci_dump_msi(void)
             continue;
 
         printk("vPCI MSI/MSI-X d%d\n", d->domain_id);
+
+        if ( !read_trylock(&d->pci_lock) )
+            continue;
 
         for_each_pdev ( d, pdev )
         {
@@ -316,14 +319,33 @@ void vpci_dump_msi(void)
                      * holding the lock.
                      */
                     printk("unable to print all MSI-X entries: %d\n", rc);
-                    process_pending_softirqs();
-                    continue;
+                    goto pdev_done;
                 }
             }
 
             spin_unlock(&pdev->vpci->lock);
+        pdev_done:
+            /*
+             * Unlock lock to process pending softirqs. This is
+             * potentially unsafe, as d->pdev_list can be changed in
+             * meantime.
+             */
+            read_unlock(&d->pci_lock);
             process_pending_softirqs();
+            if ( !read_trylock(&d->pci_lock) )
+            {
+                printk("unable to access other devices for the domain\n");
+                goto domain_done;
+            }
         }
+        read_unlock(&d->pci_lock);
+    domain_done:
+        /*
+         * We need this label at the end of the loop, but some
+         * compilers might not be happy about label at the end of the
+         * compound statement so we adding an empty statement here.
+         */
+        ;
     }
     rcu_read_unlock(&domlist_read_lock);
 }

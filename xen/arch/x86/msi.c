@@ -602,7 +602,7 @@ static int msi_capability_init(struct pci_dev *dev,
     unsigned int i, mpos;
     uint16_t control;
 
-    ASSERT(pcidevs_locked());
+    ASSERT(pcidevs_locked() || rw_is_locked(&dev->domain->pci_lock));
     pos = pci_find_cap_offset(dev->sbdf, PCI_CAP_ID_MSI);
     if ( !pos )
         return -ENODEV;
@@ -771,7 +771,7 @@ static int msix_capability_init(struct pci_dev *dev,
     if ( !pos )
         return -ENODEV;
 
-    ASSERT(pcidevs_locked());
+    ASSERT(pcidevs_locked() || rw_is_locked(&dev->domain->pci_lock));
 
     control = pci_conf_read16(dev->sbdf, msix_control_reg(pos));
     /*
@@ -988,8 +988,6 @@ static int __pci_enable_msi(struct pci_dev *pdev, struct msi_info *msi,
 {
     struct msi_desc *old_desc;
 
-    ASSERT(pcidevs_locked());
-
     if ( !pdev )
         return -ENODEV;
 
@@ -1042,8 +1040,6 @@ static int __pci_enable_msix(struct pci_dev *pdev, struct msi_info *msi,
                              struct msi_desc **desc)
 {
     struct msi_desc *old_desc;
-
-    ASSERT(pcidevs_locked());
 
     if ( !pdev || !pdev->msix )
         return -ENODEV;
@@ -1154,7 +1150,7 @@ int pci_prepare_msix(u16 seg, u8 bus, u8 devfn, bool off)
 int pci_enable_msi(struct pci_dev *pdev, struct msi_info *msi,
                    struct msi_desc **desc)
 {
-    ASSERT(pcidevs_locked());
+    ASSERT(pcidevs_locked() || rw_is_locked(&pdev->domain->pci_lock));
 
     if ( !use_msi )
         return -EPERM;
