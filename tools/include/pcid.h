@@ -39,7 +39,6 @@
 #define PCID_CMD_READ_RESOURCES  "read_resources"
 #define PCID_CMD_PCI_PATH        "pci_path"
 #define PCID_CMD_PCI_INFO        "pci_info"
-#define PCID_CMD_READ_FILE       "read_file"
 
 #define PCID_PCIBACK_DRIVER      "pciback_driver"
 #define PCID_PCI_DEV             "pci_dev"

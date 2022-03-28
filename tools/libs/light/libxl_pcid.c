@@ -44,7 +44,7 @@ static struct libxl__json_object *process_ls_cmd(libxl__gc *gc,
                                                  const struct libxl__json_object *resp)
 {
     libxl__json_object *result = NULL;
-    const libxl__json_object *args, *dir_id, *pci_info;
+    const libxl__json_object *args, *dir_id;
     struct libxl__json_object *node;
     char *dir_name;
     struct dirent *de;
@@ -56,17 +56,12 @@ static struct libxl__json_object *process_ls_cmd(libxl__gc *gc,
     dir_id = libxl__json_map_get(PCID_CMD_DIR_ID, args, JSON_ANY);
     if (!dir_id)
         goto out;
-    pci_info = libxl__json_map_get(PCID_CMD_PCI_INFO, args, JSON_ANY);
 
     dir_name = dir_id->u.string;
 
-    if (strcmp(PCID_PCIBACK_DRIVER, dir_name) == 0) {
-        if (pci_info)
-            dir_name = libxl__sprintf(gc, SYSFS_PCIBACK_DRIVER"%s", pci_info->u.string);
-        else
-            dir_name = SYSFS_PCIBACK_DRIVER;
-        dir = opendir(dir_name);
-    } else {
+    if (strcmp(PCID_PCIBACK_DRIVER, dir_name) == 0)
+        dir = opendir(SYSFS_PCIBACK_DRIVER);
+    else {
         LOGE(ERROR, "Unknown directory: %s\n", dir_name);
         goto out;
     }
@@ -211,55 +206,6 @@ out:
     return result;
 }
 
-static libxl__json_object *process_read_file_cmd(libxl__gc *gc,
-                                                 const struct libxl__json_object *resp)
-{
-    libxl__json_object *result = NULL;
-    const struct libxl__json_object *args, *dir_id, *pci_info;
-    char *full_path;
-    char *str = libxl__malloc(gc, 128);
-
-    args = libxl__json_map_get(PCID_MSG_FIELD_ARGS, resp, JSON_MAP);
-    if (!args)
-        goto out;
-    dir_id = libxl__json_map_get(PCID_CMD_DIR_ID, args, JSON_ANY);
-    if (!dir_id)
-        goto out;
-    pci_info = libxl__json_map_get(PCID_CMD_PCI_INFO, args, JSON_ANY);
-    if (!pci_info)
-        goto out;
-
-    if (strcmp(PCID_PCIBACK_DRIVER, dir_id->u.string) == 0)
-        full_path = libxl__sprintf(gc, SYSFS_PCIBACK_DRIVER"%s", pci_info->u.string);
-    else if (strcmp(PCID_PCI_DEV, dir_id->u.string) == 0)
-        full_path = libxl__sprintf(gc, SYSFS_PCI_DEV"%s", pci_info->u.string);
-    else
-        full_path = pci_info->u.string;
-
-    FILE *f = fopen(full_path, "r");
-    if (!f) {
-        LOGE(ERROR, "Can't open file at %s\n", full_path);
-        goto out;
-    }
-
-    result = libxl__json_object_alloc(gc, JSON_ARRAY);
-    if (!result) {
-        LOGE(ERROR, "Memory allocation failed\n");
-        goto out;
-    }
-    while (fscanf(f, "%s\n", str) == 1) {
-        struct libxl__json_object *node;
-
-        node = libxl__json_object_alloc(gc, JSON_STRING);
-        node->u.string = str;
-        flexarray_append(result->u.array, node);
-    }
-    fclose(f);
-
-out:
-    return result;
-}
-
 static libxl__json_object *process_exists_cmd(libxl__gc *gc,
                                               const struct libxl__json_object *resp)
 {
@@ -279,8 +225,6 @@ static libxl__json_object *process_exists_cmd(libxl__gc *gc,
         goto out;
     if (strcmp(pci_path->u.string, PCID_PCIBACK_DRIVER) == 0)
         full_path = libxl__sprintf(gc, SYSFS_PCIBACK_DRIVER"%s", pci_info->u.string);
-    else if (strcmp(pci_path->u.string, PCID_PCI_DEV) == 0)
-        full_path = libxl__sprintf(gc, SYSFS_PCI_DEV"%s", pci_info->u.string);
     else
         full_path = pci_info->u.string;
 
@@ -484,8 +428,6 @@ static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
        *result = process_write_cmd(gc, request);
     else if (strcmp(command_name, PCID_CMD_READ_HEX) == 0)
         *result = process_read_hex_cmd(gc, request);
-    else if (strcmp(command_name, PCID_CMD_READ_FILE) == 0)
-        *result = process_read_file_cmd(gc, request);
     else if (strcmp(command_name, PCID_CMD_EXISTS) == 0)
         *result = process_exists_cmd(gc, request);
     else if (strcmp(command_name, PCID_CMD_READ_RESOURCES) == 0)
