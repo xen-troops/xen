@@ -348,67 +348,6 @@ out:
     return result;
 }
 
-static libxl__json_object *process_reset_cmd(libxl__gc *gc,
-                                             const struct libxl__json_object *resp)
-{
-    libxl__json_object *result = NULL;
-    const libxl__json_object *args, *pci_path, *pci_info;
-    char *reset;
-    int rc, fd;
-
-    args = libxl__json_map_get(PCID_MSG_FIELD_ARGS, resp, JSON_MAP);
-    if (!args)
-        goto out;
-    pci_info = libxl__json_map_get(PCID_CMD_PCI_INFO, args, JSON_ANY);
-    if (!pci_info)
-        goto out;
-    pci_path = libxl__json_map_get(PCID_CMD_PCI_PATH, args, JSON_ANY);
-
-    reset = libxl__sprintf(gc, SYSFS_PCIBACK_DRIVER"%s", pci_path->u.string);
-    fd = open(reset, O_WRONLY);
-    if (fd >= 0) {
-        rc = write(fd, pci_info->u.string, strlen(pci_info->u.string));
-        if (rc < 0) {
-            LOGE(ERROR, "write to %s returned %d\n", reset, rc);
-            goto out;
-        }
-        close(fd);
-        goto success;
-    }
-    if (errno != ENOENT)
-        LOGE(ERROR, "Failed to access pciback path %s\n", reset);
-
-    reset = libxl__sprintf(gc, "%s/%s/reset", SYSFS_PCI_DEV, pci_info->u.string);
-    fd = open(reset, O_WRONLY);
-    if (fd >= 0) {
-        rc = write(fd, "1", 1);
-        if (rc < 0) {
-            LOGE(ERROR, "write to %s returned %d\n", reset, rc);
-            goto out;
-        }
-        close(fd);
-        goto success;
-    }
-    if (errno == ENOENT)
-        LOGE(ERROR,
-                "The kernel doesn't support reset from sysfs for PCI device %s\n",
-                pci_info->u.string);
-    else
-        LOGE(ERROR, "Failed to access reset path %s\n", reset);
-    goto out;
-
-success:
-    result = libxl__json_object_alloc(gc, JSON_STRING);
-    if (!result) {
-        LOGE(ERROR, "Memory allocation failed\n");
-        goto out;
-    }
-    result->u.string = pci_path->u.string;
-
-out:
-    return result;
-}
-
 static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
                                libxl__json_object **result)
 {
@@ -434,8 +373,6 @@ static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
         *result = process_read_rsc_cmd(gc, request);
     else if (strcmp(command_name, PCID_CMD_UNBIND) == 0)
         *result = process_unbind_cmd(gc, request);
-    else if (strcmp(command_name, PCID_CMD_RESET) == 0)
-        *result = process_reset_cmd(gc, request);
     else
         return ERROR_NOTFOUND;
 

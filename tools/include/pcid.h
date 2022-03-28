@@ -30,7 +30,6 @@
 
 #define PCID_CMD_LIST            "ls"
 #define PCID_CMD_UNBIND          "unbind"
-#define PCID_CMD_RESET           "reset"
 #define PCID_CMD_DIR_ID          "dir_id"
 
 #define PCID_CMD_WRITE           "write"

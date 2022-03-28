@@ -1645,26 +1645,37 @@ static int libxl__device_pci_reset(libxl__gc *gc, unsigned int domain, unsigned 
                                    unsigned int dev, unsigned int func)
 {
     char *reset;
-    char *buf;
-    struct vchan_info *vchan;
-    libxl__json_object *args = NULL, *result = NULL;
+    int fd, rc;
 
-    vchan = pci_prepare_vchan(gc);
-    if (!vchan)
-        return -1;
-
-    reset = GCSPRINTF("%s", "/do_flr");
-    buf = GCSPRINTF(PCI_BDF, domain, bus, dev, func);
-
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_PATH, reset);
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_INFO, buf);
-    result = vchan_send_command(gc, vchan, PCID_CMD_RESET, args);
-    if (!result) {
-        LOGD(ERROR, domain, "write to %s returned error", reset);
-        return -1;
+    reset = GCSPRINTF("%s/do_flr", SYSFS_PCIBACK_DRIVER);
+    fd = open(reset, O_WRONLY);
+    if (fd >= 0) {
+        char *buf = GCSPRINTF(PCI_BDF, domain, bus, dev, func);
+        rc = write(fd, buf, strlen(buf));
+        if (rc < 0)
+            LOGD(ERROR, domain, "write to %s returned %d", reset, rc);
+        close(fd);
+        return rc < 0 ? rc : 0;
     }
-
-    return 0;
+    if (errno != ENOENT)
+        LOGED(ERROR, domain, "Failed to access pciback path %s", reset);
+    reset = GCSPRINTF("%s/"PCI_BDF"/reset", SYSFS_PCI_DEV, domain, bus, dev, func);
+    fd = open(reset, O_WRONLY);
+    if (fd >= 0) {
+        rc = write(fd, "1", 1);
+        if (rc < 0)
+            LOGED(ERROR, domain, "write to %s returned %d", reset, rc);
+        close(fd);
+        return rc < 0 ? rc : 0;
+    }
+    if (errno == ENOENT) {
+        LOGD(ERROR, domain,
+             "The kernel doesn't support reset from sysfs for PCI device "PCI_BDF,
+             domain, bus, dev, func);
+    } else {
+        LOGED(ERROR, domain, "Failed to access reset path %s", reset);
+    }
+    return -1;
 }
 
 int libxl__device_pci_setdefault(libxl__gc *gc, uint32_t domid,
@@ -2080,35 +2091,20 @@ static void do_pci_remove(libxl__egc *egc, pci_remove_state *prs)
             goto out_fail;
         }
     } else {
-        char *sysfs_path = GCSPRINTF("/"PCI_BDF"/resource", pci->domain,
+        char *sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/resource", pci->domain,
                                      pci->bus, pci->dev, pci->func);
+        FILE *f = fopen(sysfs_path, "r");
         unsigned int start = 0, end = 0, flags = 0, size = 0;
         int irq = 0;
         int i;
-        struct vchan_info *vchan;
-        libxl__json_object *args = NULL, *result = NULL;
-        const libxl__json_object *addr;
-        int j = 0;
 
-        vchan = pci_prepare_vchan(gc);
-        if (!vchan)
-            goto out_fail;
-        libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_INFO, sysfs_path);
-        result = vchan_send_command(gc, vchan, PCID_CMD_READ_RESOURCES, args);
-        if (!result) {
-            LOGED(ERROR, domainid, "Couldn't get resources from %s", sysfs_path);
-            rc = ERROR_FAIL;
+        if (f == NULL) {
+            LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
             goto skip1;
         }
-
         for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
-            addr = libxl__json_array_get(result, j++);
-            start = libxl__json_object_get_integer(addr);
-            addr = libxl__json_array_get(result, j++);
-            end = libxl__json_object_get_integer(addr);
-            addr = libxl__json_array_get(result, j++);
-            flags = libxl__json_object_get_integer(addr);
-
+            if (fscanf(f, "0x%x 0x%x 0x%x\n", &start, &end, &flags) != 3)
+                continue;
             size = end - start + 1;
             if (start) {
                 if (flags & PCI_BAR_IO) {
@@ -2129,23 +2125,18 @@ static void do_pci_remove(libxl__egc *egc, pci_remove_state *prs)
                 }
             }
         }
-
+        fclose(f);
 skip1:
         if (!pci_supp_legacy_irq())
             goto skip_irq;
-        sysfs_path = GCSPRINTF("/"PCI_BDF"/irq", pci->domain,
+        sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/irq", pci->domain,
                                pci->bus, pci->dev, pci->func);
-        libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_INFO, sysfs_path);
-        libxl__vchan_param_add_string(gc, &args, PCID_CMD_DIR_ID, PCID_PCI_DEV);
-        result = vchan_send_command(gc, vchan, PCID_CMD_READ_HEX, args);
-        if (!result) {
-            LOGED(ERROR, domainid, "Couldn't get irq from %s", sysfs_path);
-            rc = ERROR_FAIL;
+        f = fopen(sysfs_path, "r");
+        if (f == NULL) {
+            LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
             goto skip_irq;
         }
-
-        irq = libxl__json_object_get_integer(result);
-        if (irq) {
+        if ((fscanf(f, "%u", &irq) == 1) && irq) {
             rc = xc_physdev_unmap_pirq(ctx->xch, domid, irq);
             if (rc < 0) {
                 LOGED(ERROR, domainid, "xc_physdev_unmap_pirq irq=%d", irq);
@@ -2155,6 +2146,7 @@ skip1:
                 LOGED(ERROR, domainid, "xc_domain_irq_permission irq=%d", irq);
             }
         }
+        fclose(f);
     }
 skip_irq:
     rc = 0;
