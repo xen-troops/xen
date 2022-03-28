@@ -154,54 +154,6 @@ out:
     return result;
 }
 
-static libxl__json_object *process_read_hex_cmd(libxl__gc *gc,
-                                                const struct libxl__json_object *resp)
-{
-    libxl__json_object *result = NULL;
-    const struct libxl__json_object *args, *dir_id, *pci_info;
-    char *full_path;
-    uint16_t read_items;
-    long long read_number;
-
-    args = libxl__json_map_get(PCID_MSG_FIELD_ARGS, resp, JSON_MAP);
-    if (!args)
-        goto out;
-    dir_id = libxl__json_map_get(PCID_CMD_DIR_ID, args, JSON_ANY);
-    if (!dir_id)
-        goto out;
-    pci_info = libxl__json_map_get(PCID_CMD_PCI_INFO, args, JSON_ANY);
-    if (!pci_info)
-        goto out;
-
-    if (strcmp(PCID_PCI_DEV, dir_id->u.string) == 0)
-        full_path = libxl__sprintf(gc, SYSFS_PCI_DEV"%s", pci_info->u.string);
-    else
-        full_path = pci_info->u.string;
-
-    FILE *f = fopen(full_path, "r");
-    if (!f) {
-        LOGE(ERROR, "PCI device %s does not have needed attribute\n",
-                full_path);
-        goto out;
-    }
-    read_items = fscanf(f, "0x%llx\n", &read_number);
-    fclose(f);
-    if (read_items != 1) {
-        LOGE(ERROR, "Cannot read attribute of pci device %s\n", full_path);
-        goto out;
-    }
-
-    result = libxl__json_object_alloc(gc, JSON_INTEGER);
-    if (!result) {
-        LOGE(ERROR, "Memory allocation failed\n");
-        goto out;
-    }
-    result->u.i = read_number;
-
-out:
-    return result;
-}
-
 static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
                                libxl__json_object **result)
 {
@@ -219,8 +171,6 @@ static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
        *result = process_ls_cmd(gc, request);
     else if (strcmp(PCID_CMD_WRITE, command_name) == 0)
        *result = process_write_cmd(gc, request);
-    else if (strcmp(command_name, PCID_CMD_READ_HEX) == 0)
-        *result = process_read_hex_cmd(gc, request);
     else
         return ERROR_NOTFOUND;
 
