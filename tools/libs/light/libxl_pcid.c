@@ -87,73 +87,6 @@ out:
     return result;
 }
 
-static int handle_write_cmd(libxl__gc *gc, char *sysfs_path, char *pci_info)
-{
-    int rc, fd;
-
-    fd = open(sysfs_path, O_WRONLY);
-    if (fd < 0) {
-        LOGE(ERROR, "Couldn't open %s\n", sysfs_path);
-        return ERROR_FAIL;
-    }
-
-    rc = write(fd, pci_info, strlen(pci_info));
-    close(fd);
-    if (rc < 0) {
-        LOGE(ERROR, "write to %s returned %d\n", sysfs_path, rc);
-        return ERROR_FAIL;
-    }
-
-    return 0;
-}
-
-static libxl__json_object *process_write_cmd(libxl__gc *gc,
-                                             const struct libxl__json_object *resp)
-{
-    libxl__json_object *result = NULL;
-    const struct libxl__json_object *args, *dir_id, *pci_path, *pci_info;
-    char *full_path;
-    int ret;
-
-    args = libxl__json_map_get(PCID_MSG_FIELD_ARGS, resp, JSON_MAP);
-    if (!args)
-        goto out;
-    dir_id = libxl__json_map_get(PCID_CMD_DIR_ID, args, JSON_ANY);
-    if (!dir_id)
-        goto out;
-    pci_path = libxl__json_map_get(PCID_CMD_PCI_PATH, args, JSON_ANY);
-    if (!pci_path)
-        goto out;
-    pci_info = libxl__json_map_get(PCID_CMD_PCI_INFO, args, JSON_ANY);
-    if (!pci_info)
-        goto out;
-
-    if (strcmp(dir_id->u.string, PCID_PCI_DEV) == 0)
-        full_path = libxl__sprintf(gc, SYSFS_PCI_DEV"%s", pci_path->u.string);
-    else if (strcmp(dir_id->u.string, PCID_PCIBACK_DRIVER) == 0)
-        full_path = libxl__sprintf(gc, SYSFS_PCIBACK_DRIVER"%s", pci_path->u.string);
-    else if (strcmp(dir_id->u.string, SYSFS_DRIVER_PATH) == 0)
-        full_path = pci_path->u.string;
-    else {
-        LOGE(ERROR, "Unknown write directory %s\n", dir_id->u.string);
-        goto out;
-    }
-
-    ret = handle_write_cmd(gc, full_path, pci_info->u.string);
-    if (ret != 0)
-        goto out;
-
-    result = libxl__json_object_alloc(gc, JSON_STRING);
-    if (!result) {
-        LOGE(ERROR, "Memory allocation failed\n");
-        goto out;
-    }
-    result->u.string = pci_path->u.string;
-
-out:
-    return result;
-}
-
 static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
                                libxl__json_object **result)
 {
@@ -169,8 +102,6 @@ static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
 
     if (strcmp(command_name, PCID_CMD_LIST) == 0)
        *result = process_ls_cmd(gc, request);
-    else if (strcmp(PCID_CMD_WRITE, command_name) == 0)
-       *result = process_write_cmd(gc, request);
     else
         return ERROR_NOTFOUND;
 

@@ -31,14 +31,7 @@
 #define PCID_CMD_LIST            "ls"
 #define PCID_CMD_DIR_ID          "dir_id"
 
-#define PCID_CMD_WRITE           "write"
-#define PCID_CMD_PCI_PATH        "pci_path"
-#define PCID_CMD_PCI_INFO        "pci_info"
-
 #define PCID_PCIBACK_DRIVER      "pciback_driver"
-#define PCID_PCI_DEV             "pci_dev"
-
-#define SYSFS_DRIVER_PATH        "driver_path"
 
 #if defined(__linux__)
 #define SYSFS_PCIBACK_DRIVER   "/sys/bus/pci/drivers/pciback"
