@@ -247,107 +247,6 @@ out:
     return result;
 }
 
-static libxl__json_object *process_read_rsc_cmd(libxl__gc *gc,
-                                                const struct libxl__json_object *resp)
-{
-    libxl__json_object *result = NULL;
-    const libxl__json_object *args, *pci_info;
-    libxl__json_object *node;
-    unsigned long long start, end, flags;
-    int i;
-    char *sysfs_path;
-    FILE *f;
-
-    args = libxl__json_map_get(PCID_MSG_FIELD_ARGS, resp, JSON_MAP);
-    if (!args)
-        goto out;
-    pci_info = libxl__json_map_get(PCID_CMD_PCI_INFO, args, JSON_ANY);
-    if (!pci_info)
-        goto out;
-
-    sysfs_path = libxl__sprintf(gc, SYSFS_PCI_DEV"%s", pci_info->u.string);
-    f = fopen(sysfs_path, "r");
-    if (!f) {
-        LOGE(ERROR, "Failed to open %s\n", sysfs_path);
-        goto out;
-    }
-
-    result = libxl__json_object_alloc(gc, JSON_ARRAY);
-    if (!result) {
-        LOGE(ERROR, "Memory allocation failed\n");
-        goto fail_mem_alloc;
-    }
-
-    for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
-        if (fscanf(f, "0x%llx 0x%llx 0x%llx\n", &start, &end, &flags) != 3)
-            continue;
-
-        node = libxl__json_object_alloc(gc, JSON_MAP);
-        if (!node) {
-            LOGE(ERROR, "Memory allocation failed\n");
-            goto fail_mem_alloc;
-        }
-        libxl__vchan_param_add_integer(gc, &node, RESOURCE_START, start);
-        libxl__vchan_param_add_integer(gc, &node, RESOURCE_END, end);
-        libxl__vchan_param_add_integer(gc, &node, RESOURCE_FLAGS, flags);
-        flexarray_append(result->u.array, node);
-    }
-
-fail_mem_alloc:
-    fclose(f);
-out:
-    return result;
-}
-
-static libxl__json_object *process_unbind_cmd(libxl__gc *gc,
-                                              const struct libxl__json_object *resp)
-{
-    libxl__json_object *result = NULL;
-    const struct libxl__json_object *args, *pci_path, *pci_info;
-    char *msg, *spath, *new_path, *dp = NULL;
-    struct stat st;
-
-    args = libxl__json_map_get(PCID_MSG_FIELD_ARGS, resp, JSON_MAP);
-    if (!args)
-        goto out;
-    pci_info = libxl__json_map_get(PCID_CMD_PCI_INFO, args, JSON_ANY);
-    if (!pci_info)
-        goto out;
-    pci_path = libxl__json_map_get(PCID_CMD_PCI_PATH, args, JSON_ANY);
-    if (!pci_path)
-        goto out;
-
-    spath = libxl__sprintf(gc, SYSFS_PCI_DEV"%s", pci_path->u.string);
-
-    if (!lstat(spath, &st)) {
-        /* Find the canonical path to the driver. */
-        dp = libxl__zalloc(gc, PATH_MAX);
-        if (!(realpath(spath, dp))) {
-            LOGE(ERROR, "realpath() failed\n");
-            goto out;
-        }
-        msg = dp;
-        /* Unbind from the old driver */
-        new_path = libxl__sprintf(gc, "%s/unbind", dp);
-
-        if (handle_write_cmd(gc, new_path, pci_info->u.string) != 0) {
-            LOGE(ERROR, "Couldn't unbind device\n");
-            goto out;
-        }
-    } else {
-        msg = libxl__sprintf(gc, "nolstat");
-    }
-    result = libxl__json_object_alloc(gc, JSON_STRING);
-    if (!result) {
-        LOGE(ERROR, "Memory allocation failed\n");
-        goto out;
-    }
-    result->u.string = msg;
-
-out:
-    return result;
-}
-
 static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
                                libxl__json_object **result)
 {
@@ -369,10 +268,6 @@ static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
         *result = process_read_hex_cmd(gc, request);
     else if (strcmp(command_name, PCID_CMD_EXISTS) == 0)
         *result = process_exists_cmd(gc, request);
-    else if (strcmp(command_name, PCID_CMD_READ_RESOURCES) == 0)
-        *result = process_read_rsc_cmd(gc, request);
-    else if (strcmp(command_name, PCID_CMD_UNBIND) == 0)
-        *result = process_unbind_cmd(gc, request);
     else
         return ERROR_NOTFOUND;
 

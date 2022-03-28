@@ -29,13 +29,11 @@
 #define PCID_MSG_FIELD_ARGS      "arguments"
 
 #define PCID_CMD_LIST            "ls"
-#define PCID_CMD_UNBIND          "unbind"
 #define PCID_CMD_DIR_ID          "dir_id"
 
 #define PCID_CMD_WRITE           "write"
 #define PCID_CMD_READ_HEX        "read_hex"
 #define PCID_CMD_EXISTS          "exists"
-#define PCID_CMD_READ_RESOURCES  "read_resources"
 #define PCID_CMD_PCI_PATH        "pci_path"
 #define PCID_CMD_PCI_INFO        "pci_info"
 
@@ -46,16 +44,11 @@
 
 #if defined(__linux__)
 #define SYSFS_PCIBACK_DRIVER   "/sys/bus/pci/drivers/pciback"
-#define SYSFS_PCI_DEV          "/sys/bus/pci/devices"
 #endif
 
 #define PCI_INFO_PATH "/libxl/pci"
 #define PCI_BDF_XSPATH         "%04x-%02x-%02x-%01x"
 #define PCI_BDF                "%04x:%02x:%02x.%01x"
-
-#define RESOURCE_START "start"
-#define RESOURCE_END   "end"
-#define RESOURCE_FLAGS "flags"
 
 int libxl_pcid_process(libxl_ctx *ctx);
 

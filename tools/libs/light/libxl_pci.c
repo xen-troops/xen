@@ -601,32 +601,34 @@ void libxl_device_pci_assignable_list_free(libxl_device_pci *list, int num)
 static int sysfs_dev_unbind(libxl__gc *gc, libxl_device_pci *pci,
                             char **driver_path)
 {
-    char *pci_path, *dp = NULL;
+    char *spath, *pci_path, *dp = NULL;
+    struct stat st;
 
     pci_path = GCSPRINTF("/"PCI_BDF"/driver", pci->domain, pci->bus,
                          pci->dev, pci->func);
-    char *pci_info;
-    struct vchan_info *vchan;
-    libxl__json_object *args = NULL, *result = NULL;
 
-    vchan = pci_prepare_vchan(gc);
-    if (!vchan)
-        return ERROR_FAIL;
+    spath = GCSPRINTF(SYSFS_PCI_DEV"%s", pci_path);
+    if ( !lstat(spath, &st) ) {
+        /* Find the canonical path to the driver. */
+        dp = libxl__zalloc(gc, PATH_MAX);
+        dp = realpath(spath, dp);
+        if ( !dp ) {
+            LOGE(ERROR, "realpath() failed");
+            return -1;
+        }
 
-    pci_info = GCSPRINTF(PCI_BDF, pci->domain, pci->bus, pci->dev, pci->func);
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_PATH, pci_path);
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_INFO, pci_info);
-    result = vchan_send_command(gc, vchan, PCID_CMD_UNBIND, args);
-    if (!result) {
-        LOGE(WARN, "Write to %s%s failed\n", SYSFS_PCI_DEV, pci_path);
-        return -1;
+        LOG(DEBUG, "Driver re-plug path: %s", dp);
+
+        /* Unbind from the old driver */
+        spath = GCSPRINTF("%s/unbind", dp);
+        if (sysfs_write_bdf(gc, SYSFS_PCI_DEV, pci_path, pci) < 0) {
+            LOGE(ERROR, "Couldn't unbind device");
+            return -1;
+        }
     }
 
-    if (driver_path) {
-        if (strcmp(result->u.string, "nolstat") != 0)
-            dp = (char *)libxl__json_object_get_string(result);
+    if ( driver_path )
         *driver_path = dp;
-    }
 
     return 0;
 }
@@ -1497,6 +1499,8 @@ static void pci_add_dm_done(libxl__egc *egc,
     STATE_AO_GC(pas->aodev->ao);
     libxl_ctx *ctx = libxl__gc_owner(gc);
     libxl_domid domid = pas->pci_domid;
+    char *sysfs_path;
+    FILE *f;
     unsigned long long start, end, flags, size;
     int irq, i;
     int r;
@@ -1517,38 +1521,20 @@ static void pci_add_dm_done(libxl__egc *egc,
     if (isstubdom)
         starting = false;
 
-    struct vchan_info *vchan;
-    libxl__json_object *result = NULL, *args = NULL;
-    const libxl__json_object *addr, *node;
-    char *resource_path, *irq_path;
-
-    vchan = pci_prepare_vchan(gc);
-    if (!vchan)
-        goto out;
-
-    resource_path = GCSPRINTF("/"PCI_BDF"/resource", pci->domain,
-                              pci->bus, pci->dev, pci->func);
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_INFO, resource_path);
-    result = vchan_send_command(gc, vchan, PCID_CMD_READ_RESOURCES, args);
-    if (!result) {
-        LOGED(ERROR, domainid, "Couldn't get resources from %s", resource_path);
-        rc = ERROR_FAIL;
-        goto out;
-    }
-
+    sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/resource", pci->domain,
+                           pci->bus, pci->dev, pci->func);
+    f = fopen(sysfs_path, "r");
     start = end = flags = size = 0;
     irq = 0;
 
+    if (f == NULL) {
+        LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
+        rc = ERROR_FAIL;
+        goto out;
+    }
     for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
-        node = libxl__json_array_get(result, i);
-
-        addr = libxl__json_map_get(RESOURCE_START, node, JSON_INTEGER);
-        start = libxl__json_object_get_integer(addr);
-        addr = libxl__json_map_get(RESOURCE_END, node, JSON_INTEGER);
-        end = libxl__json_object_get_integer(addr);
-        addr = libxl__json_map_get(RESOURCE_FLAGS, node, JSON_INTEGER);
-        flags = libxl__json_object_get_integer(addr);
-
+        if (fscanf(f, "0x%llx 0x%llx 0x%llx\n", &start, &end, &flags) != 3)
+            continue;
         size = end - start + 1;
         if (start) {
             if (flags & PCI_BAR_IO) {
@@ -1557,6 +1543,7 @@ static void pci_add_dm_done(libxl__egc *egc,
                     LOGED(ERROR, domainid,
                           "xc_domain_ioport_permission 0x%llx/0x%llx (error %d)",
                           start, size, r);
+                    fclose(f);
                     rc = ERROR_FAIL;
                     goto out;
                 }
@@ -1567,32 +1554,29 @@ static void pci_add_dm_done(libxl__egc *egc,
                     LOGED(ERROR, domainid,
                           "xc_domain_iomem_permission 0x%llx/0x%llx (error %d)",
                           start, size, r);
+                    fclose(f);
                     rc = ERROR_FAIL;
                     goto out;
                 }
             }
         }
     }
+    fclose(f);
     if (!pci_supp_legacy_irq())
         goto out_no_irq;
-
-    irq_path = GCSPRINTF("/"PCI_BDF"/irq", pci->domain,
-                         pci->bus, pci->dev, pci->func);
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_INFO, irq_path);
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_DIR_ID, PCID_PCI_DEV);
-    result = vchan_send_command(gc, vchan, PCID_CMD_READ_HEX, args);
-    if (!result) {
-        LOGED(ERROR, domainid, "Couldn't get irq from %s", irq_path);
-        rc = ERROR_FAIL;
+    sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/irq", pci->domain,
+                                pci->bus, pci->dev, pci->func);
+    f = fopen(sysfs_path, "r");
+    if (f == NULL) {
+        LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
         goto out_no_irq;
     }
-
-    irq = libxl__json_object_get_integer(result);
-    if (irq) {
+    if ((fscanf(f, "%u", &irq) == 1) && irq) {
         r = xc_physdev_map_pirq(ctx->xch, domid, irq, &irq);
         if (r < 0) {
             LOGED(ERROR, domainid, "xc_physdev_map_pirq irq=%d (error=%d)",
                   irq, r);
+            fclose(f);
             rc = ERROR_FAIL;
             goto out;
         }
@@ -1600,10 +1584,12 @@ static void pci_add_dm_done(libxl__egc *egc,
         if (r < 0) {
             LOGED(ERROR, domainid,
                   "xc_domain_irq_permission irq=%d (error=%d)", irq, r);
+            fclose(f);
             rc = ERROR_FAIL;
             goto out;
         }
     }
+    fclose(f);
 
     /* Don't restrict writes to the PCI config space from this VM */
     if (pci->permissive) {
