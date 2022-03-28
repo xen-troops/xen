@@ -106,19 +106,10 @@ int libxl_pcid_process(libxl_ctx *ctx)
     GC_INIT(ctx);
     struct vchan_info *vchan;
     char *xs_path;
-    char *domid_str;
     int ret = 0;
 
-    domid_str = xs_read(ctx->xsh, 0, "domid", NULL);
-    if (!domid_str) {
-        LOGE(ERROR, "Can't read own domid\n");
-	ret = -ENOENT;
-	goto out;
-    }
-
     vchan = libxl__zalloc(gc, sizeof(*vchan));
-    xs_path = GCSPRINTF(PCID_XS_DIR"%s"PCID_XS_PATH, domid_str);
-    free(domid_str);
+    xs_path = GCSPRINTF(PCID_XS_DIR"%d"PCID_XS_PATH, DOM0_ID);
 
     vchan->state = vchan_get_instance(gc, DOM0_ID, xs_path, VCHAN_SERVER);
     if (!(vchan->state)) {
