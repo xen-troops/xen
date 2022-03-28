@@ -28,18 +28,11 @@
 #define PCID_MSG_FIELD_ID        "id"
 #define PCID_MSG_FIELD_ARGS      "arguments"
 
-#define PCID_CMD_LIST            "ls"
-#define PCID_CMD_DIR_ID          "dir_id"
-
 #define PCID_PCIBACK_DRIVER      "pciback_driver"
 
 #if defined(__linux__)
 #define SYSFS_PCIBACK_DRIVER   "/sys/bus/pci/drivers/pciback"
 #endif
-
-#define PCI_INFO_PATH "/libxl/pci"
-#define PCI_BDF_XSPATH         "%04x-%02x-%02x-%01x"
-#define PCI_BDF                "%04x:%02x:%02x.%01x"
 
 int libxl_pcid_process(libxl_ctx *ctx);
 

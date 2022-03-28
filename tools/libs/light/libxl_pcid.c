@@ -36,57 +36,6 @@
 
 #define DOM0_ID 0
 
-static struct libxl__json_object *process_ls_cmd(libxl__gc *gc,
-                                                 const struct libxl__json_object *resp)
-{
-    libxl__json_object *result = NULL;
-    const libxl__json_object *args, *dir_id;
-    struct libxl__json_object *node;
-    char *dir_name;
-    struct dirent *de;
-    DIR *dir = NULL;
-
-    args = libxl__json_map_get(PCID_MSG_FIELD_ARGS, resp, JSON_MAP);
-    if (!args)
-        goto out;
-    dir_id = libxl__json_map_get(PCID_CMD_DIR_ID, args, JSON_ANY);
-    if (!dir_id)
-        goto out;
-
-    dir_name = dir_id->u.string;
-
-    if (strcmp(PCID_PCIBACK_DRIVER, dir_name) == 0)
-        dir = opendir(SYSFS_PCIBACK_DRIVER);
-    else {
-        LOGE(ERROR, "Unknown directory: %s\n", dir_name);
-        goto out;
-    }
-
-    if (dir == NULL) {
-        if (errno == ENOENT)
-            LOGE(ERROR, "Looks like pciback driver not loaded\n");
-        else
-            LOGE(ERROR, "Couldn't open %s\n", dir_name);
-        goto out;
-    }
-
-    result = libxl__json_object_alloc(gc, JSON_ARRAY);
-    if (!result) {
-        LOGE(ERROR, "Memory allocation failed\n");
-        goto out;
-    }
-    while ((de = readdir(dir))) {
-        node = libxl__json_object_alloc(gc, JSON_STRING);
-        node->u.string = de->d_name;
-        flexarray_append(result->u.array, node);
-    }
-
-    closedir(dir);
-
-out:
-    return result;
-}
-
 static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
                                libxl__json_object **result)
 {
@@ -99,14 +48,6 @@ static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
         return ERROR_FAIL;
     }
     command_name = command_obj->u.string;
-
-    if (strcmp(command_name, PCID_CMD_LIST) == 0)
-       *result = process_ls_cmd(gc, request);
-    else
-        return ERROR_NOTFOUND;
-
-    if (!result)
-        return ERROR_FAIL;
 
     return 0;
 }

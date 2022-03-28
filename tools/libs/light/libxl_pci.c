@@ -17,9 +17,6 @@
 #include "libxl_osdeps.h" /* must come before any other headers */
 
 #include "libxl_internal.h"
-#include "libxl_vchan.h"
-
-#include <pcid.h>
 
 #define PCI_BDF                "%04x:%02x:%02x.%01x"
 #define PCI_BDF_SHORT          "%02x:%02x.%01x"
@@ -48,100 +45,6 @@ static void pci_struct_fill(libxl_device_pci *pci, unsigned int domain,
     pci->bus = bus;
     pci->dev = dev;
     pci->func = func;
-}
-
-static libxl__pcid_message_type pci_response_type(const libxl__json_object *o)
-{
-    libxl__pcid_message_type type;
-    libxl__json_map_node *node = NULL;
-    int i;
-
-    for (i = 0; (node = libxl__json_map_node_get(o, i)); i++) {
-        if (libxl__pcid_message_type_from_string(node->map_key, &type) == 0)
-            return type;
-    }
-    return LIBXL__PCID_MESSAGE_TYPE_INVALID;
-}
-
-static int pci_handle_msg(libxl__gc *gc, const libxl__json_object *request,
-                          libxl__json_object **result)
-{
-    libxl__pcid_message_type type = pci_response_type(request);
-
-    if (type == LIBXL__PCID_MESSAGE_TYPE_RETURN)
-        *result = (libxl__json_object *)libxl__json_map_get(VCHAN_MSG_RETURN,
-                                                            request, JSON_ANY);
-
-    return 0;
-}
-
-static char *pci_prepare_cmd(libxl__gc *gc, const char *cmd,
-                             libxl__json_object *args, int id)
-{
-    yajl_gen hand = NULL;
-    /* memory for 'buf' is owned by 'hand' */
-    const unsigned char *buf;
-    libxl_yajl_length len;
-    yajl_gen_status s;
-    char *ret = NULL;
-
-    hand = libxl_yajl_gen_alloc(NULL);
-
-    if (!hand)
-        return NULL;
-
-#if HAVE_YAJL_V2
-    /* Disable beautify for data */
-    yajl_gen_config(hand, yajl_gen_beautify, 0);
-#endif
-
-    yajl_gen_map_open(hand);
-    libxl__yajl_gen_asciiz(hand, VCHAN_MSG_EXECUTE);
-    libxl__yajl_gen_asciiz(hand, cmd);
-    libxl__yajl_gen_asciiz(hand, PCID_MSG_FIELD_ID);
-    yajl_gen_integer(hand, id);
-    if (args) {
-        libxl__yajl_gen_asciiz(hand, PCID_MSG_FIELD_ARGS);
-        libxl__json_object_to_yajl_gen(gc, hand, args);
-    }
-    yajl_gen_map_close(hand);
-
-    s = yajl_gen_get_buf(hand, &buf, &len);
-
-    if (s != yajl_gen_status_ok)
-        goto out;
-
-    ret = libxl__sprintf(gc, "%*.*s" END_OF_MESSAGE,
-                         (int)len, (int)len, buf);
-
-out:
-    yajl_gen_free(hand);
-    return ret;
-}
-
-static struct vchan_info *pci_prepare_vchan(libxl__gc *gc)
-{
-    struct vchan_info *vchan;
-    libxl_domid domid;
-    char *xs_path;
-
-    domid = vchan_find_server(gc, PCID_XS_DIR, PCID_XS_PATH);
-    if (domid == DOMID_INVALID) {
-        LOGE(ERROR, "Can't find vchan server");
-        return NULL;
-    }
-    vchan = libxl__zalloc(gc, sizeof(*vchan));
-    xs_path = GCSPRINTF(PCID_XS_DIR"%d"PCID_XS_PATH, domid);
-    vchan->state = vchan_get_instance(gc, domid, xs_path, VCHAN_CLIENT);
-    if (!(vchan->state))
-        return NULL;
-
-    vchan->handle_msg = pci_handle_msg;
-    vchan->prepare_cmd = pci_prepare_cmd;
-    vchan->receive_buf_size = PCI_RECEIVE_BUFFER_SIZE;
-    vchan->max_buf_size = PCI_MAX_SIZE_RX_BUF;
-
-    return vchan;
 }
 
 static void libxl_create_pci_backend_device(libxl__gc *gc,
@@ -528,37 +431,33 @@ static void pci_info_xs_remove(libxl__gc *gc, libxl_device_pci *pci,
 
 libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
 {
-    libxl_device_pci *pcis = NULL, *new;
-
     GC_INIT(ctx);
+    libxl_device_pci *pcis = NULL, *new;
+    struct dirent *de;
+    DIR *dir;
+
     *num = 0;
-    struct vchan_info *vchan;
-    libxl__json_object *args = NULL, *result = NULL, *dir;
-    int i;
-    const char *dir_name;
 
-    vchan = pci_prepare_vchan(gc);
-    if (!vchan)
+    dir = opendir(SYSFS_PCIBACK_DRIVER);
+    if (NULL == dir) {
+        if (errno == ENOENT) {
+            LOG(ERROR, "Looks like pciback driver not loaded");
+        } else {
+            LOGE(ERROR, "Couldn't open %s", SYSFS_PCIBACK_DRIVER);
+        }
         goto out;
+    }
 
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_DIR_ID,
-                                  PCID_PCIBACK_DRIVER);
-    result = vchan_send_command(gc, vchan, PCID_CMD_LIST, args);
-    if (!result)
-        goto out;
-
-    for (i = 0; (dir = libxl__json_array_get(result, i)); i++) {
-        dir_name = libxl__json_object_get_string(dir);
-        unsigned dom, bus, dev, func;
+    while((de = readdir(dir))) {
+        unsigned int dom, bus, dev, func;
         char *name;
-        if (sscanf(dir_name, PCI_BDF, &dom, &bus, &dev, &func) != 4)
+
+        if (sscanf(de->d_name, PCI_BDF, &dom, &bus, &dev, &func) != 4)
             continue;
 
         new = realloc(pcis, ((*num) + 1) * sizeof(*new));
-        if (new == NULL) {
-            LOGE(ERROR, "Couldn't realloc pcis struct for new entry");
-            break;
-        }
+        if (NULL == new)
+            continue;
 
         pcis = new;
         new = pcis + *num;
@@ -575,6 +474,7 @@ libxl_device_pci *libxl_device_pci_assignable_list(libxl_ctx *ctx, int *num)
         (*num)++;
     }
 
+    closedir(dir);
 out:
     GC_FREE;
     return pcis;
