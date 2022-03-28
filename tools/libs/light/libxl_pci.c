@@ -1093,46 +1093,45 @@ int libxl_device_pci_assignable_remove(libxl_ctx *ctx, libxl_device_pci *pci,
 */
 static int pci_multifunction_check(libxl__gc *gc, libxl_device_pci *pci, unsigned int *func_mask)
 {
+    struct dirent *de;
+    DIR *dir;
+
     *func_mask = 0;
-    struct vchan_info *vchan;
-    libxl__json_object *result = NULL, *args = NULL;
-    const libxl__json_object *lstat_obj, *dir;
-    const char *dir_name;
-    int i;
 
-    vchan = pci_prepare_vchan(gc);
-    if (!vchan)
+    dir = opendir(SYSFS_PCI_DEV);
+    if ( NULL == dir ) {
+        LOGE(ERROR, "Couldn't open %s", SYSFS_PCI_DEV);
         return -1;
+    }
 
-    libxl__vchan_param_add_string(gc, &args, PCID_CMD_DIR_ID, PCID_PCI_DEV);
-    result = vchan_send_command(gc, vchan, PCID_CMD_LIST, args);
-    if (!result)
-        return -1;
-
-    for (i = 0; (dir = libxl__json_array_get(result, i)); i++) {
-        dir_name = libxl__json_object_get_string(dir);
+    while( (de = readdir(dir)) ) {
         unsigned dom, bus, dev, func;
+        struct stat st;
         char *path;
 
-        if (sscanf(dir_name, PCI_BDF, &dom, &bus, &dev, &func) != 4)
+        if ( sscanf(de->d_name, PCI_BDF, &dom, &bus, &dev, &func) != 4 )
             continue;
-        if (pci->domain != dom)
+        if ( pci->domain != dom )
             continue;
-        if (pci->bus != bus)
+        if ( pci->bus != bus )
             continue;
-        if (pci->dev != dev)
+        if ( pci->dev != dev )
             continue;
 
-        path = GCSPRINTF("/" PCI_BDF, dom, bus, dev, func);
-        libxl__vchan_param_add_string(gc, &args, PCID_CMD_DIR_ID, PCID_PCIBACK_DRIVER);
-        libxl__vchan_param_add_string(gc, &args, PCID_CMD_PCI_INFO, path);
-        lstat_obj = vchan_send_command(gc, vchan, PCID_CMD_EXISTS, args);
-        if (!lstat_obj)
+        path = GCSPRINTF("%s/" PCI_BDF, SYSFS_PCIBACK_DRIVER, dom, bus, dev, func);
+        if ( lstat(path, &st) ) {
+            if ( errno == ENOENT )
+                LOG(ERROR, PCI_BDF " is not assigned to pciback driver",
+                    dom, bus, dev, func);
+            else
+                LOGE(ERROR, "Couldn't lstat %s", path);
+            closedir(dir);
             return -1;
-
+        }
         (*func_mask) |= (1 << func);
     }
 
+    closedir(dir);
     return 0;
 }
 

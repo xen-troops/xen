@@ -33,7 +33,6 @@
 
 #define PCID_CMD_WRITE           "write"
 #define PCID_CMD_READ_HEX        "read_hex"
-#define PCID_CMD_EXISTS          "exists"
 #define PCID_CMD_PCI_PATH        "pci_path"
 #define PCID_CMD_PCI_INFO        "pci_info"
 

@@ -34,10 +34,6 @@
 #include <libxl_json.h>
 #include <dirent.h>
 
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
 #define DOM0_ID 0
 
 static struct libxl__json_object *process_ls_cmd(libxl__gc *gc,
@@ -206,47 +202,6 @@ out:
     return result;
 }
 
-static libxl__json_object *process_exists_cmd(libxl__gc *gc,
-                                              const struct libxl__json_object *resp)
-{
-    libxl__json_object *result = NULL;
-    const struct libxl__json_object *args, *pci_path, *pci_info;
-    char *full_path;
-    struct stat st;
-
-    args = libxl__json_map_get(PCID_MSG_FIELD_ARGS, resp, JSON_MAP);
-    if (!args)
-        goto out;
-    pci_path = libxl__json_map_get(PCID_CMD_DIR_ID, args, JSON_ANY);
-    if (!pci_path)
-        goto out;
-    pci_info = libxl__json_map_get(PCID_CMD_PCI_INFO, args, JSON_ANY);
-    if (!pci_info)
-        goto out;
-    if (strcmp(pci_path->u.string, PCID_PCIBACK_DRIVER) == 0)
-        full_path = libxl__sprintf(gc, SYSFS_PCIBACK_DRIVER"%s", pci_info->u.string);
-    else
-        full_path = pci_info->u.string;
-
-    if (lstat(full_path, &st)) {
-        if (errno == ENOENT)
-            LOGE(ERROR, "%s is not assigned to pciback driver", full_path);
-        else
-            LOGE(ERROR, "Couldn't lstat %s", full_path);
-        goto out;
-    }
-
-    result = libxl__json_object_alloc(gc, JSON_STRING);
-    if (!result) {
-        LOGE(ERROR, "Memory allocation failed\n");
-        goto out;
-    }
-    result->u.string = pci_path->u.string;
-
-out:
-    return result;
-}
-
 static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
                                libxl__json_object **result)
 {
@@ -266,8 +221,6 @@ static int pcid_handle_message(libxl__gc *gc, const libxl__json_object *request,
        *result = process_write_cmd(gc, request);
     else if (strcmp(command_name, PCID_CMD_READ_HEX) == 0)
         *result = process_read_hex_cmd(gc, request);
-    else if (strcmp(command_name, PCID_CMD_EXISTS) == 0)
-        *result = process_exists_cmd(gc, request);
     else
         return ERROR_NOTFOUND;
 
