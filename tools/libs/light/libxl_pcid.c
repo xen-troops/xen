@@ -94,7 +94,7 @@ static int process_list_assignable(libxl__gc *gc, yajl_gen gen,
     struct dirent *de;
     DIR *dir = NULL;
 
-    dir = opendir(SYSFS_PCIBACK_DRIVER);
+    dir = opendir(SYSFS_PCI_DEV);
     if (dir == NULL) {
         make_error_reply(gc, gen, strerror(errno), command_name);
         return ERROR_FAIL;
