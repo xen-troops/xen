@@ -135,6 +135,25 @@
  */
 #define PCID_CMD_REVERT_ASSIGNABLE      "revert_assignable"
 
+/*
+ *******************************************************************************
+ * Check is device assigned
+ *
+ * This command checks device is assigned
+ *
+ * Request (see other mandatory fields above):
+ *  - "cmd" field of the request must be set to "is_device_assigned".
+ *  - "sbdf" SBDF of the device in format defined by PCID_SBDF_FMT.
+ *
+ * Response (see other mandatory fields above):
+ *  - "resp" field of the response must be set to "is_device_assigned".
+ * Command specific response data:
+ * +-------------+--------------+----------------------------------------------+
+ * | result      | bool         | true if device assigned                      |
+ * +-------------+--------------+----------------------------------------------+
+ */
+#define PCID_CMD_IS_ASSIGNED            "is_device_assigned"
+#define PCID_MSG_FIELD_RESULT           "result"
 
 int libxl_pcid_process(libxl_ctx *ctx);
 

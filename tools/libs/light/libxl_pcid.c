@@ -147,7 +147,7 @@ static int pciback_dev_is_assigned(libxl__gc *gc, unsigned int domain,
     if (rc < 0 && errno == ENOENT)
         return 0;
     LOGE(ERROR, "Accessing %s", spath);
-    return -1;
+    return 0;
 }
 
 #define PCID_INFO_PATH		"pcid"
@@ -332,6 +332,35 @@ static int pciback_dev_assign(libxl__gc *gc, unsigned int domain,
         LOGE(ERROR, "Couldn't bind device to pciback!");
         return ERROR_FAIL;
     }
+    return 0;
+}
+
+static int process_pciback_dev_is_assigned(libxl__gc *gc, yajl_gen gen,
+                                   char *command_name,
+                                   const struct libxl__json_object *request,
+                                   struct libxl__json_object **response)
+{
+    const struct libxl__json_object *json_o;
+    unsigned int dom, bus, dev, func;
+    int rc;
+
+    libxl__yajl_gen_asciiz(gen, PCID_MSG_FIELD_RESULT);
+    *response = libxl__json_object_alloc(gc, JSON_BOOL);
+    json_o = libxl__json_map_get(PCID_MSG_FIELD_SBDF, request, JSON_STRING);
+    if (!json_o) {
+        make_error_reply(gc, gen, "No mandatory parameter 'sbdf'", command_name);
+        return ERROR_FAIL;
+    }
+
+    if (sscanf(libxl__json_object_get_string(json_o), PCID_SBDF_FMT,
+               &dom, &bus, &dev, &func) != 4) {
+        make_error_reply(gc, gen, "Can't parse SBDF", command_name);
+        return ERROR_FAIL;
+    }
+    rc = pciback_dev_is_assigned(gc, dom, bus, dev, func);
+    if (rc < 0)
+        return ERROR_FAIL;
+    (*response)->u.b = rc;
     return 0;
 }
 
@@ -537,6 +566,9 @@ static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
                                      request, &command_response);
     else if (strcmp(command_name, PCID_CMD_REVERT_ASSIGNABLE) == 0)
        ret = process_revert_assignable(gc, gen, command_name,
+                                     request, &command_response);
+    else if (strcmp(command_name, PCID_CMD_IS_ASSIGNED) == 0)
+       ret = process_pciback_dev_is_assigned(gc, gen, command_name,
                                      request, &command_response);
     else {
         /*
