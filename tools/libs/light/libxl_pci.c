@@ -86,7 +86,9 @@ static int pci_handle_response(libxl__gc *gc,
         *result = libxl__json_object_alloc(gc, JSON_NULL);
     else if (strcmp(command_name, PCID_CMD_REVERT_ASSIGNABLE) == 0)
         *result = libxl__json_object_alloc(gc, JSON_NULL);
-
+    else if (strcmp(command_name, PCID_CMD_IS_ASSIGNED) == 0)
+        *result = (libxl__json_object *)libxl__json_map_get(PCID_MSG_FIELD_RESULT,
+                                                          response, JSON_BOOL);
     return ret;
 }
 
@@ -754,30 +756,31 @@ bool libxl__is_igd_vga_passthru(libxl__gc *gc,
 
 static int pciback_dev_is_assigned(libxl__gc *gc, libxl_device_pci *pci)
 {
-    char * spath;
+    struct vchan_info *vchan;
     int rc;
-    struct stat st;
+    libxl__json_object *args, *result;
 
-    if ( access(SYSFS_PCIBACK_DRIVER, F_OK) < 0 ) {
-        if ( errno == ENOENT ) {
-            LOG(ERROR, "Looks like pciback driver is not loaded");
-        } else {
-            LOGE(ERROR, "Can't access "SYSFS_PCIBACK_DRIVER);
-        }
-        return -1;
+    vchan = pci_vchan_get_client(gc);
+    if (!vchan) {
+        rc = ERROR_NOT_READY;
+        goto out;
     }
 
-    spath = GCSPRINTF(SYSFS_PCIBACK_DRIVER"/"PCI_BDF,
-                      pci->domain, pci->bus,
-                      pci->dev, pci->func);
-    rc = lstat(spath, &st);
+    args = libxl__vchan_start_args(gc);
 
-    if( rc == 0 )
-        return 1;
-    if ( rc < 0 && errno == ENOENT )
-        return 0;
-    LOGE(ERROR, "Accessing %s", spath);
-    return -1;
+    libxl__vchan_arg_add_string(gc, args, PCID_MSG_FIELD_SBDF,
+                                GCSPRINTF(PCID_SBDF_FMT, pci->domain,
+                                          pci->bus, pci->dev, pci->func));
+
+    result = vchan_send_command(gc, vchan, PCID_CMD_IS_ASSIGNED, args);
+    if (!result) {
+        rc = ERROR_FAIL;
+    }
+    rc = result->u.b;
+    pci_vchan_free(gc, vchan);
+
+out:
+    return rc;
 }
 
 static int libxl__device_pci_assignable_add(libxl__gc *gc,
