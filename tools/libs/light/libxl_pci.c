@@ -89,6 +89,8 @@ static int pci_handle_response(libxl__gc *gc,
     else if (strcmp(command_name, PCID_CMD_IS_ASSIGNED) == 0)
         *result = (libxl__json_object *)libxl__json_map_get(PCID_MSG_FIELD_RESULT,
                                                           response, JSON_BOOL);
+    else if (strcmp(command_name, PCID_CMD_RESET_DEVICE) == 0)
+        *result = libxl__json_object_alloc(gc, JSON_NULL);
     return ret;
 }
 
@@ -1523,38 +1525,26 @@ out:
 static int libxl__device_pci_reset(libxl__gc *gc, unsigned int domain, unsigned int bus,
                                    unsigned int dev, unsigned int func)
 {
-    char *reset;
-    int fd, rc;
+    struct vchan_info *vchan;
+    int rc = 0;
+    libxl__json_object *args, *result;
 
-    reset = GCSPRINTF("%s/do_flr", SYSFS_PCIBACK_DRIVER);
-    fd = open(reset, O_WRONLY);
-    if (fd >= 0) {
-        char *buf = GCSPRINTF(PCI_BDF, domain, bus, dev, func);
-        rc = write(fd, buf, strlen(buf));
-        if (rc < 0)
-            LOGE(ERROR, "write '%s' to %s failed", buf, reset);
-        close(fd);
-        return rc < 0 ? rc : 0;
+    vchan = pci_vchan_get_client(gc);
+    if (!vchan) {
+        rc = ERROR_NOT_READY;
+        goto out;
     }
-    if (errno != ENOENT)
-        LOGE(ERROR, "Failed to access pciback path %s", reset);
-    reset = GCSPRINTF("%s/"PCI_BDF"/reset", SYSFS_PCI_DEV, domain, bus, dev, func);
-    fd = open(reset, O_WRONLY);
-    if (fd >= 0) {
-        rc = write(fd, "1", 1);
-        if (rc < 0)
-            LOGE(ERROR, "write to %s failed", reset);
-        close(fd);
-        return rc < 0 ? rc : 0;
-    }
-    if (errno == ENOENT) {
-        LOG(ERROR,
-            "The kernel doesn't support reset from sysfs for PCI device "PCI_BDF,
-            domain, bus, dev, func);
-    } else {
-        LOGE(ERROR, "Failed to access reset path %s", reset);
-    }
-    return -1;
+    args = libxl__vchan_start_args(gc);
+
+    libxl__vchan_arg_add_string(gc, args, PCID_MSG_FIELD_SBDF,
+            GCSPRINTF(PCID_SBDF_FMT, domain, bus, dev, func));
+    result = vchan_send_command(gc, vchan, PCID_CMD_RESET_DEVICE, args);
+    if (!result)
+        rc = ERROR_FAIL;
+    pci_vchan_free(gc, vchan);
+
+ out:
+    return rc;
 }
 
 int libxl__device_pci_setdefault(libxl__gc *gc, uint32_t domid,

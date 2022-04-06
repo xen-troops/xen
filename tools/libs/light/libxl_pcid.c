@@ -364,6 +364,69 @@ static int process_pciback_dev_is_assigned(libxl__gc *gc, yajl_gen gen,
     return 0;
 }
 
+static int device_pci_reset(libxl__gc *gc, unsigned int domain, unsigned int bus,
+                                   unsigned int dev, unsigned int func)
+{
+    char *reset;
+    int fd, rc;
+
+    reset = GCSPRINTF("%s/do_flr", SYSFS_PCIBACK_DRIVER);
+    fd = open(reset, O_WRONLY);
+    if (fd >= 0) {
+        char *buf = GCSPRINTF(PCI_BDF, domain, bus, dev, func);
+        rc = write(fd, buf, strlen(buf));
+        if (rc < 0)
+            LOGD(ERROR, domain, "write to %s returned %d", reset, rc);
+        close(fd);
+        return rc < 0 ? rc : 0;
+    }
+    if (errno != ENOENT)
+        LOGED(ERROR, domain, "Failed to access pciback path %s", reset);
+    reset = GCSPRINTF("%s/"PCI_BDF"/reset", SYSFS_PCI_DEV, domain, bus, dev, func);
+    fd = open(reset, O_WRONLY);
+    if (fd >= 0) {
+        rc = write(fd, "1", 1);
+        if (rc < 0)
+            LOGED(ERROR, domain, "write to %s returned %d", reset, rc);
+        close(fd);
+        return rc < 0 ? rc : 0;
+    }
+    if (errno == ENOENT) {
+        LOGD(ERROR, domain,
+             "The kernel doesn't support reset from sysfs for PCI device "PCI_BDF,
+             domain, bus, dev, func);
+    } else {
+        LOGED(ERROR, domain, "Failed to access reset path %s", reset);
+    }
+    return -1;
+}
+
+static int process_device_pci_reset(libxl__gc *gc, yajl_gen gen,
+                                   char *command_name,
+                                   const struct libxl__json_object *request,
+                                   struct libxl__json_object **response)
+{
+    const struct libxl__json_object *json_o;
+    unsigned int dom, bus, dev, func;
+    int rc;
+
+    json_o = libxl__json_map_get(PCID_MSG_FIELD_SBDF, request, JSON_STRING);
+    if (!json_o) {
+        make_error_reply(gc, gen, "No mandatory parameter 'sbdf'", command_name);
+        return ERROR_FAIL;
+    }
+
+    if (sscanf(libxl__json_object_get_string(json_o), PCID_SBDF_FMT,
+               &dom, &bus, &dev, &func) != 4) {
+        make_error_reply(gc, gen, "Can't parse SBDF", command_name);
+        return ERROR_FAIL;
+    }
+    rc = device_pci_reset(gc, dom, bus, dev, func);
+    if (rc < 0)
+        return ERROR_FAIL;
+    return rc;
+}
+
 static int process_make_assignable(libxl__gc *gc, yajl_gen gen,
                                    char *command_name,
                                    const struct libxl__json_object *request,
@@ -569,6 +632,9 @@ static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
                                      request, &command_response);
     else if (strcmp(command_name, PCID_CMD_IS_ASSIGNED) == 0)
        ret = process_pciback_dev_is_assigned(gc, gen, command_name,
+                                     request, &command_response);
+    else if (strcmp(command_name, PCID_CMD_RESET_DEVICE) == 0)
+       ret = process_device_pci_reset(gc, gen, command_name,
                                      request, &command_response);
     else {
         /*
