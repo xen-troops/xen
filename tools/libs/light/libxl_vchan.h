@@ -45,6 +45,7 @@ struct vchan_info {
     /* Buffer info. */
     size_t receive_buf_size;
     size_t max_buf_size;
+    bool initialized;
 };
 
 int libxl__vchan_field_add_string(libxl__gc *gc, yajl_gen hand,
