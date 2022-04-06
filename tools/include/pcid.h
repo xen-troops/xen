@@ -155,6 +155,21 @@
 #define PCID_CMD_IS_ASSIGNED            "is_device_assigned"
 #define PCID_MSG_FIELD_RESULT           "result"
 
+/*
+ *******************************************************************************
+ * Reset PCI device
+ *
+ * This command resets PCI device
+ *
+ * Request (see other mandatory fields above):
+ *  - "cmd" field of the request must be set to "reset_device".
+ *  - "sbdf" SBDF of the device in format defined by PCID_SBDF_FMT.
+ *
+ * Response (see other mandatory fields above):
+ *  - "resp" field of the response must be set to "reset_device".
+ */
+#define PCID_CMD_RESET_DEVICE            "reset_device"
+
 int libxl_pcid_process(libxl_ctx *ctx);
 
 #endif /* PCID_H */
