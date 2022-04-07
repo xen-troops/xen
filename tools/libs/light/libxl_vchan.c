@@ -99,6 +99,14 @@ void libxl__vchan_arg_add_bool(libxl__gc *gc, libxl__json_object *args,
     obj->u.b = val;
 }
 
+void libxl__vchan_arg_add_integer(libxl__gc *gc, libxl__json_object *args,
+                                 char *key,  int val)
+{
+    libxl__json_object *obj = libxl__vchan_arg_new(gc, JSON_INTEGER, args, key);
+
+    obj->u.i = val;
+}
+
 static void reset_yajl_generator(struct vchan_state *state)
 {
     yajl_gen_clear(state->gen);

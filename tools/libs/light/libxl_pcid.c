@@ -40,6 +40,10 @@
 
 #define PCI_BDF                "%04x:%02x:%02x.%01x"
 
+static int sysfs_write_bdf(libxl__gc *gc, const char * sysfs_path,
+        unsigned int domain, unsigned int bus,
+        unsigned int dev, unsigned int func);
+
 struct vchan_client {
     XEN_LIST_ENTRY(struct vchan_client) list;
 
@@ -119,6 +123,109 @@ static int process_list_assignable(libxl__gc *gc, yajl_gen gen,
     closedir(dir);
 
     return 0;
+}
+
+static bool pci_supp_legacy_irq(void)
+{
+#ifdef CONFIG_PCI_SUPP_LEGACY_IRQ
+    return true;
+#else
+    return false;
+#endif
+}
+
+static int process_list_resources(libxl__gc *gc, yajl_gen gen,
+                                   char *command_name,
+                                   const struct libxl__json_object *request,
+                                   struct libxl__json_object **response)
+{
+    struct libxl__json_object *iomem =
+                 libxl__json_object_alloc(gc, JSON_ARRAY);
+    struct libxl__json_object *irqs =
+                 libxl__json_object_alloc(gc, JSON_ARRAY);
+    const struct libxl__json_object *json_sdbf;
+    const struct libxl__json_object *json_domid;
+    unsigned int dom, bus, dev, func;
+    libxl_domid domainid;
+    char *sysfs_path;
+    FILE *f;
+    unsigned long long start, end, flags;
+    int irq, i;
+    int rc = 0;
+    libxl__json_map_node *map_node = NULL;
+
+    json_sdbf = libxl__json_map_get(PCID_MSG_FIELD_SBDF, request, JSON_STRING);
+    if (!json_sdbf) {
+        make_error_reply(gc, gen, "No mandatory parameter 'sbdf'", command_name);
+        return ERROR_FAIL;
+    }
+    if (sscanf(libxl__json_object_get_string(json_sdbf), PCID_SBDF_FMT,
+               &dom, &bus, &dev, &func) != 4) {
+        make_error_reply(gc, gen, "Can't parse SBDF", command_name);
+        return ERROR_FAIL;
+    }
+
+    json_domid = libxl__json_map_get(PCID_MSG_FIELD_DOMID, request, JSON_INTEGER);
+    if (!json_domid) {
+        make_error_reply(gc, gen, "No mandatory parameter 'domid'", command_name);
+        return ERROR_FAIL;
+    }
+    domainid = libxl__json_object_get_integer(json_domid);
+
+    libxl__yajl_gen_asciiz(gen, PCID_MSG_FIELD_RESOURCES);
+    *response = libxl__json_object_alloc(gc, JSON_MAP);
+
+    sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/resource", dom, bus, dev, func);
+    f = fopen(sysfs_path, "r");
+    start = 0;
+    irq = 0;
+
+    if (f == NULL) {
+        LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
+        rc = ERROR_FAIL;
+        goto out;
+    }
+    for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
+        if (fscanf(f, "0x%llx 0x%llx 0x%llx\n", &start, &end, &flags) != 3)
+            continue;
+        if (start) {
+            struct libxl__json_object *node =
+                libxl__json_object_alloc(gc, JSON_STRING);
+
+            node->u.string = GCSPRINTF("0x%llx 0x%llx 0x%llx", start, end, flags);
+            flexarray_append(iomem->u.array, node);
+        }
+    }
+    fclose(f);
+    if (!pci_supp_legacy_irq())
+        goto out_no_irq;
+    sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/irq", dom, bus, dev, func);
+    f = fopen(sysfs_path, "r");
+    if (f == NULL) {
+        LOGED(ERROR, domainid, "Couldn't open %s", sysfs_path);
+        goto out_no_irq;
+    }
+    if ((fscanf(f, "%u", &irq) == 1) && irq) {
+            struct libxl__json_object *node =
+                libxl__json_object_alloc(gc, JSON_INTEGER);
+
+            node->u.i = irq;
+            flexarray_append(irqs->u.array, node);
+    }
+    fclose(f);
+
+    GCNEW(map_node);
+    map_node->map_key = libxl__strdup(gc, PCID_RESULT_KEY_IRQS);
+    map_node->obj = irqs;
+    flexarray_append((*response)->u.map, map_node);
+out_no_irq:
+    GCNEW(map_node);
+    map_node->map_key = libxl__strdup(gc, PCID_RESULT_KEY_IOMEM);
+    map_node->obj = iomem;
+    flexarray_append((*response)->u.map, map_node);
+    rc = 0;
+out:
+    return rc;
 }
 
 static int pciback_dev_is_assigned(libxl__gc *gc, unsigned int domain,
@@ -635,6 +742,9 @@ static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
                                      request, &command_response);
     else if (strcmp(command_name, PCID_CMD_RESET_DEVICE) == 0)
        ret = process_device_pci_reset(gc, gen, command_name,
+                                     request, &command_response);
+    else if (strcmp(command_name, PCID_CMD_RESOURCE_LIST) == 0)
+       ret = process_list_resources(gc, gen, command_name,
                                      request, &command_response);
     else {
         /*

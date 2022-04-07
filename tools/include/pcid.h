@@ -157,6 +157,32 @@
 
 /*
  *******************************************************************************
+ * Get device resources
+ *
+ * This command returns resource list of device
+ *
+ * Request (see other mandatory fields above):
+ *  - "cmd" field of the request must be set to "resource_list".
+ *  - "sbdf" SBDF of the device in format defined by PCID_SBDF_FMT.
+ *
+ * Response (see other mandatory fields above):
+ *  - "resp" field of the response must be set to "resource_list".
+ * Command specific response data:
+ * +-------------+--------------+----------------------------------------------+
+ * | resources   | map          | key 'iomem' - list of memory regions         |
+ * |             |              | key 'irqs' - list of irqs                    |
+ * +-------------+--------------+----------------------------------------------+
+ */
+#define PCID_CMD_RESOURCE_LIST          "resource_list"
+/* Arguments */
+#define PCID_MSG_FIELD_DOMID            "domid"
+/* Result */
+#define PCID_MSG_FIELD_RESOURCES        "resources"
+#define PCID_RESULT_KEY_IOMEM           "iomem"
+#define PCID_RESULT_KEY_IRQS            "irqs"
+
+/*
+ *******************************************************************************
  * Reset PCI device
  *
  * This command resets PCI device
