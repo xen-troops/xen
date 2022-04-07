@@ -59,7 +59,9 @@ static inline libxl__json_object *libxl__vchan_start_args(libxl__gc *gc)
 void libxl__vchan_arg_add_string(libxl__gc *gc, libxl__json_object *args,
                                  char *key, char *val);
 void libxl__vchan_arg_add_bool(libxl__gc *gc, libxl__json_object *args,
-                               char *key, bool val);
+                                 char *key, bool val);
+void libxl__vchan_arg_add_integer(libxl__gc *gc, libxl__json_object *args,
+                                 char *key,  int val);
 
 libxl__json_object *vchan_send_command(libxl__gc *gc, struct vchan_info *vchan,
                                        char *cmd, libxl__json_object *args);
