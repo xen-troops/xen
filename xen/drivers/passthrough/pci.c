@@ -80,7 +80,13 @@ void pcidevs_read_lock(void)
 
 int pcidevs_read_trylock(void)
 {
-    return read_trylock(&_pcidevs_rwlock);
+    int ret = 1;
+
+    if ( get_cpu_var(pcidevs_rwlock_cnt) == 0 )
+        ret = read_trylock(&_pcidevs_rwlock);
+    if (ret)
+        get_cpu_var(pcidevs_rwlock_cnt)++;
+    return ret;
 }
 
 void pcidevs_read_unlock(void)
