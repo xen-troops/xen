@@ -879,7 +879,7 @@ static void *client_thread(void *arg)
     return NULL;
 }
 
-#define DEFAULT_THREAD_STACKSIZE (16 * 1024)
+#define DEFAULT_THREAD_STACKSIZE (24 * 1024)
 /* NetBSD doesn't have PTHREAD_STACK_MIN. */
 #ifndef PTHREAD_STACK_MIN
 #define PTHREAD_STACK_MIN 0
