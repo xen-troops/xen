@@ -183,6 +183,23 @@
 
 /*
  *******************************************************************************
+ * Write BDF values to the pciback sysfs path
+ *
+ * This command resets PCI device
+ *
+ * Request (see other mandatory fields above):
+ *  - "cmd" field of the request must be set to "write_bdf".
+ *  - "sbdf" SBDF of the device in format defined by PCID_SBDF_FMT.
+ *  - "name" name of sysfs file of pciback driver
+ *
+ * Response (see other mandatory fields above):
+ *  - "resp" field of the response must be set to "write_bdf".
+ */
+#define PCID_CMD_WRITE_BDF               "write_bdf"
+#define PCID_MSG_FIELD_NAME              "name"
+
+/*
+ *******************************************************************************
  * Reset PCI device
  *
  * This command resets PCI device
