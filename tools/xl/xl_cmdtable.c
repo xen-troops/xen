@@ -549,7 +549,7 @@ const struct cmd_spec cmd_table[] = {
       &main_pcid, 0, 1,
       "Daemon that acts as a server for the client in the libxl PCI",
       "[options]",
-      "-F                      Run in the foreground.\n"
+      "-f                      Run in the foreground.\n"
       "-p, --pidfile [FILE]    Write PID to pidfile when daemonizing.",
     },
 #if defined(__i386__) || defined(__x86_64__)

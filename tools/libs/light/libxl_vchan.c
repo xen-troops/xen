@@ -2,8 +2,6 @@
  * Vchan support for JSON messages processing
  *
  * Copyright (C) 2021 EPAM Systems Inc.
- * Author: Oleksandr Andrushchenko <oleksandr_andrushchenko@epam.com>
- * Author: Anastasiia Lukianenko <anastasiia_lukianenko@epam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published
@@ -21,140 +19,112 @@
 #include "libxl_internal.h"
 #include "libxl_vchan.h"
 
-/* Based on QMP Parameters Helpers */
-static void vchan_parameters_common_add(libxl__gc *gc, libxl__json_object **param,
-                                        const char *name, libxl__json_object *obj)
-{
-    libxl__json_map_node *arg = NULL;
+#define VCHAN_EOM       "\r\n"
+/*
+ * http://xenbits.xen.org/docs/unstable/misc/xenstore-paths.html
+ * 1.4.4 Domain Controlled Paths
+ * 1.4.4.1 ~/data [w]
+ * A domain writable path. Available for arbitrary domain use.
+ */
+#define VCHAN_SRV_DIR   "/local/domain"
 
-    if (!*param) {
-        *param = libxl__json_object_alloc(gc, JSON_MAP);
-    }
+struct vchan_state {
+    struct libxenvchan *ctrl;
+
+    /* Server domain ID. */
+    libxl_domid domid;
+
+    /* XenStore path of the server with the ring buffer and event channel. */
+    char *xs_path;
+
+    int select_fd;
+
+    /* GC used for state's lifetime allocations, such as rx_buf. */
+    libxl__gc *gc;
+    /* Receive buffer. */
+    char *rx_buf;
+    /* Current allocated size. */
+    size_t rx_buf_size;
+    /* Actual data in the buffer. */
+    size_t rx_buf_used;
+
+    /* YAJL generator used to parse and create requests/replies. */
+    yajl_gen gen;
+};
+
+int libxl__vchan_field_add_string(libxl__gc *gc, yajl_gen gen,
+                                  const char *field, char *val)
+{
+    libxl__json_object *result;
+
+    libxl__yajl_gen_asciiz(gen, field);
+    result = libxl__json_object_alloc(gc, JSON_STRING);
+    result->u.string = val;
+    return libxl__json_object_to_yajl_gen(gc, gen, result);
+}
+
+static libxl__json_object *libxl__vchan_arg_new(libxl__gc *gc,
+                                                libxl__json_node_type type,
+                                                libxl__json_object *args,
+                                                char *key)
+{
+    libxl__json_map_node *arg;
+    libxl__json_object *obj;
+
+    obj = libxl__json_object_alloc(gc, type);
 
     GCNEW(arg);
 
-    arg->map_key = libxl__strdup(gc, name);
+    arg->map_key = key;
     arg->obj = obj;
 
-    flexarray_append((*param)->u.map, arg);
+    flexarray_append(args->u.map, arg);
+
+    return obj;
 }
 
-
-void libxl__vchan_param_add_string(libxl__gc *gc, libxl__json_object **param,
-                                   const char *name, const char *s)
+void libxl__vchan_arg_add_string(libxl__gc *gc, libxl__json_object *args,
+                                 char *key, char *val)
 {
-    libxl__json_object *obj;
+    libxl__json_object *obj = libxl__vchan_arg_new(gc, JSON_STRING, args, key);
 
-    obj = libxl__json_object_alloc(gc, JSON_STRING);
-    obj->u.string = libxl__strdup(gc, s);
-
-    vchan_parameters_common_add(gc, param, name, obj);
+    obj->u.string = val;
 }
 
-void libxl__vchan_param_add_integer(libxl__gc *gc, libxl__json_object **param,
-                                    const char *name, const long long i)
+void libxl__vchan_arg_add_bool(libxl__gc *gc, libxl__json_object *args,
+                               char *key, bool val)
 {
-    libxl__json_object *obj;
+    libxl__json_object *obj = libxl__vchan_arg_new(gc, JSON_BOOL, args, key);
 
-    obj = libxl__json_object_alloc(gc, JSON_INTEGER);
-    obj->u.i = i;
-
-    vchan_parameters_common_add(gc, param, name, obj);
+    obj->u.b = val;
 }
 
-/* Returns 1 if path exists, 0 if not, ERROR_* (<0) on error. */
-int xs_path_exists(libxl__gc *gc, const char *xs_path)
+void libxl__vchan_arg_add_integer(libxl__gc *gc, libxl__json_object *args,
+                                 char *key,  int val)
 {
-    int rc;
-    const char *dir;
+    libxl__json_object *obj = libxl__vchan_arg_new(gc, JSON_INTEGER, args, key);
 
-    rc = libxl__xs_read_checked(gc, XBT_NULL, xs_path, &dir);
-    if (rc)
-        return rc;
-    if (dir)
-        return 1;
-    return 0;
+    obj->u.i = val;
 }
 
-libxl_domid vchan_find_server(libxl__gc *gc, char *xs_dir, char *xs_path)
+static void reset_yajl_generator(struct vchan_state *state)
 {
-    char **domains;
-    unsigned int i, n;
-    libxl_domid domid = DOMID_INVALID;
-
-    domains = libxl__xs_directory(gc, XBT_NULL, "/local/domain", &n);
-    if (!n)
-        goto out;
-
-    for (i = 0; i < n; i++) {
-        int d;
-
-        if (sscanf(domains[i], "%d", &d) != 1)
-            continue;
-        if (xs_path_exists(gc, GCSPRINTF("%s%d%s", xs_dir, d, xs_path)) > 0) {
-            /* Found the domain where the server lives. */
-            domid = d;
-            break;
-        }
-    }
-
-out:
-    return domid;
+    yajl_gen_clear(state->gen);
+    yajl_gen_reset(state->gen, NULL);
 }
 
-static int vchan_init_client(libxl__gc *gc, struct vchan_state *state, int is_server)
+void vchan_dump_gen(libxl__gc *gc, yajl_gen gen)
 {
-	if (is_server) {
-		state->ctrl = libxenvchan_server_init(NULL, state->domid, state->xs_path, 0, 0);
-	    if (!state->ctrl) {
-	        perror("Libxenvchan server init failed\n");
-	        exit(1);
-	    }
-	} else {
-		state->ctrl = libxenvchan_client_init(CTX->lg, state->domid,
-                                          state->xs_path);
-	    if (!state->ctrl) {
-	        LOGE(ERROR, "Couldn't intialize vchan client");
-	        return ERROR_FAIL;
-	    }
-	}
+    const unsigned char *buf = NULL;
+    size_t len = 0;
 
-    state->select_fd = libxenvchan_fd_for_select(state->ctrl);
-    if (state->select_fd < 0) {
-        LOGE(ERROR, "Couldn't read file descriptor for vchan client");
-        return ERROR_FAIL;
-    }
-
-    LOG(DEBUG, "Intialized vchan client, server at %s", state->xs_path);
-
-    return 0;
+    yajl_gen_get_buf(gen, &buf, &len);
+    LOG(DEBUG, "%s\n", buf);
 }
 
-/*
- * TODO: Running this code in multi-threaded environment
- * The code now assumes that there is only one client invocation process
- * in one domain. In the future, it is necessary to take into account cases
- * when within one domain there will be several requests from a client at the
- * same time. Therefore, it will be necessary to regulate the multithreading
- * of processes.
- */
-struct vchan_state *vchan_get_instance(libxl__gc *gc, libxl_domid domid,
-                                       char *vchan_xs_path, int is_server)
+void vchan_dump_state(libxl__gc *gc, struct vchan_state *state)
 {
-    static struct vchan_state *state = NULL;
-    int ret;
-
-    if (state)
-        return state;
-
-    state = libxl__zalloc(gc, sizeof(*state));
-    state->domid = domid;
-    state->xs_path = vchan_xs_path;
-    ret = vchan_init_client(gc, state, is_server);
-    if (ret)
-        state = NULL;
-
-    return state;
+    vchan_dump_gen(gc, state->gen);
 }
 
 /*
@@ -166,16 +136,17 @@ static int vchan_get_next_msg(libxl__gc *gc, struct vchan_state *state,
 {
     size_t len;
     char *end = NULL;
-    const size_t eoml = sizeof(END_OF_MESSAGE) - 1;
+    const size_t eoml = sizeof(VCHAN_EOM) - 1;
     libxl__json_object *o = NULL;
 
     if (!state->rx_buf_used)
         return ERROR_NOTFOUND;
 
-    /* Search for the end of a message: "\r\n" */
-    end = memmem(state->rx_buf, state->rx_buf_used, END_OF_MESSAGE, eoml);
+    /* Search for the end of a message which is CRLF. */
+    end = memmem(state->rx_buf, state->rx_buf_used, VCHAN_EOM, eoml);
     if (!end)
         return ERROR_NOTFOUND;
+
     len = (end - state->rx_buf) + eoml;
 
     LOGD(DEBUG, state->domid, "parsing %zuB: '%.*s'", len, (int)len,
@@ -183,14 +154,18 @@ static int vchan_get_next_msg(libxl__gc *gc, struct vchan_state *state,
 
     /* Replace \r by \0 so that libxl__json_parse can use strlen */
     state->rx_buf[len - eoml] = '\0';
-    o = libxl__json_parse(gc, state->rx_buf);
 
+    o = libxl__json_parse(gc, state->rx_buf);
+    state->rx_buf_used -= len;
     if (!o) {
         LOGD(ERROR, state->domid, "Parse error");
-        return ERROR_FAIL;
+        /*
+         * In case of parsing error get back to a known state:
+         * reset the buffer and continue reading.
+         */
+        return ERROR_INVAL;
     }
 
-    state->rx_buf_used -= len;
     memmove(state->rx_buf, state->rx_buf + len, state->rx_buf_used);
 
     LOGD(DEBUG, state->domid, "JSON object received: %s", JSON(o));
@@ -200,106 +175,69 @@ static int vchan_get_next_msg(libxl__gc *gc, struct vchan_state *state,
     return 0;
 }
 
-static libxl__json_object *vchan_handle_message(libxl__gc *gc,
-                                                struct vchan_info *vchan,
-                                                const libxl__json_object *request)
+static int vchan_process_packet(libxl__gc *gc, struct vchan_info *vchan,
+                                libxl__json_object **resp_result)
 {
-	libxl__json_object *result = NULL;
-	const libxl__json_object *command_obj;
-	int ret;
-
-	ret = vchan->handle_msg(gc, request, &result);
-	if (ret == ERROR_FAIL) {
-		LOGE(ERROR, "Message handling failed\n");
-	} else if (ret == ERROR_NOTFOUND) {
-		command_obj = libxl__json_map_get(VCHAN_MSG_EXECUTE, request, JSON_ANY);
-		LOGE(ERROR, "Unknown command: %s\n", command_obj->u.string);
-	}
-    return result;
-}
-
-static int set_nonblocking(int fd, int nonblocking)
-{
-    int flags = fcntl(fd, F_GETFL);
-    if (flags == -1)
-        return -1;
-
-    if (nonblocking)
-        flags |= O_NONBLOCK;
-    else
-        flags &= ~O_NONBLOCK;
-
-    if (fcntl(fd, F_SETFL, flags) == -1)
-        return -1;
-
-    return 0;
-}
-
-static libxl__json_object *vchan_process_request(libxl__gc *gc,
-                                                 struct vchan_info *vchan)
-{
-    int rc, ret;
-    ssize_t r;
-    fd_set rfds;
-    fd_set wfds;
-
     while (true) {
-        FD_ZERO(&rfds);
-        FD_ZERO(&wfds);
-        FD_SET(vchan->state->select_fd, &rfds);
-        ret = select(vchan->state->select_fd + 1, &rfds, &wfds, NULL, NULL);
-        if (ret < 0) {
-            LOGE(ERROR, "Error occured during the libxenvchan fd monitoring\n");
-            return NULL;
-        }
-        if (FD_ISSET(vchan->state->select_fd, &rfds))
-            libxenvchan_wait(vchan->state->ctrl);
-        /* Check if the buffer still have space, or increase size */
-        if (vchan->state->rx_buf_size - vchan->state->rx_buf_used < vchan->receive_buf_size) {
-            size_t newsize = vchan->state->rx_buf_size * 2 + vchan->receive_buf_size;
+        struct vchan_state *state = vchan->state;
+        int rc;
+        ssize_t r;
+
+        if (!libxenvchan_is_open(state->ctrl))
+            return ERROR_FAIL;
+
+        /* Check if the buffer still has space or increase its size. */
+        if (state->rx_buf_size - state->rx_buf_used < vchan->receive_buf_size) {
+            size_t newsize = state->rx_buf_size * 2 + vchan->receive_buf_size;
 
             if (newsize > vchan->max_buf_size) {
-                LOGD(ERROR, vchan->state->domid,
+                LOGD(ERROR, state->domid,
                      "receive buffer is too big (%zu > %zu)",
                      newsize, vchan->max_buf_size);
-                return NULL;
+                return ERROR_NOMEM;
             }
-            vchan->state->rx_buf_size = newsize;
-            vchan->state->rx_buf = libxl__realloc(gc, vchan->state->rx_buf,
-                                                  vchan->state->rx_buf_size);
+
+            state->rx_buf_size = newsize;
+            state->rx_buf = libxl__realloc(state->gc, state->rx_buf,
+                                           state->rx_buf_size);
         }
 
-        while (libxenvchan_data_ready(vchan->state->ctrl)) {
-            r = libxenvchan_read(vchan->state->ctrl,
-                                 vchan->state->rx_buf + vchan->state->rx_buf_used,
-                                 vchan->state->rx_buf_size - vchan->state->rx_buf_used);
+        do {
+            libxl__json_object *msg;
+
+            r = libxenvchan_read(state->ctrl,
+                                 state->rx_buf + state->rx_buf_used,
+                                 state->rx_buf_size - state->rx_buf_used);
+
             if (r < 0) {
-                LOGED(ERROR, vchan->state->domid, "error reading");
-                return NULL;
-            }
+                LOGED(ERROR, state->domid, "error reading");
+                return ERROR_FAIL;
+            } else if (r == 0)
+                continue;
 
             LOG(DEBUG, "received %zdB: '%.*s'", r,
-                (int)r, vchan->state->rx_buf + vchan->state->rx_buf_used);
+                (int)r, state->rx_buf + state->rx_buf_used);
 
-            vchan->state->rx_buf_used += r;
-            assert(vchan->state->rx_buf_used <= vchan->state->rx_buf_size);
+            state->rx_buf_used += r;
+            assert(state->rx_buf_used <= state->rx_buf_size);
 
-            libxl__json_object *o = NULL;
             /* parse rx buffer to find one json object */
-            rc = vchan_get_next_msg(gc, vchan->state, &o);
-            if (rc == ERROR_NOTFOUND)
-                break;
-            else if (rc)
-                return NULL;
+            rc = vchan_get_next_msg(gc, state, &msg);
+            if ((rc == ERROR_INVAL) || (rc == ERROR_NOTFOUND))
+                continue;
+            if (rc)
+                return rc;
 
-            return vchan_handle_message(gc, vchan, o);
-        }
-        if ( !libxenvchan_is_open(vchan->state->ctrl)) {
-            if (set_nonblocking(1, 0))
-                return NULL;
-        }
+            if (resp_result)
+                return vchan->handle_response(gc, msg, resp_result);
+            else {
+                reset_yajl_generator(state);
+                return vchan->handle_request(gc, state->gen, msg);
+            }
+        } while (libxenvchan_data_ready(state->ctrl));
     }
-    return NULL;
+
+    return 0;
 }
 
 static int vchan_write(libxl__gc *gc, struct vchan_state *state, char *cmd)
@@ -321,39 +259,238 @@ static int vchan_write(libxl__gc *gc, struct vchan_state *state, char *cmd)
 }
 
 libxl__json_object *vchan_send_command(libxl__gc *gc, struct vchan_info *vchan,
-                                       const char *cmd, libxl__json_object *args)
+                                       char *cmd, libxl__json_object *args)
 {
     libxl__json_object *result;
-    char *json;
+    char *request;
     int ret;
 
-    json = vchan->prepare_cmd(gc, cmd, args, 0);
-    if (!json)
+    reset_yajl_generator(vchan->state);
+    request = vchan->prepare_request(gc, vchan->state->gen, cmd, args);
+    if (!request)
         return NULL;
 
-    ret = vchan_write(gc, vchan->state, json);
+    ret = vchan_write(gc, vchan->state, request);
     if (ret < 0)
         return NULL;
 
-    result = vchan_process_request(gc, vchan);
+    ret = vchan_write(gc, vchan->state, VCHAN_EOM);
+    if (ret < 0)
+        return NULL;
+
+    ret = vchan_process_packet(gc, vchan, &result);
+    if (ret < 0)
+        return NULL;
+
     return result;
 }
 
 int vchan_process_command(libxl__gc *gc, struct vchan_info *vchan)
 {
-    libxl__json_object *result;
-    char *json;
+    char *json_str;
     int ret;
 
-    result = vchan_process_request(gc, vchan);
+    ret = vchan_process_packet(gc, vchan, NULL);
+    if (ret)
+        return ret;
 
-    json = vchan->prepare_cmd(gc, NULL, result, 0);
-    if (!json)
-        return -1;
+    json_str = vchan->prepare_response(gc, vchan->state->gen);
+    if (!json_str)
+        return ERROR_INVAL;
 
-    ret = vchan_write(gc, vchan->state, json);
-    if (ret < 0)
-        return -1;
+    ret = vchan_write(gc, vchan->state, json_str);
+    if (ret)
+        return ret;
+
+    return vchan_write(gc, vchan->state, VCHAN_EOM);
+}
+
+static libxl_domid vchan_find_server(libxl__gc *gc, char *xs_dir, char *xs_file)
+{
+    char **domains;
+    unsigned int i, n;
+    libxl_domid domid = DOMID_INVALID;
+
+    domains = libxl__xs_directory(gc, XBT_NULL, xs_dir, &n);
+    if (!n)
+        goto out;
+
+    for (i = 0; i < n; i++) {
+        const char *tmp;
+        int d;
+
+        if (sscanf(domains[i], "%d", &d) != 1)
+            continue;
+
+        tmp = libxl__xs_read(gc, XBT_NULL,
+                             GCSPRINTF("%s/%d/data/%s", xs_dir, d, xs_file));
+        /* Found the domain where the server lives. */
+        if (tmp) {
+            domid = d;
+            break;
+        }
+    }
+
+out:
+    return domid;
+}
+
+static int vchan_init_client(libxl__gc *gc, struct vchan_state *state,
+                             bool is_server)
+{
+    if (is_server) {
+        state->ctrl = libxenvchan_server_init(NULL, state->domid,
+                                              state->xs_path, 0, 0);
+        if (!state->ctrl) {
+            perror("Couldn't initialize vchan server");
+            exit(1);
+        }
+
+    } else {
+        state->ctrl = libxenvchan_client_init(CTX->lg, state->domid,
+                                              state->xs_path);
+        if (!state->ctrl) {
+            LOGE(ERROR, "Couldn't initialize vchan client");
+            return ERROR_FAIL;
+        }
+    }
+
+    state->ctrl->blocking = 1;
+    state->select_fd = libxenvchan_fd_for_select(state->ctrl);
+    if (state->select_fd < 0) {
+        LOGE(ERROR, "Couldn't read file descriptor for vchan client");
+        return ERROR_FAIL;
+    }
+
+    LOG(DEBUG, "Initialized vchan %s, XenSore at %s",
+        is_server ? "server" : "client", state->xs_path);
 
     return 0;
+}
+
+struct vchan_state *vchan_init_new_state(libxl__gc *gc, libxl_domid domid,
+                                         char *vchan_xs_path, bool is_server)
+{
+    struct vchan_state *state;
+    yajl_gen gen;
+    int ret;
+
+    gen = libxl_yajl_gen_alloc(NULL);
+    if (!gen) {
+        LOGE(ERROR, "Failed to allocate yajl generator");
+        return NULL;
+    }
+
+#if HAVE_YAJL_V2
+    /* Disable beautify for data */
+    yajl_gen_config(gen, yajl_gen_beautify, 0);
+#endif
+
+    state = libxl__zalloc(gc, sizeof(*state));
+    state->domid = domid;
+    state->xs_path = vchan_xs_path;
+    state->gc = gc;
+    ret = vchan_init_client(gc, state, is_server);
+    if (ret) {
+        state = NULL;
+        yajl_gen_free(gen);
+    }
+
+    state->gen = gen;
+
+    return state;
+}
+
+char *vchan_get_server_xs_path(libxl__gc *gc, libxl_domid domid, char *srv_name)
+{
+    return GCSPRINTF(VCHAN_SRV_DIR "/%d/data/%s", domid, srv_name);
+}
+
+/*
+ * Wait for the server to create the ring and event channel:
+ * since the moment we create a XS folder to the moment we start
+ * watching it the server may have already created the ring and
+ * event channel entries. Thus, we cannot watch reliably here without
+ * races, so poll for both entries to be created.
+ */
+static int vchan_wait_server_available(libxl__gc *gc, const char *xs_path)
+{
+    char *xs_ring, *xs_evt;
+    int timeout_ms = 5000;
+
+    xs_ring = GCSPRINTF("%s/ring-ref", xs_path);
+    xs_evt = GCSPRINTF("%s/event-channel", xs_path);
+
+    while (timeout_ms) {
+        unsigned int len;
+        void *file;
+        int entries = 0;
+
+        file = xs_read(CTX->xsh, XBT_NULL, xs_ring, &len);
+        if (file) {
+            entries++;
+            free(file);
+        }
+
+        file = xs_read(CTX->xsh, XBT_NULL, xs_evt, &len);
+        if (file) {
+            entries++;
+            free(file);
+        }
+
+        if (entries == 2)
+            return 0;
+
+        timeout_ms -= 10;
+        usleep(10000);
+    }
+
+    return ERROR_TIMEDOUT;
+}
+
+struct vchan_state *vchan_new_client(libxl__gc *gc, char *srv_name)
+{
+    libxl_domid domid;
+    char *xs_path, *vchan_xs_path;
+    libxl_uuid uuid;
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+
+    domid = vchan_find_server(gc, VCHAN_SRV_DIR, srv_name);
+    if (domid == DOMID_INVALID) {
+        LOGE(ERROR, "Can't find vchan server");
+        return NULL;
+    }
+
+    xs_path = vchan_get_server_xs_path(gc, domid, srv_name);
+    LOG(DEBUG, "vchan server at %s\n", xs_path);
+
+    /* Generate unique client id. */
+    libxl_uuid_generate(&uuid);
+
+    vchan_xs_path = GCSPRINTF("%s/" LIBXL_UUID_FMT, xs_path,
+                              LIBXL_UUID_BYTES((uuid)));
+
+    if (!xs_mkdir(ctx->xsh, XBT_NULL, vchan_xs_path)) {
+        LOG(ERROR, "Can't create xs_dir at %s", vchan_xs_path);
+        return NULL;
+    }
+
+    if (vchan_wait_server_available(gc, vchan_xs_path)) {
+        LOG(ERROR, "Failed to wait for the server to come up at %s",
+            vchan_xs_path);
+        return NULL;
+    }
+
+    return vchan_init_new_state(gc, domid, vchan_xs_path, false);
+}
+
+void vchan_fini_one(libxl__gc *gc, struct vchan_state *state)
+{
+    if (!state)
+        return;
+
+    LOG(DEBUG, "Closing vchan");
+    libxenvchan_close(state->ctrl);
+
+    yajl_gen_free(state->gen);
 }

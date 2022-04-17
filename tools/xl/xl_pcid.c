@@ -47,7 +47,7 @@
 
 int main_pcid(int argc, char *argv[])
 {
-    int opt = 0, daemonize = 1, ret = 0;
+    int opt = 0, daemonize = 1, ret;
     const char *pidfile = NULL;
     static const struct option opts[] = {
         {"pidfile", 1, 0, 'p'},
@@ -55,8 +55,8 @@ int main_pcid(int argc, char *argv[])
         {0, 0, 0, 0}
     };
 
-    SWITCH_FOREACH_OPT(opt, "Fp:", opts, "pcid", 0) {
-    case 'F':
+    SWITCH_FOREACH_OPT(opt, "fp:", opts, "pcid", 0) {
+    case 'f':
         daemonize = 0;
         break;
     case 'p':
@@ -73,6 +73,8 @@ int main_pcid(int argc, char *argv[])
     }
 
     libxl_pcid_process(ctx);
+
+    ret = 0;
 
 out_daemon:
     exit(ret);

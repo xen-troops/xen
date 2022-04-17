@@ -21,52 +21,66 @@
 
 #include <libxenvchan.h>
 
-#define VCHAN_SERVER 1
-#define VCHAN_CLIENT 0
+struct vchan_state;
 
-#define END_OF_MESSAGE "\r\n"
-
-#define VCHAN_MSG_EXECUTE         "execute"
-#define VCHAN_MSG_RETURN          "return"
-#define VCHAN_MSG_ERROR           "error"
-
-struct vchan_state {
-    /* Server domain ID. */
-    libxl_domid domid;
-    /* XenStore path of the server with the ring buffer and event channel. */
-    char *xs_path;
-    struct libxenvchan *ctrl;
-    int select_fd;
-    /* receive buffer */
-    char *rx_buf;
-    size_t rx_buf_size; /* current allocated size */
-    size_t rx_buf_used; /* actual data in the buffer */
-};
-
-typedef int (*vchan_handle_t)(libxl__gc *gc, const libxl__json_object *request,
-                              libxl__json_object **result);
-typedef char* (*vchan_prepare_t)(libxl__gc *gc, const char *cmd,
-                                 libxl__json_object *args, int id);
 struct vchan_info {
     struct vchan_state *state;
-    vchan_handle_t handle_msg;
-    vchan_prepare_t prepare_cmd;
-    /* buffer info */
+
+    /* Process request and produce the result by adding json-objects to gen .*/
+    int (*handle_request)(libxl__gc *gc, yajl_gen gen,
+                      const libxl__json_object *request);
+    /* Convert the prepared response into JSON string. */
+    char *(*prepare_response)(libxl__gc *gc, yajl_gen gen);
+
+    /* Prepare request as JSON string which will be sent. */
+    char *(*prepare_request)(libxl__gc *gc, yajl_gen gen, char *request,
+                             libxl__json_object *args);
+    /* Handle response and produce the output suitable for the requester. */
+    int (*handle_response)(libxl__gc *gc, const libxl__json_object *response,
+                           libxl__json_object **result);
+
+    /* Handle new client connection on the server side. */
+    int (*handle_new_client)(libxl__gc *gc);
+
+    /* Buffer info. */
     size_t receive_buf_size;
     size_t max_buf_size;
+    bool initialized;
 };
 
-void libxl__vchan_param_add_string(libxl__gc *gc, libxl__json_object **param,
-                                   const char *name, const char *s);
-void libxl__vchan_param_add_integer(libxl__gc *gc, libxl__json_object **param,
-                                    const char *name, const long long i);
-int xs_path_exists(libxl__gc *gc, const char *xs_path);
-libxl_domid vchan_find_server(libxl__gc *gc, char *xs_dir, char *xs_path);
-struct vchan_state *vchan_get_instance(libxl__gc *gc, libxl_domid domid,
-                                       char *vchan_xs_path, int is_server);
+int libxl__vchan_field_add_string(libxl__gc *gc, yajl_gen hand,
+                                  const char *field, char *val);
+
+static inline libxl__json_object *libxl__vchan_start_args(libxl__gc *gc)
+{
+    return libxl__json_object_alloc(gc, JSON_MAP);
+}
+
+void libxl__vchan_arg_add_string(libxl__gc *gc, libxl__json_object *args,
+                                 char *key, char *val);
+void libxl__vchan_arg_add_bool(libxl__gc *gc, libxl__json_object *args,
+                                 char *key, bool val);
+void libxl__vchan_arg_add_integer(libxl__gc *gc, libxl__json_object *args,
+                                 char *key,  int val);
+
 libxl__json_object *vchan_send_command(libxl__gc *gc, struct vchan_info *vchan,
-                                       const char *cmd, libxl__json_object *args);
+                                       char *cmd, libxl__json_object *args);
+
+void vchan_reset_generator(struct vchan_state *state);
+
 int vchan_process_command(libxl__gc *gc, struct vchan_info *vchan);
+
+char *vchan_get_server_xs_path(libxl__gc *gc, libxl_domid domid, char *srv_name);
+
+struct vchan_state *vchan_init_new_state(libxl__gc *gc, libxl_domid domid,
+                                         char *vchan_xs_path, bool is_server);
+
+struct vchan_state *vchan_new_client(libxl__gc *gc, char *srv_name);
+
+void vchan_fini_one(libxl__gc *gc, struct vchan_state *state);
+
+void vchan_dump_state(libxl__gc *gc, struct vchan_state *state);
+void vchan_dump_gen(libxl__gc *gc, yajl_gen gen);
 
 #endif /* LIBXL_VCHAN_H */
 
