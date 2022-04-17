@@ -257,6 +257,41 @@ static int pciback_dev_is_assigned(libxl__gc *gc, unsigned int domain,
     return 0;
 }
 
+static int process_pciback_write_bdf(libxl__gc *gc, yajl_gen gen,
+                                   char *command_name,
+                                   const struct libxl__json_object *request,
+                                   struct libxl__json_object **response)
+{
+    const struct libxl__json_object *json_o;
+    unsigned int dom, bus, dev, func;
+    int rc = 0;
+    const char *name;
+    char *spath;
+
+    json_o = libxl__json_map_get(PCID_MSG_FIELD_SBDF, request, JSON_STRING);
+    if (!json_o) {
+        make_error_reply(gc, gen, "No mandatory parameter 'sbdf'", command_name);
+        return ERROR_FAIL;
+    }
+
+    if (sscanf(libxl__json_object_get_string(json_o), PCID_SBDF_FMT,
+           &dom, &bus, &dev, &func) != 4) {
+        make_error_reply(gc, gen, "Can't parse SBDF", command_name);
+        return ERROR_FAIL;
+    }
+
+    json_o = libxl__json_map_get(PCID_MSG_FIELD_NAME, request, JSON_STRING);
+    if (!json_o) {
+        make_error_reply(gc, gen, "No mandatory parameter 'rebind'", command_name);
+        return ERROR_FAIL;
+    }
+
+    name = libxl__json_object_get_string(json_o);
+    spath = GCSPRINTF("%s/%s", SYSFS_PCIBACK_DRIVER, name);
+    LOG(WARN, "sysf_write_bdf(%s, %d, %d, %d, %d)", spath, dom, bus, dev,func);
+    return rc;
+}
+
 #define PCID_INFO_PATH		"pcid"
 #define PCID_BDF_XSPATH         "%04x-%02x-%02x-%01x"
 
@@ -745,6 +780,9 @@ static int pcid_handle_request(libxl__gc *gc, yajl_gen gen,
                                      request, &command_response);
     else if (strcmp(command_name, PCID_CMD_RESOURCE_LIST) == 0)
        ret = process_list_resources(gc, gen, command_name,
+                                     request, &command_response);
+    else if (strcmp(command_name, PCID_CMD_WRITE_BDF) == 0)
+       ret = process_pciback_write_bdf(gc, gen, command_name,
                                      request, &command_response);
     else {
         /*
