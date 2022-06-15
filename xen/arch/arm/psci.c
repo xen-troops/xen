@@ -54,8 +54,9 @@ void call_psci_cpu_off(void)
 
         /* If successfull the PSCI cpu_off call doesn't return */
         arm_smccc_smc(PSCI_0_2_FN32_CPU_OFF, &res);
-        panic("PSCI cpu off failed for CPU%d err=%d\n", smp_processor_id(),
-              PSCI_RET(res));
+        if ( PSCI_RET(res) != PSCI_DENIED )
+            panic("PSCI cpu off failed for CPU%d err=%d\n", smp_processor_id(),
+                PSCI_RET(res));
     }
 }
 
