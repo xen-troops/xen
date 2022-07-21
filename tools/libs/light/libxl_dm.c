@@ -1301,18 +1301,6 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
         if (!libxl__acpi_defbool_val(b_info)) {
             flexarray_append(dm_args, "-no-acpi");
         }
-        if (b_info->max_vcpus > 1) {
-            flexarray_append(dm_args, "-smp");
-            if (b_info->avail_vcpus.size) {
-                int nr_set_cpus = 0;
-                nr_set_cpus = libxl_bitmap_count_set(&b_info->avail_vcpus);
-
-                flexarray_append(dm_args, GCSPRINTF("%d,maxcpus=%d",
-                                                    nr_set_cpus,
-                                                    b_info->max_vcpus));
-            } else
-                flexarray_append(dm_args, GCSPRINTF("%d", b_info->max_vcpus));
-        }
         for (i = 0; i < num_nics; i++) {
             if (nics[i].nictype == LIBXL_NIC_TYPE_VIF_IOEMU) {
                 char *smac = GCSPRINTF(LIBXL_MAC_FMT,
@@ -1552,6 +1540,22 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
     }
     for (i = 0; b_info->extra && b_info->extra[i] != NULL; i++)
         flexarray_append(dm_args, b_info->extra[i]);
+
+    if (b_info->type == LIBXL_DOMAIN_TYPE_HVM ||
+        b_info->type == LIBXL_DOMAIN_TYPE_PVH) {
+        if (b_info->max_vcpus > 1) {
+            flexarray_append(dm_args, "-smp");
+            if (b_info->avail_vcpus.size) {
+                int nr_set_cpus = 0;
+                nr_set_cpus = libxl_bitmap_count_set(&b_info->avail_vcpus);
+
+                flexarray_append(dm_args, GCSPRINTF("%d,maxcpus=%d",
+                                                    nr_set_cpus,
+                                                    b_info->max_vcpus));
+            } else
+                flexarray_append(dm_args, GCSPRINTF("%d", b_info->max_vcpus));
+        }
+    }
 
     flexarray_append(dm_args, "-machine");
     switch (b_info->type) {
@@ -3726,7 +3730,15 @@ int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
         goto out;
     }
 
-    if (d_config->num_vfbs > 0) {
+    /*
+     * On ARM, the xenpv machine can be used for both PV backends and
+     * emulation. The only device emulation supported today is TPM
+     * emulation (in conjunction with SWTPM).
+     *
+     * Here also check for emulated TPM: if enabled xenpv QEMU is
+     * needed.
+     */
+    if (d_config->num_vfbs > 0 || d_config->num_p9s > 0) {
         ret = 1;
         goto out;
     }
