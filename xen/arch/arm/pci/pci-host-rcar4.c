@@ -103,6 +103,7 @@ const struct pci_ecam_ops rcar4_pcie_ops = {
 #define PCIE_ATU_REGION_INDEX1  0x1
 #define PCIE_ATU_TYPE_IO        0x2
 #define PCIE_ATU_TYPE_CFG0      0x4
+#define PCIE_ATU_TYPE_CFG1      0x5
 
 #define PCIE_ATU_BUS(x)         FIELD_PREP(GENMASK(31, 24), x)
 #define PCIE_ATU_DEV(x)         FIELD_PREP(GENMASK(23, 19), x)
@@ -370,14 +371,18 @@ static void __iomem *rcar4_child_map_bus(struct pci_host_bridge *bridge,
                                          pci_sbdf_t sbdf, uint32_t where)
 {
     uint32_t busdev;
+    int type;
 
     busdev = PCIE_ATU_BUS(sbdf.bus) | PCIE_ATU_DEV(PCI_SLOT(sbdf.devfn)) |
         PCIE_ATU_FUNC(PCI_FUNC(sbdf.devfn));
 
-    /* FIXME: Parent is the root bus, so use PCIE_ATU_TYPE_CFG0. */
+    /* TODO: Correct method to determine root bus. */
+    if (sbdf.bus <= 1)
+        type = PCIE_ATU_TYPE_CFG0;
+    else
+        type = PCIE_ATU_TYPE_CFG1;
     dw_pcie_prog_outbound_atu(bridge, PCIE_ATU_REGION_INDEX1,
-                              PCIE_ATU_TYPE_CFG0,
-                              bridge->child_cfg->phys_addr,
+                              type, bridge->child_cfg->phys_addr,
                               busdev, bridge->child_cfg->size);
 
     return bridge->child_cfg->win + where;
