@@ -3,10 +3,13 @@
  * xen/arch/arm/vpci.c
  */
 #include <xen/iocap.h>
+#include <xen/ioreq.h>
 #include <xen/sched.h>
+#include <xen/sizes.h>
 #include <xen/vpci.h>
 #include <xen/keyhandler.h>
 
+#include <asm/ioreq.h>
 #include <asm/mmio.h>
 
 static bool vpci_sbdf_from_gpa(struct domain *d,
@@ -38,6 +41,27 @@ static bool vpci_sbdf_from_gpa(struct domain *d,
     }
 
     return translated;
+}
+
+bool virtio_pci_ioreq_server_get_addr(const struct domain *d,
+                                      paddr_t gpa, uint64_t *addr)
+{
+    pci_sbdf_t sbdf;
+
+    if ( !has_vpci(d) )
+        return false;
+
+    if ( gpa < GUEST_VIRTIO_PCI_ECAM_BASE ||
+         gpa >= GUEST_VIRTIO_PCI_ECAM_BASE + GUEST_VIRTIO_PCI_TOTAL_ECAM_SIZE )
+        return false;
+
+    sbdf.sbdf = VPCI_ECAM_BDF((gpa - GUEST_VIRTIO_PCI_ECAM_BASE) %
+        GUEST_VIRTIO_PCI_HOST_ECAM_SIZE);
+    sbdf.seg = (gpa - GUEST_VIRTIO_PCI_ECAM_BASE) /
+        GUEST_VIRTIO_PCI_HOST_ECAM_SIZE;
+    *addr = ((uint64_t)sbdf.sbdf << 32) | ECAM_REG_OFFSET(gpa);
+
+    return true;
 }
 
 static int vpci_mmio_read(struct vcpu *v, mmio_info_t *info, register_t *r,
@@ -139,6 +163,61 @@ static const struct mmio_handler_ops vpci_mmio_handler_child = {
     .write = vpci_mmio_write_child,
 };
 
+#ifdef CONFIG_VIRTIO_PCI
+static int virtio_pci_mmio_read(struct vcpu *v, mmio_info_t *info,
+                                register_t *r, void *p)
+{
+    const uint8_t access_size = (1 << info->dabt.size) * 8;
+    const uint64_t access_mask = GENMASK_ULL(access_size - 1, 0);
+    int rc = IO_HANDLED;
+
+    ASSERT(!is_hardware_domain(v->domain));
+
+    if ( domain_has_ioreq_server(v->domain) )
+    {
+        rc = try_fwd_ioserv(guest_cpu_user_regs(), v, info);
+        if ( rc == IO_HANDLED )
+        {
+            *r = v->io.req.data;
+            v->io.req.state = STATE_IOREQ_NONE;
+            return IO_HANDLED;
+        }
+        else if ( rc == IO_UNHANDLED )
+            rc = IO_HANDLED;
+    }
+
+    *r = access_mask;
+    return rc;
+}
+
+static int virtio_pci_mmio_write(struct vcpu *v, mmio_info_t *info,
+                                 register_t r, void *p)
+{
+    int rc = IO_HANDLED;
+
+    ASSERT(!is_hardware_domain(v->domain));
+
+    if ( domain_has_ioreq_server(v->domain) )
+    {
+        rc = try_fwd_ioserv(guest_cpu_user_regs(), v, info);
+        if ( rc == IO_HANDLED )
+        {
+            v->io.req.state = STATE_IOREQ_NONE;
+            return IO_HANDLED;
+        }
+        else if ( rc == IO_UNHANDLED )
+            rc = IO_HANDLED;
+    }
+
+    return rc;
+}
+
+static const struct mmio_handler_ops virtio_pci_mmio_handler = {
+    .read  = virtio_pci_mmio_read,
+    .write = virtio_pci_mmio_write,
+};
+#endif
+
 static int vpci_setup_mmio_handler_cb(struct domain *d,
                                       struct pci_host_bridge *bridge)
 {
@@ -197,6 +276,12 @@ int domain_vpci_init(struct domain *d)
                                          GUEST_VPCI_PREFETCH_MEM_SIZE - 1));
     }
 
+#ifdef CONFIG_VIRTIO_PCI
+    register_mmio_handler(d, &virtio_pci_mmio_handler,
+                          GUEST_VIRTIO_PCI_ECAM_BASE,
+                          GUEST_VIRTIO_PCI_TOTAL_ECAM_SIZE, NULL);
+#endif
+
     return 0;
 }
 
@@ -253,6 +338,14 @@ unsigned int domain_vpci_get_num_mmio_handlers(struct domain *d)
         if ( IS_ENABLED(CONFIG_HAS_PCI_MSI) )
             count += VPCI_MAX_VIRT_DEV;
     }
+    /*
+     * In order to not mix PCI passthrough with virtio-pci features we add
+     * one more region to cover the total configuration space for all possible
+     * host bridges which can serve virtio devices for that guest.
+     * We expose one host bridge per virtio backend domain.
+     */
+    if ( IS_ENABLED(CONFIG_VIRTIO_PCI) )
+        count++;
 
     return count;
 }

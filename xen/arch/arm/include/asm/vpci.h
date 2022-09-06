@@ -30,6 +30,17 @@ static inline unsigned int domain_vpci_get_num_mmio_handlers(struct domain *d)
 }
 #endif
 
+#ifdef CONFIG_VIRTIO_PCI
+bool virtio_pci_ioreq_server_get_addr(const struct domain *d,
+                                      paddr_t gpa, uint64_t *addr);
+#else
+static inline bool virtio_pci_ioreq_server_get_addr(const struct domain *d,
+                                                    paddr_t gpa, uint64_t *addr)
+{
+    return false;
+}
+#endif
+
 #endif /* __ARCH_ARM_VPCI_H__ */
 
 /*

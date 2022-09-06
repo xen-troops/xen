@@ -235,6 +235,16 @@ config PCI_PASSTHROUGH
 	help
 	  This option enables PCI device passthrough
 
+config VIRTIO_PCI
+	bool "Support of virtio-pci transport" if EXPERT
+	depends on ARM_64
+	select HAS_PCI
+	select HAS_VPCI
+	select IOREQ_SERVER
+	default n
+	help
+	  This option enables support of virtio-pci transport
+
 endmenu
 
 menu "ARM errata workaround via the alternative framework"
