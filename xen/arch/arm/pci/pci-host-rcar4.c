@@ -369,8 +369,6 @@ static void dw_pcie_prog_outbound_atu(struct pci_host_bridge *pci, int index,
 static void __iomem *rcar4_child_map_bus(struct pci_host_bridge *bridge,
                                          pci_sbdf_t sbdf, uint32_t where)
 {
-    const struct pci_ecam_ops *ops =
-        container_of(bridge->child_ops, const struct pci_ecam_ops, pci_ops);
     uint32_t busdev;
 
     busdev = PCIE_ATU_BUS(sbdf.bus) | PCIE_ATU_DEV(PCI_SLOT(sbdf.devfn)) |
@@ -382,8 +380,7 @@ static void __iomem *rcar4_child_map_bus(struct pci_host_bridge *bridge,
                               bridge->child_cfg->phys_addr,
                               busdev, bridge->child_cfg->size);
 
-
-    return pci_ecam_map_bus_generic(bridge->child_cfg, ops, sbdf, where);
+    return bridge->child_cfg->win + where;
 }
 
 static int rcar4_child_config_read(struct pci_host_bridge *bridge,
