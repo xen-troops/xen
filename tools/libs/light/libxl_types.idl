@@ -288,6 +288,7 @@ libxl_vkb_backend = Enumeration("vkb_backend", [
 libxl_virtio_transport = Enumeration("virtio_transport", [
     (0, "UNKNOWN"),
     (1, "MMIO"),
+    (2, "PCI"),
     ])
 
 libxl_passthrough = Enumeration("passthrough", [
@@ -789,13 +790,21 @@ libxl_device_virtio = Struct("device_virtio", [
     ("backend_domid", libxl_domid),
     ("backend_domname", string),
     ("type", string),
-    ("transport", libxl_virtio_transport),
+    ("u", KeyedUnion(None, libxl_virtio_transport, "transport",
+              [("unknown", None),
+               # Note that virtio-mmio parameters (irq and base) are for internal
+               # use by libxl and can't be modified.
+               ("mmio", Struct(None, [("irq", uint32),
+                                      ("base", uint64),
+                                     ])),
+               ("pci", Struct(None,  [("func", uint8),
+                                      ("dev", uint8),
+                                      ("bus", uint8),
+                                      ("domain", uint16),
+                                     ])),
+              ])),
     ("grant_usage", libxl_defbool),
     ("devid", libxl_devid),
-    # Note that virtio-mmio parameters (irq and base) are for internal
-    # use by libxl and can't be modified.
-    ("irq", uint32),
-    ("base", uint64)
     ])
 
 libxl_device_disk = Struct("device_disk", [

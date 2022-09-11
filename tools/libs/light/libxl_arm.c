@@ -86,8 +86,9 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
 {
     uint32_t nr_spis = 0, cfg_nr_spis = d_config->b_info.arch_arm.nr_spis;
     unsigned int i;
-    uint32_t vuart_irq, virtio_irq = 0;
-    bool vuart_enabled = false, virtio_enabled = false;
+    uint32_t vuart_irq, virtio_mmio_irq_last;
+    bool vuart_enabled = false, virtio_mmio_enabled = false;
+    unsigned int num_virtio_pcidevs = 0;
     uint64_t virtio_mmio_base = GUEST_VIRTIO_MMIO_BASE;
     uint32_t virtio_mmio_irq = GUEST_VIRTIO_MMIO_SPI_FIRST;
     int rc;
@@ -118,10 +119,13 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     for (i = 0; i < d_config->num_virtios; i++) {
         libxl_device_virtio *virtio = &d_config->virtios[i];
 
-        if (virtio->transport != LIBXL_VIRTIO_TRANSPORT_MMIO)
+        if (virtio->transport != LIBXL_VIRTIO_TRANSPORT_MMIO) {
+            num_virtio_pcidevs ++;
             continue;
+        }
 
-        rc = alloc_virtio_mmio_params(gc, &virtio->base, &virtio->irq,
+        rc = alloc_virtio_mmio_params(gc, &virtio->u.mmio.base,
+                                      &virtio->u.mmio.irq,
                                       &virtio_mmio_base, &virtio_mmio_irq);
 
         if (rc)
@@ -134,15 +138,18 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
      * The resulting "nr_spis" needs to cover the highest possible SPI.
      */
     if (virtio_mmio_irq != GUEST_VIRTIO_MMIO_SPI_FIRST) {
-        virtio_enabled = true;
+        virtio_mmio_enabled = true;
 
         /*
          * Assumes that "virtio_mmio_irq" is the highest allocated irq, which is
          * updated from alloc_virtio_mmio_irq() currently.
          */
-        virtio_irq = virtio_mmio_irq - 1;
-        nr_spis = max(nr_spis, virtio_irq - 32 + 1);
+        virtio_mmio_irq_last = virtio_mmio_irq - 1;
+        nr_spis = max(nr_spis, virtio_mmio_irq_last - 32 + 1);
     }
+
+    if (num_virtio_pcidevs)
+        nr_spis = max(nr_spis, (uint32_t)(GUEST_VIRTIO_PCI_SPI_LAST - 32 + 1));
 
     for (i = 0; i < d_config->b_info.num_irqs; i++) {
         uint32_t irq = d_config->b_info.irqs[i];
@@ -164,9 +171,13 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         }
 
         /* The same check as for vpl011 */
-        if (virtio_enabled &&
-            (irq >= GUEST_VIRTIO_MMIO_SPI_FIRST && irq <= virtio_irq)) {
+        if (virtio_mmio_enabled &&
+            (irq >= GUEST_VIRTIO_MMIO_SPI_FIRST && irq <= virtio_mmio_irq_last)) {
             LOG(ERROR, "Physical IRQ %u conflicting with Virtio MMIO IRQ range\n", irq);
+            return ERROR_FAIL;
+        } else if (num_virtio_pcidevs &&
+            (irq >= GUEST_VIRTIO_PCI_SPI_FIRST && irq <= GUEST_VIRTIO_PCI_SPI_LAST)) {
+            LOG(ERROR, "Physical IRQ %u conflicting with Virtio PCI IRQ range\n", irq);
             return ERROR_FAIL;
         }
 
@@ -888,9 +899,10 @@ static int make_vpl011_uart_node(libxl__gc *gc, void *fdt,
     return 0;
 }
 
-static int make_vpci_node(libxl__gc *gc, void *fdt,
-                          const struct arch_info *ainfo,
-                          struct xc_dom_image *dom)
+/* The caller is responsible to complete / close the fdt node */
+static int make_vpci_node_common(libxl__gc *gc, void *fdt,
+                                 const struct arch_info *ainfo,
+                                 struct xc_dom_image *dom)
 {
     int res;
     const uint64_t vpci_ecam_base = GUEST_VPCI_ECAM_BASE;
@@ -929,7 +941,69 @@ static int make_vpci_node(libxl__gc *gc, void *fdt,
         GUEST_VPCI_PREFETCH_MEM_SIZE);
     if (res) return res;
 
-    res = fdt_end_node(fdt);
+    return 0;
+}
+
+#define PCI_NUM_IRQ   4
+#define PCI_IRQ_MAP_STRIDE   8
+
+static int create_vpci_irq_map(libxl__gc *gc, void *fdt)
+{
+    uint32_t full_irq_map[PCI_NUM_IRQ * PCI_NUM_IRQ * PCI_IRQ_MAP_STRIDE] = {0};
+    uint32_t *irq_map = full_irq_map;
+    unsigned int slot, pin;
+    int res;
+
+    res = fdt_property_cell(fdt, "#interrupt-cells", 1);
+    if (res) return res;
+
+    for (slot = 0; slot < PCI_NUM_IRQ; slot++) {
+        for (pin = 0; pin < PCI_NUM_IRQ; pin++) {
+            uint32_t irq = GUEST_VIRTIO_PCI_SPI_FIRST +
+                ((pin + slot) % PCI_NUM_IRQ);
+            unsigned int i = 0;
+
+            /* PCI address (3 cells) */
+            irq_map[i++] = cpu_to_fdt32(PCI_DEVFN(slot, 0) << 8);
+            irq_map[i++] = cpu_to_fdt32(0);
+            irq_map[i++] = cpu_to_fdt32(0);
+
+            /* PCI interrupt (1 cell) */
+            irq_map[i++] = cpu_to_fdt32(pin + 1);
+
+            /* GIC phandle (1 cell) */
+            irq_map[i++] = cpu_to_fdt32(GUEST_PHANDLE_GIC);
+
+            /* GIC interrupt (3 cells) */
+            irq_map[i++] = cpu_to_fdt32(0); /* SPI */
+            irq_map[i++] = cpu_to_fdt32(irq - 32);
+            irq_map[i++] = cpu_to_fdt32(DT_IRQ_TYPE_LEVEL_HIGH);
+
+            irq_map += PCI_IRQ_MAP_STRIDE;
+        }
+    }
+
+    res = fdt_property(fdt, "interrupt-map", full_irq_map, sizeof(full_irq_map));
+    if (res) return res;
+
+    res = fdt_property_values(gc, fdt, "interrupt-map-mask", 4,
+                              PCI_DEVFN(3, 0) << 8, 0, 0, 0x7);
+    if (res) return res;
+
+    return 0;
+}
+
+static int make_vpci_node_virtio(libxl__gc *gc, void *fdt,
+                                 libxl_domain_config *d_config)
+{
+    int res;
+
+    /* The same property as for virtio-mmio device */
+    res = fdt_property(fdt, "dma-coherent", NULL, 0);
+    if (res) return res;
+
+    /* Legacy PCI interrupts (#INTA - #INTD) */
+    res = create_vpci_irq_map(gc, fdt);
     if (res) return res;
 
     return 0;
@@ -1301,6 +1375,7 @@ static int libxl__prepare_dtb(libxl__gc *gc, libxl_domain_config *d_config,
     libxl_domain_build_info *const info = &d_config->b_info;
     bool iommu_needed = false;
     unsigned int i;
+    unsigned int num_virtio_pcidevs = 0;
 
     const libxl_version_info *vers;
     const struct arch_info *ainfo;
@@ -1429,14 +1504,28 @@ next_resize:
             if (libxl_defbool_val(virtio->grant_usage))
                 iommu_needed = true;
 
-            FDT( make_virtio_mmio_node_device(gc, fdt, virtio->base,
-                                              virtio->irq, virtio->type,
+            if (virtio->transport != LIBXL_VIRTIO_TRANSPORT_MMIO) {
+                num_virtio_pcidevs ++;
+                continue;
+            }
+
+            FDT( make_virtio_mmio_node_device(gc, fdt, virtio->u.mmio.base,
+                                              virtio->u.mmio.irq, virtio->type,
                                               virtio->backend_domid,
                                               libxl_defbool_val(virtio->grant_usage)) );
         }
 
+        if (d_config->num_pcidevs || num_virtio_pcidevs) {
+            FDT( make_vpci_node_common(gc, fdt, ainfo, dom) );
+
+            if (num_virtio_pcidevs)
+                FDT( make_vpci_node_virtio(gc, fdt, d_config) );
+
+            FDT( fdt_end_node(fdt) );
+        }
+
         /*
-         * The iommu node should be created only once for all virtio-mmio
+         * The iommu node should be created only once for all virtio
          * devices.
          */
         if (iommu_needed)
