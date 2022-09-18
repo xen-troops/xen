@@ -757,6 +757,10 @@ void vgic_inject_irq(struct domain *d, struct vcpu *v, unsigned int virq,
     struct pending_irq *iter, *n;
     unsigned long flags;
 
+    if ( virq >= GUEST_VIRTIO_PCI_SPI_FIRST &&
+         virq <= GUEST_VIRTIO_PCI_SPI_LAST )
+        vgic_pci_irq_level(d, virq) = level;
+
     /*
      * For edge triggered interrupts we always ignore a "falling edge".
      * For level triggered interrupts we shouldn't, but do anyways.

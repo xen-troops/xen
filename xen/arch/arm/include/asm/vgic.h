@@ -127,6 +127,12 @@ struct vgic_irq_rank {
     uint8_t vcpu[32];
 };
 
+/* GUEST_VIRTIO_PCI_SPI_LAST - GUEST_VIRTIO_PCI_SPI_FIRST */
+#define NR_PCI_IRQS   4
+
+#define vgic_pci_irq_level(d, irq)   \
+    ((d)->arch.vgic.pci_irq_level[(irq) - GUEST_VIRTIO_PCI_SPI_FIRST])
+
 struct vgic_dist {
     /* Version of the vGIC */
     enum gic_version version;
@@ -165,6 +171,8 @@ struct vgic_dist {
      * eSPIs [nr_spis..nr_spis + nr_espis - 1]
      */
     struct pending_irq *pending_irqs;
+    /* Current legacy PCI IRQ levels */
+    bool pci_irq_level[NR_PCI_IRQS];
     /* Base address for guest GIC */
     paddr_t dbase; /* Distributor base address */
     paddr_t cbase; /* CPU interface base address */

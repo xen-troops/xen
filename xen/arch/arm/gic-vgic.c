@@ -235,6 +235,16 @@ static void gic_update_one_lr(struct vcpu *v, int i)
                 irq_set_affinity(p->desc, cpumask_of(v_target->processor));
                 clear_bit(GIC_IRQ_GUEST_MIGRATING, &p->status);
             }
+
+            if ( irq >= GUEST_VIRTIO_PCI_SPI_FIRST &&
+                 irq <= GUEST_VIRTIO_PCI_SPI_LAST &&
+                 vgic_pci_irq_level(v->domain, irq) )
+            {
+                set_bit(GIC_IRQ_GUEST_QUEUED, &p->status);
+                if ( test_bit(GIC_IRQ_GUEST_ENABLED, &p->status) )
+                    gic_raise_guest_irq(v, irq, p->priority);
+                list_add_tail(&p->inflight, &v->arch.vgic.inflight_irqs);
+            }
         }
     }
 }
