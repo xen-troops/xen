@@ -291,6 +291,11 @@ static void dw_pcie_prog_outbound_atu_unroll(struct pci_host_bridge *pci,
                              PCIE_ATU_ENABLE);
 
     /*
+     * HACK: We need to delay there, because the next code does not
+     * work as expected on S4
+     */
+    mdelay(1);
+    /*
      * Make sure ATU enable takes effect before any subsequent config
      * and I/O accesses.
      */
