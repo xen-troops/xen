@@ -368,6 +368,14 @@ static void dw_pcie_prog_outbound_atu(struct pci_host_bridge *pci, int index,
                                       int type, uint64_t cpu_addr,
                                       uint64_t pci_addr, uint64_t size)
 {
+    static uint64_t prev_addr = ~0;
+
+    /* Simple optimization to not-program ATU for every transaction */
+    if (prev_addr == pci_addr)
+        return;
+
+    prev_addr = pci_addr;
+
     __dw_pcie_prog_outbound_atu(pci, 0, index, type,
                                 cpu_addr, pci_addr, size);
 }
