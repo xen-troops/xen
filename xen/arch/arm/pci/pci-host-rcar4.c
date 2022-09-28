@@ -387,7 +387,7 @@ static void __iomem *rcar4_child_map_bus(struct pci_host_bridge *bridge,
     int type;
 
     busdev = PCIE_ATU_BUS(sbdf.bus) | PCIE_ATU_DEV(PCI_SLOT(sbdf.devfn)) |
-        PCIE_ATU_FUNC(PCI_FUNC(sbdf.devfn));
+        PCIE_ATU_FUNC(0);
 
     /* TODO: Correct method to determine root bus. */
     if (sbdf.bus <= 1)
@@ -398,7 +398,7 @@ static void __iomem *rcar4_child_map_bus(struct pci_host_bridge *bridge,
                               type, bridge->child_cfg->phys_addr,
                               busdev, bridge->child_cfg->size);
 
-    return bridge->child_cfg->win + where;
+    return bridge->child_cfg->win + ((uint32_t)sbdf.fn << 16) + where;
 }
 
 static int rcar4_child_config_read(struct pci_host_bridge *bridge,
