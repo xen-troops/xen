@@ -13,6 +13,7 @@
  */
 
 /* Includes */
+#include <xen/config.h>
 #include <xen/err.h>
 #include <xen/types.h>
 #include <xen/init.h>
@@ -33,19 +34,17 @@ struct scu_mu
     spinlock_t lock;
 };
 
-struct scu_mu *scu_mu;
-
 /* Local Defines */
 #define MU_SIZE 0x10000
 
 /* Local Types */
-unsigned int scu_mu_id;
 sc_ipc_t mu_ipcHandle;
 
 /* Local functions */
 
 /* Local variables */
 static uint32_t gIPCport;
+static struct scu_mu *scu_mu;
 static bool scu_mu_init;
 
 /*--------------------------------------------------------------------------*/
@@ -85,7 +84,7 @@ static uint32_t *sc_ipc_get_mu_base(uint32_t id)
 int sc_ipc_getMuID(uint32_t *mu_id)
 {
 	if (scu_mu_init) {
-		*mu_id = scu_mu_id;
+		*mu_id = gIPCport;
 		return SC_ERR_NONE;
 	}
 	return SC_ERR_UNAVAILABLE;
@@ -271,9 +270,15 @@ int imx8_sc_rpc(XEN_GUEST_HANDLE_PARAM(char) x1, unsigned long x2)
 int __init imx8_mu_init(void)
 {
 	struct dt_device_node *np;
+	struct dt_device_node *np_tmp;
+	struct dt_device_node *available_mus[5];
+	unsigned int num_parsed_mus = 0;
+	unsigned int num_available_mus = 0;
+	unsigned int scu_mu_id = 0;
 	u64 size, addr;
 	int err;
 	sc_err_t sciErr;
+	sc_rm_pt_t pt;
 
 	np = dt_find_compatible_node(NULL, NULL, "fsl,imx8qm-mu");
 	if (!np)
@@ -285,15 +290,27 @@ int __init imx8_mu_init(void)
 	        return -ENOENT;
 	    }
 	} else {
-	    dt_for_each_compatible_node(NULL, np, NULL, "fsl,imx8qm-mu")
-            {
-                /*
-	         * The node marked, xen,no-map will be used by xen, and
-	         * mmio trapped for linux
-	         */
-                if (dt_get_property(np, "xen,no-map", NULL))
-                    break;
-            }
+		dt_for_each_compatible_node(NULL, np_tmp, NULL, "fsl,imx8qm-mu") {
+			/*
+			 * The node marked "xen,no-map" will be used by xen, and
+			 * mmio trapped for Dom0. Other nodes that are enabled
+			 * and not marked for passthrough will be analyzed later.
+			 */
+			if (dt_get_property(np_tmp, "xen,no-map", NULL)) {
+				np = np_tmp;
+			} else if (dt_device_is_available(np_tmp) &&
+				   !dt_device_for_passthrough(np_tmp)) {
+
+					available_mus[num_available_mus++] = np_tmp;
+			}
+
+			/* No reason to continue if all MUs have already been parsed */
+			num_parsed_mus++;
+			if (num_parsed_mus >= ARRAY_SIZE(available_mus))
+			{
+				break;
+			}
+		}
 	}
 
 	err = dt_device_get_address(np, 0, &addr, &size);
@@ -312,11 +329,13 @@ int __init imx8_mu_init(void)
 	    return -ENOMEM;
 	}
 
-	if (!dt_property_read_u32(np, "fsl,scu_ap_mu_id", &scu_mu_id))
-            printk("No fsl,scu_ap_mu_id\n");
+	if (!dt_property_read_u32(np, "fsl,scu_ap_mu_id", &scu_mu_id)) {
+		printk("No fsl,scu_ap_mu_id\n");
+		scu_mu_id = 0;
+	}
 
 	spin_lock_init(&scu_mu->lock);
-   
+
 	if (!scu_mu_init) {
 		uint32_t i;
 
@@ -335,8 +354,30 @@ int __init imx8_mu_init(void)
 	if (sciErr != SC_ERR_NONE) {
 		printk("Cannot open MU channel to SCU\n");
 		return sciErr;
-	};
+	}
+
+	/* Other MUs might need to be powered ON on init (e.g. for Dom0 usage) */
+	sc_rm_get_partition(mu_ipcHandle, &pt);
+	for (; num_available_mus > 0; num_available_mus--) {
+		u32 resource_id;
+
+		np = available_mus[num_available_mus - 1];
+
+		err = dt_property_read_u32_array(np, "fsl,sc_init_on_rsrc_id",
+						 &resource_id, 1);
+		if (!err) {
+			sc_pm_set_resource_power_mode(-1, resource_id,
+						      SC_PM_PW_MODE_ON);
+			sc_rm_assign_resource(-1, pt, resource_id);
+		} else if (err == -EINVAL) {
+			printk(XENLOG_DEBUG "No resource ID for MU at %s\n",
+			       np->full_name);
+		} else {
+			printk(XENLOG_ERR "Failed to get resource ID for MU at %s\n",
+			       np->full_name);
+		}
+	}
 
 	printk("*****Initialized MU\n");
-	return scu_mu_id;
+	return 0;
 }
