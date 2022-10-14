@@ -256,7 +256,7 @@ static void handle_perf_req(struct scmi_shared_mem *data)
         for ( i = 0; i < resp->num_returned; i++ )
         {
             resp->opp[i].perf_val = idx + i + 1;
-            resp->opp[i].power = resp->opp[i].perf_val;
+            resp->opp[i].power = resp->opp[i].perf_val * resp->opp[i].perf_val;
             resp->opp[i].transition_latency_us = cpu_to_le16(1);
         }
 
