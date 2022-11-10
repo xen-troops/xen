@@ -312,7 +312,7 @@ static libxl_domid vchan_find_server(libxl__gc *gc, char *xs_dir, char *xs_file)
     libxl_domid domid = DOMID_INVALID;
 
     domains = libxl__xs_directory(gc, XBT_NULL, xs_dir, &n);
-    if (!n)
+    if (domains == NULL)
         goto out;
 
     for (i = 0; i < n; i++) {
