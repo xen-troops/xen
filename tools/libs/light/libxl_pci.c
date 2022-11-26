@@ -154,14 +154,11 @@ static char *pci_prepare_request(libxl__gc *gc, yajl_gen gen, char *cmd,
 
 static struct vchan_info *pci_vchan_get_client(libxl__gc *gc)
 {
-    static struct vchan_info *vchan = NULL;
+    struct vchan_info *vchan;
 
-    if (vchan) {
-        if (vchan->initialized)
-            return vchan;
-    } else {
-        vchan = libxl__zalloc(gc, sizeof(*vchan));
-    }
+    vchan = libxl__zalloc(gc, sizeof(*vchan));
+    if (!vchan)
+        goto out;
     vchan->state = vchan_new_client(gc, PCID_SRV_NAME);
     if (!(vchan->state)) {
         vchan = NULL;
@@ -172,7 +169,6 @@ static struct vchan_info *pci_vchan_get_client(libxl__gc *gc)
     vchan->prepare_request = pci_prepare_request;
     vchan->receive_buf_size = PCI_RECEIVE_BUFFER_SIZE;
     vchan->max_buf_size = PCI_MAX_SIZE_RX_BUF;
-    vchan->initialized = true;
 
 out:
     return vchan;
@@ -181,7 +177,6 @@ out:
 static void pci_vchan_free(libxl__gc *gc, struct vchan_info *vchan)
 {
     vchan_fini_one(gc, vchan->state);
-    vchan->initialized = false;
 }
 
 static unsigned int pci_encode_bdf(libxl_device_pci *pci)
