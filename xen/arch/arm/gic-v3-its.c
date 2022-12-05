@@ -189,7 +189,7 @@ static int its_send_command(struct host_its *hw_its, const void *its_cmd)
     }
 
     memcpy(hw_its->cmd_buf + writep, its_cmd, ITS_CMD_SIZE);
-    if ( hw_its->flags & HOST_ITS_FLUSH_CMD_QUEUE )
+    if ( hw_its->flags & HOST_ITS_FLUSH_BUFFERS )
         clean_dcache_va_range(hw_its->cmd_buf + writep, ITS_CMD_SIZE);
     else
         dsb(ishst);
@@ -447,7 +447,7 @@ static void *its_map_cbaser(struct host_its *its)
      */
     if ( !(reg & GITS_BASER_INNER_CACHEABILITY_MASK) )
     {
-        its->flags |= HOST_ITS_FLUSH_CMD_QUEUE;
+        its->flags |= HOST_ITS_FLUSH_BUFFERS;
         printk(XENLOG_WARNING "using non-cacheable ITS command queue\n");
     }
 
@@ -491,6 +491,8 @@ retry:
         xfree(buffer);
         return -ERANGE;
     }
+
+    clean_dcache_va_range(buffer, table_size);
 
     reg  = attr;
     reg |= (pagesz << GITS_BASER_PAGE_SIZE_SHIFT);
@@ -840,6 +842,9 @@ int gicv3_its_map_guest_device(struct domain *d,
                                     gicv3_its_get_memflags());
     if ( !itt_addr )
         goto out_unlock;
+
+    if ( hw_its->flags & HOST_ITS_FLUSH_BUFFERS )
+        clean_dcache_va_range(itt_addr, nr_events * hw_its->itte_size);
 
     dev = xzalloc(struct its_device);
     if ( !dev )

@@ -109,7 +109,7 @@
 #include <xen/device_tree.h>
 #include <xen/rbtree.h>
 
-#define HOST_ITS_FLUSH_CMD_QUEUE        (1U << 0)
+#define HOST_ITS_FLUSH_BUFFERS          (1U << 0)
 #define HOST_ITS_USES_PTA               (1U << 1)
 
 #define HOST_ITS_WORKAROUND_NC_NS       (1U << 0)
