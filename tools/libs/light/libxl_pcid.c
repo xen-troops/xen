@@ -854,6 +854,20 @@ static void server_fini_one(libxl__gc *gc, struct vchan_client *client)
     free(client);
 }
 
+static bool is_vchan_exist(libxl_ctx *ctx, char *watch_dir)
+{
+    char **dir = NULL;
+    unsigned int nb;
+    bool ret = false;
+
+    dir = xs_directory(ctx->xsh, XBT_NULL, watch_dir, &nb);
+    if (dir) {
+        free(dir);
+        ret = true;
+    }
+    return ret;
+}
+
 static void *client_thread(void *arg)
 {
     struct vchan_client *client = arg;
@@ -1081,7 +1095,7 @@ int libxl_pcid_process(libxl_ctx *ctx)
         }
         pthread_mutex_unlock(&vchan_client_mutex);
 
-        if (!found)
+        if (!found && is_vchan_exist(ctx, watch_ret[XS_WATCH_PATH]))
             init_new_client(ctx, gc, &vchan_clients, watch_ret);
     }
 
