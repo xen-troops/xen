@@ -851,6 +851,7 @@ static void server_fini_one(libxl__gc *gc, struct vchan_client *client)
     pthread_mutex_unlock(&vchan_client_mutex);
 
     GC_FREE;
+    free(client->watch_ret);
     free(client);
 }
 
