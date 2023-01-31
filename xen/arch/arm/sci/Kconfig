@@ -1,0 +1,10 @@
+config SCMI_SMC
+	bool "Enable SCMI-SMC mediator driver"
+	default n
+	depends on ARM_SCI
+	help
+
+	Enables mediator in XEN to pass SCMI requests from Domains to ATF.
+	This feature allows drivers from Domains to work with System
+	Controllers (such as power,resets,clock etc.). SCP is used as transport
+	for communication.
