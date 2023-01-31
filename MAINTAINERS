@@ -538,6 +538,12 @@ S:	Supported
 F:	xen/arch/arm/include/asm/tee
 F:	xen/arch/arm/tee/
 
+SCI MEDIATORS
+M:	Oleksii Moisieiev <oleksii_moisieiev@epam.com>
+S:	Supported
+F:	xen/arch/arm/sci
+F:	xen/include/asm-arm/sci
+
 TOOLSTACK
 M:	Wei Liu <wl@xen.org>
 M:	Anthony PERARD <anthony.perard@citrix.com>

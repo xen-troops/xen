@@ -329,6 +329,9 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_guest_context_t);
 
 #define XEN_DOMCTL_CONFIG_PCI_VPCI      (1U << 0)
 
+#define XEN_DOMCTL_CONFIG_ARM_SCI_NONE      0
+#define XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC  1
+
 struct xen_arch_domainconfig {
     /* IN/OUT */
     uint8_t gic_version;
@@ -336,6 +339,8 @@ struct xen_arch_domainconfig {
     uint8_t sve_vl;
     /* IN */
     uint16_t tee_type;
+    /* IN */
+    uint16_t arm_sci_type;
     /* IN */
     uint32_t nr_spis;
     /*
@@ -469,6 +474,9 @@ typedef uint64_t xen_callback_t;
 /* ACPI tables physical address */
 #define GUEST_ACPI_BASE xen_mk_ullong(0x20000000)
 #define GUEST_ACPI_SIZE xen_mk_ullong(0x02000000)
+
+/* SCI mediator size */
+#define GUEST_SCI_SHMEM_SIZE   xen_mk_ullong(0x01000)
 
 /* PL011 mappings */
 #define GUEST_PL011_BASE    xen_mk_ullong(0x22000000)
