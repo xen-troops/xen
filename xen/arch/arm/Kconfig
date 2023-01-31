@@ -254,6 +254,8 @@ config ARM_SCI
 	  support. It allows guests to control system resourcess via one of
 	  ARM_SCI mediators implemented in XEN.
 
+	source "arch/arm/sci/Kconfig"
+
 endmenu
 
 menu "ARM errata workaround via the alternative framework"
