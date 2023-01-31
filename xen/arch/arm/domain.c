@@ -25,6 +25,7 @@
 #include <asm/platform.h>
 #include <asm/procinfo.h>
 #include <asm/regs.h>
+#include <asm/sci/sci.h>
 #include <asm/tee/tee.h>
 #include <asm/vfp.h>
 #include <asm/vgic.h>
@@ -694,6 +695,13 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
         return -EINVAL;
     }
 
+    if ( config->arch.arm_sci_type != XEN_DOMCTL_CONFIG_ARM_SCI_NONE &&
+         config->arch.arm_sci_type != sci_get_type() )
+    {
+        dprintk(XENLOG_INFO, "Unsupported ARM_SCI type\n");
+        return -EINVAL;
+    }
+
     return 0;
 }
 
@@ -777,6 +785,12 @@ int arch_domain_create(struct domain *d,
         /* At this stage vgic_reserve_virq should never fail */
         if ( !vgic_reserve_virq(d, GUEST_EVTCHN_PPI) )
             BUG();
+        if ( config->arch.arm_sci_type != XEN_DOMCTL_CONFIG_ARM_SCI_NONE )
+        {
+            if ( (rc = sci_domain_init(d, config->arch.arm_sci_type,
+                                        &config->arch)) != 0)
+                goto fail;
+        }
     }
 
     /*
@@ -853,6 +867,7 @@ void arch_domain_destroy(struct domain *d)
     domain_vgic_free(d);
     domain_vuart_free(d);
     free_xenheap_page(d->shared_info);
+    sci_domain_destroy(d);
 #ifdef CONFIG_ACPI
     free_xenheap_pages(d->arch.efi_acpi_table,
                        get_order_from_bytes(d->arch.efi_acpi_len));
@@ -1058,6 +1073,7 @@ enum {
     PROG_p2m_root,
     PROG_p2m,
     PROG_p2m_pool,
+    PROG_sci,
     PROG_done,
 };
 
@@ -1117,6 +1133,10 @@ int domain_relinquish_resources(struct domain *d)
 
     PROGRESS(mapping):
         ret = relinquish_p2m_mapping(d);
+        if ( ret )
+            return ret;
+    PROGRESS(sci):
+        ret = sci_relinquish_resources(d);
         if ( ret )
             return ret;
 

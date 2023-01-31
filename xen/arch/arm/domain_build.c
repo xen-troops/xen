@@ -24,6 +24,7 @@
 #include <asm/setup.h>
 #include <asm/tee/tee.h>
 #include <asm/pci.h>
+#include <asm/sci/sci.h>
 #include <asm/platform.h>
 #include <asm/psci.h>
 #include <asm/setup.h>
@@ -2091,6 +2092,10 @@ static int __init construct_dom0(struct domain *d)
     if ( rc < 0 )
         return rc;
 
+    rc = sci_domain_init(d, sci_get_type(), NULL);
+    if ( rc < 0 )
+        return rc;
+
     if ( acpi_disabled )
     {
         rc = prepare_dtb_hwdom(d, &kinfo);
@@ -2132,6 +2137,8 @@ void __init create_dom0(void)
         printk(XENLOG_WARNING "Maximum number of vGIC IRQs exceeded.\n");
     dom0_cfg.arch.tee_type = tee_get_type();
     dom0_cfg.max_vcpus = dom0_max_vcpus();
+
+    dom0_cfg.arch.arm_sci_type = sci_get_type();
 
     if ( iommu_enabled )
         dom0_cfg.flags |= XEN_DOMCTL_CDF_iommu;

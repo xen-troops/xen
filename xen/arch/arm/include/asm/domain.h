@@ -8,6 +8,7 @@
 #include <asm/vfp.h>
 #include <asm/mmio.h>
 #include <asm/gic.h>
+#include <asm/sci/sci.h>
 #include <asm/vgic.h>
 #include <asm/vpl011.h>
 #include <public/hvm/params.h>
@@ -117,6 +118,10 @@ struct arch_domain
 
 #ifdef CONFIG_TEE
     void *tee;
+#endif
+#ifdef CONFIG_ARM_SCI
+    struct sci_channel sci_channel;
+    void *sci;
 #endif
 
     /* OSID used by virtual GSX device */

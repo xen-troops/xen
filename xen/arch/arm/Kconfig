@@ -245,6 +245,15 @@ config VIRTIO_PCI
 	help
 	  This option enables support of virtio-pci transport
 
+config ARM_SCI
+	bool "Enable ARM_SCI mediators support"
+	depends on ARM
+	default n
+	help
+	  This option enables generic ARM_SCI (System Control Interface) mediators
+	  support. It allows guests to control system resourcess via one of
+	  ARM_SCI mediators implemented in XEN.
+
 endmenu
 
 menu "ARM errata workaround via the alternative framework"
