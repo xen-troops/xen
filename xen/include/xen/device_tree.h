@@ -966,6 +966,12 @@ int dt_map_id(const struct dt_device_node *np, uint32_t id,
               const char *map_name, const char *map_mask_name,
               struct dt_device_node **target, uint32_t *id_out);
 
+/*
+ * dt_find_node_by_phandle - Find a node given a phandle
+ * @handle: phandle of the node to find
+ *
+ * Returns a node pointer.
+ */
 struct dt_device_node *dt_find_node_by_phandle(dt_phandle handle);
 
 #ifdef CONFIG_DEVICE_TREE_DEBUG
