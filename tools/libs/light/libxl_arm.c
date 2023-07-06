@@ -351,6 +351,9 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     } else
         config->arch.vgsx_osid = 0;
 
+    if (d_config->num_pcidevs)
+        config->arch.pci_flags = XEN_DOMCTL_CONFIG_PCI_VPCI;
+
     return 0;
 }
 
