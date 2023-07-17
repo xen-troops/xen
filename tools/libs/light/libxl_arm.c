@@ -946,6 +946,7 @@ static int make_vpci_node_common(libxl__gc *gc, void *fdt,
 
 #define PCI_NUM_IRQ   4
 #define PCI_IRQ_MAP_STRIDE   8
+#define PCI_IOMMU_MAP_STRIDE 4
 
 static int create_vpci_irq_map(libxl__gc *gc, void *fdt)
 {
@@ -993,6 +994,67 @@ static int create_vpci_irq_map(libxl__gc *gc, void *fdt)
     return 0;
 }
 
+static int create_vpci_iommu_map(libxl__gc *gc, void *fdt,
+                                 libxl_domain_config *d_config)
+{
+    uint32_t *full_iommu_map = NULL;
+    uint32_t *iommu_map;
+    unsigned int i, ntranslated = 0;
+    int res;
+
+    for (i = 0; i < d_config->num_virtios; i++) {
+        libxl_device_virtio *virtio = &d_config->virtios[i];
+
+        if (libxl_defbool_val(virtio->grant_usage) &&
+            virtio->transport == LIBXL_VIRTIO_TRANSPORT_PCI) {
+            ntranslated++;
+        }
+    }
+
+    if (!ntranslated)
+        return 0;
+
+    full_iommu_map = malloc(ntranslated * sizeof(uint32_t) * PCI_IOMMU_MAP_STRIDE);
+    if (!full_iommu_map)
+        return -ENOMEM;
+
+    iommu_map = full_iommu_map;
+
+    /* See Linux Documentation/devicetree/bindings/pci/pci-iommu.txt */
+    for (i = 0; i < d_config->num_virtios; i++) {
+        libxl_device_virtio *virtio = &d_config->virtios[i];
+
+        if (libxl_defbool_val(virtio->grant_usage) &&
+            virtio->transport == LIBXL_VIRTIO_TRANSPORT_PCI) {
+            uint16_t bdf = (virtio->u.pci.bus << 8) |
+                (virtio->u.pci.dev << 3) | virtio->u.pci.func;
+            unsigned int j = 0;
+
+            /* rid_base (1 cell) */
+            iommu_map[j++] = cpu_to_fdt32(bdf);
+
+            /* iommu_phandle (1 cell) */
+            iommu_map[j++] = cpu_to_fdt32(GUEST_PHANDLE_IOMMU);
+
+            /* iommu_base (1 cell) */
+            iommu_map[j++] = cpu_to_fdt32(virtio->backend_domid);
+
+            /* length (1 cell) */
+            iommu_map[j++] = cpu_to_fdt32(1 << 3);
+
+            iommu_map += PCI_IOMMU_MAP_STRIDE;
+        }
+    }
+
+    res = fdt_property(fdt, "iommu-map", full_iommu_map,
+                       ntranslated * sizeof(uint32_t) * PCI_IOMMU_MAP_STRIDE);
+    if (res) return res;
+
+    free(full_iommu_map);
+
+    return 0;
+}
+
 static int make_vpci_node_virtio(libxl__gc *gc, void *fdt,
                                  libxl_domain_config *d_config)
 {
@@ -1004,6 +1066,10 @@ static int make_vpci_node_virtio(libxl__gc *gc, void *fdt,
 
     /* Legacy PCI interrupts (#INTA - #INTD) */
     res = create_vpci_irq_map(gc, fdt);
+    if (res) return res;
+
+    /* xen,grant-dma bindings */
+    res = create_vpci_iommu_map(gc, fdt, d_config);
     if (res) return res;
 
     return 0;
