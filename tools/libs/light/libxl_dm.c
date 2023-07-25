@@ -3801,15 +3801,6 @@ int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
         goto out;
     }
 
-    for (i = 0; i < d_config->num_virtios; i++) {
-        libxl_device_virtio *virtio = &d_config->virtios[i];
-
-        if (virtio->backend_domid == LIBXL_TOOLSTACK_DOMID) {
-            ret = 1;
-            goto out;
-        }
-    }
-
     for (idx = 0;; idx++) {
         dt = device_type_tbl[idx];
         if (!dt)
