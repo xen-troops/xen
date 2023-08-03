@@ -38,6 +38,7 @@ libxl__device_kind = Enumeration("device_kind", [
     (19, "VBD3"),
     (20, "XEN_9PFS"),
     (21, "VGSX"),
+    (22, "QVIRTIO"),
     ])
 
 libxl__console_backend = Enumeration("console_backend", [

@@ -755,7 +755,8 @@ typedef struct {
     (dev)->backend_kind == LIBXL__DEVICE_KIND_VFB || \
     (dev)->backend_kind == LIBXL__DEVICE_KIND_QUSB || \
     (dev)->backend_kind == LIBXL__DEVICE_KIND_9PFS || \
-    (dev)->backend_kind == LIBXL__DEVICE_KIND_VKBD)
+    (dev)->backend_kind == LIBXL__DEVICE_KIND_VKBD || \
+    (dev)->backend_kind == LIBXL__DEVICE_KIND_QVIRTIO)
 
 #define XC_PCI_BDF             "0x%x, 0x%x, 0x%x, 0x%x"
 #define PCI_DEVFN(slot, func)   ((((slot) & 0x1f) << 3) | ((func) & 0x07))
@@ -4112,6 +4113,7 @@ struct libxl__dm_spawn_state {
     const char *dm;
     /* filled in by user, must remain valid: */
     uint32_t guest_domid; /* domain being served */
+    uint32_t backend_domid;
     libxl_domain_config *guest_config;
     libxl__domain_build_state *build_state; /* relates to guest_domid */
     libxl__dm_spawn_cb *callback;
@@ -4151,6 +4153,11 @@ _hidden char *libxl__stub_dm_name(libxl__gc *gc, const char * guest_name);
 _hidden void libxl__spawn_qemu_xenpv_backend(libxl__egc *egc,
                                         libxl__dm_spawn_state *dmss);
 _hidden int libxl__destroy_qemu_xenpv_backend(libxl__gc *gc, uint32_t domid);
+
+_hidden int libxl__save_qdisk_backend_dm_args(libxl__gc *gc,
+                                              uint32_t domid,
+                                              uint32_t backend_domid,
+                                              const libxl_domain_build_info *guest_info);
 
 /*----- Domain creation -----*/
 
