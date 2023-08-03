@@ -1540,6 +1540,7 @@ typedef struct libxl__ddomain_device {
 typedef struct libxl__ddomain_guest {
     uint32_t domid;
     int num_qdisks;
+    int num_qvirtios;
     XEN_SLIST_HEAD(, struct libxl__ddomain_device) devices;
     XEN_SLIST_ENTRY(struct libxl__ddomain_guest) next;
 } libxl__ddomain_guest;
@@ -1633,15 +1634,20 @@ static int add_device(libxl__egc *egc, libxl__ao *ao,
 
     switch(dev->backend_kind) {
     case LIBXL__DEVICE_KIND_QDISK:
-        if (dguest->num_qdisks == 0) {
+    case LIBXL__DEVICE_KIND_QVIRTIO:
+        if (dguest->num_qdisks == 0 && dguest->num_qvirtios == 0) {
             GCNEW(dmss);
             dmss->guest_domid = dev->domid;
+            dmss->backend_domid = dev->backend_domid;
             dmss->spawn.ao = ao;
             dmss->callback = qdisk_spawn_outcome;
 
             libxl__spawn_qdisk_backend(egc, dmss);
         }
-        dguest->num_qdisks++;
+        if (dev->backend_kind == LIBXL__DEVICE_KIND_QDISK)
+            dguest->num_qdisks++;
+        else
+            dguest->num_qvirtios++;
         break;
     default:
         GCNEW(aodev);
@@ -1672,7 +1678,12 @@ static int remove_device(libxl__egc *egc, libxl__ao *ao,
 
     switch(ddev->dev->backend_kind) {
     case LIBXL__DEVICE_KIND_QDISK:
-        if (--dguest->num_qdisks == 0) {
+    case LIBXL__DEVICE_KIND_QVIRTIO:
+        if (dev->backend_kind == LIBXL__DEVICE_KIND_QDISK)
+            dguest->num_qdisks--;
+        else
+            dguest->num_qvirtios--;
+        if (dguest->num_qdisks == 0 && dguest->num_qvirtios == 0) {
             rc = libxl__destroy_qdisk_backend(gc, dev->domid);
             if (rc)
                 goto out;

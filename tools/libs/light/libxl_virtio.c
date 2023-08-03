@@ -55,7 +55,8 @@ static int libxl__device_from_virtio(libxl__gc *gc, uint32_t domid,
     device->devid           = virtio->devid;
     device->domid           = domid;
 
-    device->backend_kind    = LIBXL__DEVICE_KIND_VIRTIO;
+    device->backend_kind    = virtio->backend_type == LIBXL_VIRTIO_BACKEND_QEMU ?
+        LIBXL__DEVICE_KIND_QVIRTIO : LIBXL__DEVICE_KIND_VIRTIO;
     device->kind            = LIBXL__DEVICE_KIND_VIRTIO;
 
     return 0;

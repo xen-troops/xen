@@ -3397,13 +3397,124 @@ static void device_model_postconfig_done(libxl__egc *egc,
     dmss->callback(egc, dmss, rc);
 }
 
+static int libxl__get_qdisk_backend_dm_args(libxl__gc *gc,
+                                            uint32_t domid,
+                                            uint32_t backend_domid,
+                                            flexarray_t *dm_args)
+{
+    const char *dm_path, *tmp = NULL;
+    char **dir;
+    unsigned int n;
+    int rc, i = 0;
+
+    dm_path = GCSPRINTF("/local/domain/%d/device-model", backend_domid);
+
+    dir = libxl__xs_directory(gc, XBT_NULL, dm_path, &n);
+    if (!dir)
+        return 0;
+
+    dm_path = DEVICE_MODEL_XS_PATH(gc, backend_domid, domid, "");
+
+    tmp = NULL;
+    rc = libxl__xs_read_checked(gc, XBT_NULL,
+                                GCSPRINTF("%s/ram_size", dm_path), &tmp);
+    if (rc) return rc;
+
+    if (tmp) {
+        uint64_t ram_size = strtoul(tmp, NULL, 0);
+
+        flexarray_vappend(dm_args, "-m", GCSPRINTF("%"PRId64, ram_size), NULL);
+    }
+
+    tmp = NULL;
+    rc = libxl__xs_read_checked(gc, XBT_NULL,
+                                GCSPRINTF("%s/max_vcpus", dm_path), &tmp);
+    if (rc) return rc;
+
+    if (tmp) {
+        uint32_t max_vcpus = strtoul(tmp, NULL, 0);
+
+        flexarray_vappend(dm_args, "-smp", GCSPRINTF("%d", max_vcpus), NULL);
+    }
+
+    do {
+        const char *path = GCSPRINTF("%s/dm_args/%d", dm_path, i);
+
+        tmp = NULL;
+        rc = libxl__xs_read_checked(gc, XBT_NULL, path, &tmp);
+        if (rc) return rc;
+
+        if (tmp) {
+            flexarray_append(dm_args, (void *)tmp);
+        }
+        i++;
+    } while (tmp);
+
+    return 0;
+}
+
+int libxl__save_qdisk_backend_dm_args(libxl__gc *gc,
+                                      uint32_t domid,
+                                      uint32_t backend_domid,
+                                      const libxl_domain_build_info *guest_info)
+{
+    const char *dm_path;
+    char **dir;
+    xs_transaction_t t = XBT_NULL;
+    unsigned int n;
+    int rc;
+
+    dm_path = GCSPRINTF("/local/domain/%d/device-model", backend_domid);
+
+    dir = libxl__xs_directory(gc, XBT_NULL, dm_path, &n);
+    if (!dir)
+        return ERROR_INVAL;
+
+    dm_path = DEVICE_MODEL_XS_PATH(gc, backend_domid, domid, "");
+
+    for (;;) {
+        uint64_t ram_size;
+        int i;
+
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        ram_size = libxl__sizekb_to_mb(guest_info->max_memkb -
+                                       guest_info->video_memkb);
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/ram_size", dm_path),
+                                     GCSPRINTF("%"PRId64, ram_size));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/max_vcpus", dm_path),
+                                     GCSPRINTF("%d", guest_info->max_vcpus));
+        if (rc) goto out;
+
+        for (i = 0; guest_info->extra && guest_info->extra[i] != NULL; i++) {
+            rc = libxl__xs_write_checked(gc, t,
+                                         GCSPRINTF("%s/dm_args/%d", dm_path, i),
+                                         GCSPRINTF("%s", guest_info->extra[i]));
+            if (rc) goto out;
+        }
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
+    return 0;
+
+out:
+    libxl__xs_transaction_abort(gc, &t);
+    return rc;
+}
+
 void libxl__spawn_qdisk_backend(libxl__egc *egc, libxl__dm_spawn_state *dmss)
 {
     STATE_AO_GC(dmss->spawn.ao);
     flexarray_t *dm_args, *dm_envs;
     char **args, **envs;
     const char *dm;
-    int logfile_w, null = -1, rc;
+    int logfile_w = -1, null = -1, rc;
     uint32_t domid = dmss->guest_domid;
 
     dmss_init(dmss);
@@ -3424,6 +3535,11 @@ void libxl__spawn_qdisk_backend(libxl__egc *egc, libxl__dm_spawn_state *dmss)
     flexarray_vappend(dm_args, "-monitor", "/dev/null", NULL);
     flexarray_vappend(dm_args, "-serial", "/dev/null", NULL);
     flexarray_vappend(dm_args, "-parallel", "/dev/null", NULL);
+
+    rc = libxl__get_qdisk_backend_dm_args(gc, domid, dmss->backend_domid,
+                                          dm_args);
+    if (rc) goto out;
+
     flexarray_append(dm_args, NULL);
     args = (char **) flexarray_contents(dm_args);
 

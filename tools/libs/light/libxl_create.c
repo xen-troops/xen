@@ -1676,6 +1676,7 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
     libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
     STATE_AO_GC(dcs->ao);
     int i;
+    bool dmargs_saved = false;
 
     /* convenience aliases */
     const uint32_t domid = dcs->guest_domid;
@@ -1768,9 +1769,24 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         libxl__device_add(gc, domid, &libxl__pvcallsif_devtype,
                           &d_config->pvcallsifs[i]);
 
-    for (i = 0; i < d_config->num_virtios; i++)
-        libxl__device_add(gc, domid, &libxl__virtio_devtype,
-                          &d_config->virtios[i]);
+    for (i = 0; i < d_config->num_virtios; i++) {
+        libxl_device_virtio *virtio = &d_config->virtios[i];
+
+        if (virtio->backend_type == LIBXL_VIRTIO_BACKEND_QEMU &&
+            virtio->backend_domid != LIBXL_TOOLSTACK_DOMID && !dmargs_saved) {
+
+            ret = libxl__save_qdisk_backend_dm_args(gc, domid,
+                                                    virtio->backend_domid,
+                                                    &d_config->b_info);
+            if (ret) {
+                LOGD(ERROR, domid, "Unable to save dm_args for Qdisk backend");
+                goto error_out;
+            }
+            dmargs_saved = true;
+        }
+
+        libxl__device_add(gc, domid, &libxl__virtio_devtype, virtio);
+    }
 
     switch (d_config->c_info.type) {
     case LIBXL_DOMAIN_TYPE_HVM:
