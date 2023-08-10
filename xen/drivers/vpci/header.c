@@ -527,6 +527,7 @@ static void cf_check cmd_write(
     const struct pci_dev *pdev, unsigned int reg, uint32_t cmd, void *data)
 {
     struct vpci_header *header = data;
+    uint16_t current_cmd = pci_conf_read16(pdev->sbdf, reg);
 
     if ( !is_hardware_domain(pdev->domain) )
     {
@@ -557,7 +558,7 @@ static void cf_check cmd_write(
      * decoding one. Bits that are not allowed for DomU are already
      * handled above.
      */
-    if ( header->bars_mapped != !!(cmd & PCI_COMMAND_MEMORY) )
+    if ( header->bars_mapped != !!((cmd ^ current_cmd) & PCI_COMMAND_MEMORY) )
         /*
          * Ignore the error. No memory has been added or removed from the p2m
          * (because the actual p2m changes are deferred in defer_map) and the
