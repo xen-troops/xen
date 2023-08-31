@@ -1978,6 +1978,49 @@ _hidden int libxl__domain_device_construct_rdm(libxl__gc *gc,
                                    uint64_t rdm_mem_guard,
                                    struct xc_dom_image *dom);
 
+/*
+ * libxl__xenstore_child_wait_deprecated - Wait for daemonic child IPC
+ *
+ * This is a NOT function for waiting for ordinary child processes.
+ * If you want to run (fork/exec/wait) subprocesses from libxl:
+ *  - Make your libxl entrypoint use the ao machinery
+ *  - Use libxl__ev_child_fork, and use the callback programming style
+ *
+ * This function is intended for interprocess communication with a
+ * service process.  If the service process does not respond quickly,
+ * the whole caller may be blocked.  Therefore this function is
+ * deprecated.  This function is currently used only by
+ * libxl__wait_for_device_model_deprecated.
+ *
+ * gc: allocation pool
+ * domid: guest to work with
+ * timeout: how many seconds to wait for the state to appear
+ * what: string describing the spawned process
+ * path: path to the state file in xenstore
+ * state: expected string to wait for in path (optional)
+ * spawning: malloc'd pointer to libxl__spawn_starting (optional)
+ * check_callback: (optional)
+ * check_callback_userdata: data to pass to the callback function
+ *
+ * Returns 0 on success, and < 0 on error.
+ *
+ * This function waits the given timeout for the given path to appear
+ * in xenstore, and optionally for state in path.
+ * If path appears and state matches, check_callback is called.
+ * If check_callback returns > 0, waiting for path or state continues.
+ * Otherwise libxl__xenstore_child_wait_deprecated returns.
+ */
+_hidden int libxl__xenstore_child_wait_deprecated(libxl__gc *gc,
+                                 uint32_t domid,
+                                 uint32_t timeout, char *what,
+                                 char *path, char *state,
+                                 libxl__spawn_starting *spawning,
+                                 int (*check_callback)(libxl__gc *gc,
+                                                       uint32_t domid,
+                                                       const char *state,
+                                                       void *userdata),
+                                 void *check_callback_userdata);
+
 _hidden const libxl_vnc_info *libxl__dm_vnc(const libxl_domain_config *g_cfg);
 
 _hidden char *libxl__abs_path(libxl__gc *gc, const char *s, const char *path);
@@ -4153,6 +4196,10 @@ _hidden char *libxl__stub_dm_name(libxl__gc *gc, const char * guest_name);
 _hidden void libxl__spawn_qemu_xenpv_backend(libxl__egc *egc,
                                         libxl__dm_spawn_state *dmss);
 _hidden int libxl__destroy_qemu_xenpv_backend(libxl__gc *gc, uint32_t domid);
+
+_hidden int libxl__wait_for_qdisk_backend_ready(libxl__gc *gc,
+                                                uint32_t domid,
+                                                uint32_t backend_domid);
 
 _hidden int libxl__save_qdisk_backend_dm_args(libxl__gc *gc,
                                               uint32_t domid,
