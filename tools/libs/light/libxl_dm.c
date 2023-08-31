@@ -3508,6 +3508,22 @@ out:
     return rc;
 }
 
+#define QDISK_BACKEND_START_TIMEOUT 10
+
+int libxl__wait_for_qdisk_backend_ready(libxl__gc *gc,
+                                        uint32_t domid,
+                                        uint32_t backend_domid)
+{
+    char *dm_path;
+
+    dm_path = DEVICE_MODEL_XS_PATH(gc, backend_domid, domid, "/state");
+
+    return libxl__xenstore_child_wait_deprecated(gc, domid,
+                                                 QDISK_BACKEND_START_TIMEOUT,
+                                                 "Qdisk backend", dm_path,
+                                                 "running", NULL, NULL, NULL);
+}
+
 void libxl__spawn_qdisk_backend(libxl__egc *egc, libxl__dm_spawn_state *dmss)
 {
     STATE_AO_GC(dmss->spawn.ao);
