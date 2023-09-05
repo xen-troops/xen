@@ -58,8 +58,20 @@ extern bool ipmmu_is_mmu_tlb_disable_needed(struct dt_device_node *np);
 #define dev_name(dev) dt_node_full_name(dev_to_dt(dev))
 
 /* Device logger functions */
+#ifndef CONFIG_HAS_PCI
 #define dev_print(dev, lvl, fmt, ...)    \
     printk(lvl "ipmmu: %s: " fmt, dev_name(dev), ## __VA_ARGS__)
+#else
+#define dev_print(dev, lvl, fmt, ...) ({                                \
+    if ( !dev_is_pci((dev)) )                                           \
+        printk(lvl "ipmmu: %s: " fmt, dev_name((dev)), ## __VA_ARGS__);  \
+    else                                                                \
+    {                                                                   \
+        struct pci_dev *pdev = dev_to_pci((dev));                       \
+        printk(lvl "ipmmu: %pp: " fmt, &pdev->sbdf, ## __VA_ARGS__);     \
+    }                                                                   \
+})
+#endif
 
 #define dev_info(dev, fmt, ...)    \
     dev_print(dev, XENLOG_INFO, fmt, ## __VA_ARGS__)
@@ -1131,7 +1143,7 @@ static void ipmmu_free_root_domain(struct ipmmu_vmsa_domain *domain)
     xfree(domain);
 }
 
-static int ipmmu_deassign_device(struct domain *d, u8 devfn, struct device *dev);
+static int ipmmu_deassign_device(struct domain *d, struct device *dev);
 
 static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
                                uint32_t flag)
@@ -1175,7 +1187,7 @@ static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
              * Try to de-assign: do not return error if it was already
              * de-assigned.
              */
-            ret = ipmmu_deassign_device(old_d, devfn, dev);
+            ret = ipmmu_deassign_device(old_d, dev);
 
             return ret == -ESRCH ? 0 : ret;
         }
@@ -1472,7 +1484,24 @@ static int osid_regs_init(struct gen4_pci_ipmmu_info *info)
 
 static int ipmmu_add_device(u8 devfn, struct device *dev)
 {
-    struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+    struct iommu_fwspec *fwspec;
+
+#ifdef CONFIG_HAS_PCI
+    if ( dev_is_pci(dev) )
+    {
+        struct pci_dev *pdev = dev_to_pci(dev);
+        int ret;
+
+        if ( devfn != pdev->devfn )
+            return 0;
+
+        ret = iommu_add_pci_sideband_ids(pdev);
+        if ( ret < 0 )
+            iommu_fwspec_free(dev);
+    }
+#endif
+
+    fwspec = dev_iommu_fwspec_get(dev);
 
     /* Only let through devices that have been verified in xlate(). */
     if ( !to_ipmmu(dev) )
