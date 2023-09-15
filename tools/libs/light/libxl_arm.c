@@ -1781,7 +1781,7 @@ next_resize:
                                  GUEST_GICC_BASE, GUEST_GICC_SIZE) );
             break;
         case LIBXL_GIC_VERSION_V3:
-            FDT( make_gicv3_node(gc, fdt, d_config->num_pcidevs) );
+            FDT( make_gicv3_node(gc, fdt, 1) );
             break;
         default:
             LOG(ERROR, "Unknown GIC version %s",
