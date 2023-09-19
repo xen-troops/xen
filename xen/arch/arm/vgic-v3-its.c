@@ -1591,8 +1591,8 @@ unsigned int vgic_v3_its_count(const struct domain *d)
 int vgic_v3_its_init_domain(struct domain *d)
 {
     int ret;
-    static unsigned int devid_bits = 0xff;
-    static unsigned int evid_bits = 0xff;
+    static unsigned int devid_bits = 32;
+    static unsigned int evid_bits = 32;
 
     INIT_LIST_HEAD(&d->arch.vgic.vits_list);
     spin_lock_init(&d->arch.vgic.its_devices_lock);
