@@ -60,7 +60,10 @@ static int cf_check map_range(
         mfn_t map_mfn = mfn_add(start_mfn, s - start_gfn);
         unsigned long m_end = mfn_x(map_mfn) + size - 1;
 
-        if ( !iomem_access_permitted(map->d, mfn_x(map_mfn), m_end) )
+        if ( !iomem_access_permitted(map->d, mfn_x(map_mfn), m_end) &&
+             !pci_is_hardware_domain(map->d,
+                                     map->pdev->seg,
+                                     map->pdev->bus) )
         {
             printk(XENLOG_G_WARNING
                    "%pd denied access to MMIO range [%#lx, %#lx]\n",
