@@ -687,6 +687,13 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
         return -EINVAL;
     }
 
+    if ( (config->arch.pci_flags & XEN_DOMCTL_CONFIG_PCI_VPCI) &&
+         !IS_ENABLED(CONFIG_HAS_VPCI) )
+    {
+        dprintk(XENLOG_INFO, "vPCI support not enabled\n");
+        return -EINVAL;
+    }
+
     return 0;
 }
 
@@ -736,6 +743,9 @@ int arch_domain_create(struct domain *d,
     default:
         BUG();
     }
+
+    if ( config->arch.pci_flags & XEN_DOMCTL_CONFIG_PCI_VPCI )
+        d->arch.has_vpci = true;
 
     if ( (rc = domain_vgic_register(d, &count)) != 0 )
         goto fail;

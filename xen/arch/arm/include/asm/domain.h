@@ -121,6 +121,8 @@ struct arch_domain
 
     /* OSID used by virtual GSX device */
     uint8_t vgsx_osid;
+    bool has_vpci;
+
 }  __cacheline_aligned;
 
 struct arch_vcpu
