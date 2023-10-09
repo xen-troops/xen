@@ -2144,6 +2144,9 @@ void __init create_dom0(void)
             panic("SVE vector length error\n");
     }
 
+    if ( IS_ENABLED(CONFIG_HAS_VPCI) )
+        dom0_cfg.arch.pci_flags = XEN_DOMCTL_CONFIG_PCI_VPCI;
+
     dom0 = domain_create(0, &dom0_cfg, CDF_privileged | CDF_directmap);
     if ( IS_ERR(dom0) )
         panic("Error creating domain 0 (rc = %ld)\n", PTR_ERR(dom0));
