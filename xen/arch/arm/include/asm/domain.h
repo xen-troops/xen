@@ -302,7 +302,7 @@ static inline void arch_vcpu_block(struct vcpu *v) {}
 
 #define arch_vm_assist_valid_mask(d) (1UL << VMASST_TYPE_runstate_update_flag)
 
-#define has_vpci(d) ( (d)->arch.has_vpci )
+#define has_vpci(d) ( true )
 
 struct arch_vcpu_io {
     struct instr_details dabt_instr; /* when the instruction is decoded */
