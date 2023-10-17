@@ -183,7 +183,7 @@ bool arch_ioreq_server_get_type_addr(const struct domain *d,
         return false;
 
     if ( p->type == IOREQ_TYPE_COPY &&
-         vpci_ioreq_server_get_addr(d, p->addr, &pci_addr) )
+         virtio_pci_ioreq_server_get_addr(d, p->addr, &pci_addr) )
     {
         /* PCI config data cycle */
         *type = XEN_DMOP_IO_RANGE_PCI;

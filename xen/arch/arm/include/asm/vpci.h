@@ -30,12 +30,12 @@ static inline unsigned int domain_vpci_get_num_mmio_handlers(struct domain *d)
 }
 #endif
 
-#ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
-bool vpci_ioreq_server_get_addr(const struct domain *d,
-                                paddr_t gpa, uint64_t *addr);
+#ifdef CONFIG_VIRTIO_PCI
+bool virtio_pci_ioreq_server_get_addr(const struct domain *d,
+                                      paddr_t gpa, uint64_t *addr);
 #else
-static inline bool vpci_ioreq_server_get_addr(const struct domain *d,
-                                              paddr_t gpa, uint64_t *addr)
+static inline bool virtio_pci_ioreq_server_get_addr(const struct domain *d,
+                                                    paddr_t gpa, uint64_t *addr)
 {
     return false;
 }
