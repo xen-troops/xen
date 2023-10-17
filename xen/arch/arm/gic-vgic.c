@@ -237,6 +237,7 @@ static void gic_update_one_lr(struct vcpu *v, int i)
                 clear_bit(GIC_IRQ_GUEST_MIGRATING, &p->status);
             }
 
+#if defined (CONFIG_VIRTIO_PCI)
             if ( irq >= GUEST_VIRTIO_PCI_SPI_FIRST &&
                  irq <= GUEST_VIRTIO_PCI_SPI_LAST &&
                  vgic_pci_irq_level(v->domain, irq) )
@@ -249,6 +250,7 @@ static void gic_update_one_lr(struct vcpu *v, int i)
                     gic_raise_guest_irq(v, irq, p->priority);
                 list_add_tail(&p->inflight, &v->arch.vgic.inflight_irqs);
             }
+#endif
         }
     }
 }

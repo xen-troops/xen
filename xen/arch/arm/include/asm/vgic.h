@@ -128,8 +128,10 @@ struct vgic_irq_rank {
 
 #define NR_PCI_IRQS   (GUEST_VIRTIO_PCI_SPI_LAST - GUEST_VIRTIO_PCI_SPI_FIRST)
 
+#if defined (CONFIG_VIRTIO_PCI)
 #define vgic_pci_irq_level(d, irq)   \
     ((d)->arch.vgic.pci_irq_level[(irq) - GUEST_VIRTIO_PCI_SPI_FIRST])
+#endif
 
 struct vgic_dist {
     /* Version of the vGIC */
@@ -155,8 +157,10 @@ struct vgic_dist {
      * struct arch_vcpu.
      */
     struct pending_irq *pending_irqs;
+#if defined (CONFIG_VIRTIO_PCI)
     /* Current legacy PCI IRQ levels */
     bool pci_irq_level[NR_PCI_IRQS];
+#endif
     /* Base address for guest GIC */
     paddr_t dbase; /* Distributor base address */
     paddr_t cbase; /* CPU interface base address */
