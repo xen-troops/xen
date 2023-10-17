@@ -1769,6 +1769,20 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         libxl__device_add(gc, domid, &libxl__pvcallsif_devtype,
                           &d_config->pvcallsifs[i]);
 
+    /*
+     * This should be done before spawning device model, but after
+     * the creation of "device-model" directory in Xenstore.
+     */
+    for (i = 0; i < d_config->b_info.num_virtio_pci_hosts; i++) {
+        libxl_virtio_pci_host *host = &d_config->b_info.virtio_pci_hosts[i];
+
+        ret = libxl__save_dm_virtio_pci_host(gc, domid, host);
+        if (ret) {
+            LOGD(ERROR, domid, "Unable to save virtio_pci_host for device model");
+            goto error_out;
+        }
+    }
+
     for (i = 0; i < d_config->num_virtios; i++) {
         libxl_device_virtio *virtio = &d_config->virtios[i];
 

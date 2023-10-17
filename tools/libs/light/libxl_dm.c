@@ -3453,6 +3453,76 @@ static int libxl__get_qdisk_backend_dm_args(libxl__gc *gc,
     return 0;
 }
 
+int libxl__save_dm_virtio_pci_host(libxl__gc *gc,
+                                   uint32_t domid,
+                                   libxl_virtio_pci_host *host)
+{
+    const char *dm_path;
+    char **dir;
+    xs_transaction_t t = XBT_NULL;
+    unsigned int n;
+    int rc;
+
+    dm_path = GCSPRINTF("/local/domain/%d/device-model", host->backend_domid);
+
+    dir = libxl__xs_directory(gc, XBT_NULL, dm_path, &n);
+    if (!dir)
+        return ERROR_INVAL;
+
+    dm_path = DEVICE_MODEL_XS_PATH(gc, host->backend_domid, domid, "/virtio_pci_host");
+
+    for (;;) {
+        rc = libxl__xs_transaction_start(gc, &t);
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/id", dm_path),
+                                     GCSPRINTF("%u", host->id));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/ecam_base", dm_path),
+                                     GCSPRINTF("%#"PRIx64, host->ecam_base));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/ecam_size", dm_path),
+                                     GCSPRINTF("%#"PRIx64, host->ecam_size));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/mem_base", dm_path),
+                                     GCSPRINTF("%#"PRIx64, host->mem_base));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/mem_size", dm_path),
+                                     GCSPRINTF("%#"PRIx64, host->mem_size));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/prefetch_mem_base", dm_path),
+                                     GCSPRINTF("%#"PRIx64, host->prefetch_mem_base));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/prefetch_mem_size", dm_path),
+                                     GCSPRINTF("%#"PRIx64, host->prefetch_mem_size));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/irq_first", dm_path),
+                                     GCSPRINTF("%u", host->irq_first));
+        if (rc) goto out;
+
+        rc = libxl__xs_write_checked(gc, t, GCSPRINTF("%s/num_irqs", dm_path),
+                                     GCSPRINTF("%u", host->num_irqs));
+        if (rc) goto out;
+
+        rc = libxl__xs_transaction_commit(gc, &t);
+        if (!rc) break;
+        if (rc < 0) goto out;
+    }
+
+    return 0;
+
+out:
+    libxl__xs_transaction_abort(gc, &t);
+    return rc;
+}
+
 int libxl__save_qdisk_backend_dm_args(libxl__gc *gc,
                                       uint32_t domid,
                                       uint32_t backend_domid,

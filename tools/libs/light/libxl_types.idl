@@ -564,6 +564,19 @@ libxl_altp2m_mode = Enumeration("altp2m_mode", [
     (3, "limited"),
     ], init_val = "LIBXL_ALTP2M_MODE_DISABLED")
 
+libxl_virtio_pci_host = Struct("virtio_pci_host", [
+    ("backend_domid",     libxl_domid),
+    ("id",                uint32),
+    ("ecam_base",         uint64),
+    ("ecam_size",         uint64),
+    ("mem_base",          uint64),
+    ("mem_size",          uint64),
+    ("prefetch_mem_base", uint64),
+    ("prefetch_mem_size", uint64),
+    ("irq_first",         uint32),
+    ("num_irqs",          uint32),
+    ])
+
 libxl_domain_build_info = Struct("domain_build_info",[
     ("max_vcpus",       integer),
     ("avail_vcpus",     libxl_bitmap),
@@ -638,6 +651,7 @@ libxl_domain_build_info = Struct("domain_build_info",[
     ("dm_restrict",      libxl_defbool),
     ("tee",              libxl_tee_type),
     ("tpm",              libxl_defbool),
+    ("virtio_pci_hosts", Array(libxl_virtio_pci_host, "num_virtio_pci_hosts")),
     ("u", KeyedUnion(None, libxl_domain_type, "type",
                 [("hvm", Struct(None, [("firmware",         string),
                                        ("bios",             libxl_bios_type),
@@ -783,6 +797,7 @@ libxl_device_virtio = Struct("device_virtio", [
                                       ("dev", uint8),
                                       ("bus", uint8),
                                       ("domain", uint16),
+                                      ("host_id", uint32),
                                      ])),
               ])),
     ("grant_usage", libxl_defbool),

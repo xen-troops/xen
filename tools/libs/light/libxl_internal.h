@@ -4210,6 +4210,10 @@ _hidden int libxl__save_qdisk_backend_dm_args(libxl__gc *gc,
                                               uint32_t backend_domid,
                                               const libxl_domain_build_info *guest_info);
 
+_hidden int libxl__save_dm_virtio_pci_host(libxl__gc *gc,
+                                           uint32_t domid,
+                                           libxl_virtio_pci_host *host);
+
 /*----- Domain creation -----*/
 
 

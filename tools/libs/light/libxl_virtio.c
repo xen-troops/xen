@@ -83,6 +83,7 @@ static int libxl__set_xenstore_virtio(libxl__gc *gc, uint32_t domid,
         flexarray_append_pair(back, "bdf", GCSPRINTF("%04x:%02x:%02x.%01x",
                               virtio->u.pci.domain, virtio->u.pci.bus,
                               virtio->u.pci.dev, virtio->u.pci.func));
+        flexarray_append_pair(back, "host_id", GCSPRINTF("%u", virtio->u.pci.host_id));
     }
     flexarray_append_pair(back, "type", GCSPRINTF("%s", virtio->type));
     flexarray_append_pair(back, "transport", GCSPRINTF("%s", transport));
@@ -167,6 +168,15 @@ static int libxl__virtio_from_xenstore(libxl__gc *gc, const char *libxl_path,
             virtio->u.pci.bus = bus;
             virtio->u.pci.dev = dev;
             virtio->u.pci.func = func;
+        }
+
+        tmp = NULL;
+        rc = libxl__xs_read_checked(gc, XBT_NULL,
+                                    GCSPRINTF("%s/host_id", be_path), &tmp);
+        if (rc) goto out;
+
+        if (tmp) {
+            virtio->u.pci.host_id = strtoul(tmp, NULL, 0);
         }
     }
 
