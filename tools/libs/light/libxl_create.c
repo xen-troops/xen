@@ -1068,7 +1068,6 @@ int libxl__domain_config_setdefault(libxl__gc *gc,
     libxl_ctx *ctx = libxl__gc_owner(gc);
     int ret, i;
     bool pod_enabled = false;
-    libxl_domid virtio_pci_domid = INVALID_DOMID;
     libxl_domain_create_info *c_info = &d_config->c_info;
 
     libxl_physinfo physinfo;
@@ -1269,16 +1268,6 @@ int libxl__domain_config_setdefault(libxl__gc *gc,
         if (ret) {
             LOGD(ERROR, domid, "Unable to set virtio defaults for device %d", i);
             goto error_out;
-        }
-
-        if (virtio->transport == LIBXL_VIRTIO_TRANSPORT_PCI) {
-            if (virtio_pci_domid == INVALID_DOMID) {
-                virtio_pci_domid = virtio->backend_domid;
-            } else if (virtio_pci_domid != virtio->backend_domid) {
-                ret = ERROR_INVAL;
-                LOGD(ERROR, domid, "Cannot enable virtio-pci backends from different domains");
-                goto error_out;
-            }
         }
     }
 
