@@ -240,6 +240,8 @@ static void gic_update_one_lr(struct vcpu *v, int i)
                  irq <= GUEST_VIRTIO_PCI_SPI_LAST &&
                  vgic_pci_irq_level(v->domain, irq) )
             {
+                ASSERT(!test_bit(irq, v->domain->arch.vgic.allocated_irqs));
+
                 set_bit(GIC_IRQ_GUEST_QUEUED, &p->status);
                 if ( test_bit(GIC_IRQ_GUEST_ENABLED, &p->status) )
                     gic_raise_guest_irq(v, irq, p->priority);

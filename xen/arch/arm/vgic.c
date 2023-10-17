@@ -758,7 +758,8 @@ void vgic_inject_irq(struct domain *d, struct vcpu *v, unsigned int virq,
     unsigned long flags;
 
     if ( virq >= GUEST_VIRTIO_PCI_SPI_FIRST &&
-         virq <= GUEST_VIRTIO_PCI_SPI_LAST )
+         virq <= GUEST_VIRTIO_PCI_SPI_LAST &&
+         !test_bit(virq, d->arch.vgic.allocated_irqs) )
         vgic_pci_irq_level(d, virq) = level;
 
     /*

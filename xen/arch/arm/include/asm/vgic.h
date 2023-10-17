@@ -127,8 +127,7 @@ struct vgic_irq_rank {
     uint8_t vcpu[32];
 };
 
-/* GUEST_VIRTIO_PCI_SPI_LAST - GUEST_VIRTIO_PCI_SPI_FIRST */
-#define NR_PCI_IRQS   4
+#define NR_PCI_IRQS   (GUEST_VIRTIO_PCI_SPI_LAST - GUEST_VIRTIO_PCI_SPI_FIRST)
 
 #define vgic_pci_irq_level(d, irq)   \
     ((d)->arch.vgic.pci_irq_level[(irq) - GUEST_VIRTIO_PCI_SPI_FIRST])
