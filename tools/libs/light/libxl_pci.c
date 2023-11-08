@@ -2139,8 +2139,11 @@ static void pci_remove_detached(libxl__egc *egc,
     libxl_ctx *ctx = libxl__gc_owner(gc);
     unsigned int start = 0, end = 0, flags = 0, size = 0;
     int  irq = 0, i, stubdomid = 0;
-    const char *sysfs_path;
-    FILE *f;
+    struct vchan_info *vchan;
+    libxl__json_object *result;
+    libxl__json_object *args;
+    const libxl__json_object *value;
+    libxl__json_object *res_obj;
     uint32_t domainid = prs->domid;
     bool isstubdom;
 
@@ -2156,18 +2159,29 @@ static void pci_remove_detached(libxl__egc *egc,
     if (rc && !prs->force)
         goto out;
 
-    /* Revoke the permissions */
-    sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/resource",
-                           pci->domain, pci->bus, pci->dev, pci->func);
+    vchan = pci_vchan_get_client(gc);
+    if (!vchan)
+        goto out;
 
-    f = fopen(sysfs_path, "r");
-    if (f == NULL) {
-        LOGED(ERROR, domid, "Couldn't open %s", sysfs_path);
-        goto skip_bar;
-    }
+    /* Revoke the permissions */
+    args = libxl__vchan_start_args(gc);
+    libxl__vchan_arg_add_string(gc, args, PCID_MSG_FIELD_SBDF,
+                                GCSPRINTF(PCID_SBDF_FMT, pci->domain,
+                                          pci->bus, pci->dev, pci->func));
+    libxl__vchan_arg_add_integer(gc, args, PCID_MSG_FIELD_DOMID, domid);
+
+    result = vchan_send_command(gc, vchan, PCID_CMD_RESOURCE_LIST, args);
+    pci_vchan_free(gc, vchan);
+    if (!result)
+        goto out;
+
+    value = libxl__json_map_get(PCID_RESULT_KEY_IOMEM, result, JSON_ARRAY);
 
     for (i = 0; i < PROC_PCI_NUM_RESOURCES; i++) {
-        if (fscanf(f, "0x%x 0x%x 0x%x\n", &start, &end, &flags) != 3)
+        if ((res_obj = libxl__json_array_get(value, i)) == NULL)
+            continue;
+        const char *iomem_str = libxl__json_object_get_string(res_obj);
+        if (sscanf(iomem_str, "0x%x 0x%x 0x%x\n", &start, &end, &flags) != 3)
             continue;
         size = end - start + 1;
         if (start) {
@@ -2192,22 +2206,14 @@ static void pci_remove_detached(libxl__egc *egc,
             }
         }
     }
-    fclose(f);
 
-skip_bar:
     if (!pci_supp_legacy_irq())
         goto skip_legacy_irq;
 
-    sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/irq", pci->domain,
-                           pci->bus, pci->dev, pci->func);
+    value = libxl__json_map_get(PCID_RESULT_KEY_IRQS, result, JSON_ARRAY);
 
-    f = fopen(sysfs_path, "r");
-    if (f == NULL) {
-        LOGED(ERROR, domid, "Couldn't open %s", sysfs_path);
-        goto skip_legacy_irq;
-    }
-
-    if ((fscanf(f, "%u", &irq) == 1) && irq) {
+    if ((res_obj = libxl__json_array_get(value, i)) &&
+            (irq = libxl__json_object_get_integer(res_obj))) {
         rc = xc_physdev_unmap_pirq(ctx->xch, domid, irq);
         if (rc < 0) {
             /*
@@ -2223,8 +2229,6 @@ skip_bar:
             LOGED(ERROR, domid, "xc_domain_irq_permission irq=%d", irq);
         }
     }
-
-    fclose(f);
 
 skip_legacy_irq:
 
