@@ -1310,7 +1310,7 @@ static int ipmmu_reassign_device(struct domain *s, struct domain *t,
         is_hwdom = is_hardware_domain(t);
 
     /* Don't allow remapping on other domain than hwdom */
-    if ( t && !is_hwdom )
+    if ( t && !is_hwdom  && (t != dom_io))
         return -EPERM;
 
     if ( t == s )
