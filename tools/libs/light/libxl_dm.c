@@ -3469,7 +3469,7 @@ int libxl__save_dm_virtio_pci_host(libxl__gc *gc,
     if (!dir)
         return ERROR_INVAL;
 
-    dm_path = DEVICE_MODEL_XS_PATH(gc, host->backend_domid, domid, "/virtio_pci_host");
+    dm_path = DEVICE_MODEL_XS_PATH(gc, host->backend_domid, domid, "/pcie_host");
 
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
