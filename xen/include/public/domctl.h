@@ -504,7 +504,12 @@ struct xen_domctl_sendtrigger {
 
 
 /* Assign a device to a guest. Sets up IOMMU structures. */
-/* XEN_DOMCTL_assign_device */
+/* XEN_DOMCTL_assign_device
+ * when assigning a PCI device, it is possible to either request
+ * or provide a virtual SBDF. When virtual_sbdf equals to
+ * XEN_DOMCTL_DEV_SDBF_ANY, hypervisor will return allocated
+ * vSBDF back.
+ */
 /*
  * XEN_DOMCTL_test_assign_device: Pass DOMID_INVALID to find out whether the
  * given device is assigned to any DomU at all. Pass a specific domain ID to
@@ -528,6 +533,8 @@ struct xen_domctl_assign_device {
     union {
         struct {
             uint32_t machine_sbdf;   /* machine PCI ID of assigned device */
+            uint32_t virtual_sbdf;   /* IN/OUT virtual SBDF of the device */
+#define XEN_DOMCTL_DEV_SDBF_ANY     0xFFFFFFFF /* request a free SBDF */
         } pci;
         struct {
             uint32_t size; /* Length of the path */

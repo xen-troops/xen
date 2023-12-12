@@ -1505,6 +1505,7 @@ int xc_assign_device(
     domctl.domain = domid;
     domctl.u.assign_device.dev = XEN_DOMCTL_DEV_PCI;
     domctl.u.assign_device.u.pci.machine_sbdf = machine_sbdf;
+    domctl.u.assign_device.u.pci.virtual_sbdf = XEN_DOMCTL_DEV_SDBF_ANY;
     domctl.u.assign_device.flags = flags;
 
     return do_domctl(xch, &domctl);

@@ -33,7 +33,7 @@ typedef int vpci_register_init_t(struct pci_dev *dev);
                __used_section(".data.vpci." p) = x
 
 /* Assign vPCI to device by adding handlers to device. */
-int __must_check vpci_assign_device(struct pci_dev *pdev);
+int __must_check vpci_assign_device(struct pci_dev *pdev, pci_sbdf_t *vsbdf);
 
 /* Remove all handlers and free vpci related structures. */
 void vpci_deassign_device(struct pci_dev *pdev);
@@ -303,7 +303,7 @@ bool vpci_msix_read(struct vpci_msix *msix, unsigned long addr,
 #else /* !CONFIG_HAS_VPCI */
 struct vpci_vcpu {};
 
-static inline int vpci_assign_device(struct pci_dev *pdev)
+static inline int vpci_assign_device(struct pci_dev *pdev, pci_sbdf_t *vsbdf)
 {
     return 0;
 }
