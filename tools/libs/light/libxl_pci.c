@@ -1407,6 +1407,7 @@ static void pci_add_dm_done(libxl__egc *egc,
     libxl__json_object *args;
     const libxl__json_object *value;
     libxl__json_object *res_obj;
+    uint32_t vsbdf = XEN_DOMCTL_DEV_SDBF_ANY;
 
     vchan = pci_vchan_get_client(gc);
     if (!vchan)
@@ -1505,12 +1506,16 @@ out_no_irq:
             rc = ERROR_FAIL;
             goto out;
         }
-        r = xc_assign_device(ctx->xch, domid, pci_encode_bdf(pci), NULL, flag);
+        if (pci->vdevfn)
+            vsbdf = pci->vdevfn;
+
+        r = xc_assign_device(ctx->xch, domid, pci_encode_bdf(pci), &vsbdf, flag);
         if (r < 0 && (hvm || errno != ENOSYS)) {
             LOGED(ERROR, domainid, "xc_assign_device failed");
             rc = ERROR_FAIL;
             goto out;
         }
+        LOGD(DEBUG, domainid, "Got vSBDF %x", vsbdf);
     }
 
     if (!libxl_get_stubdom_id(CTX, domid))
