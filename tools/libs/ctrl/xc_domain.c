@@ -1497,18 +1497,28 @@ int xc_assign_device(
     xc_interface *xch,
     uint32_t domid,
     uint32_t machine_sbdf,
+    uint32_t *virtual_sbdf,
     uint32_t flags)
 {
+    int rc;
     struct xen_domctl domctl = {};
 
     domctl.cmd = XEN_DOMCTL_assign_device;
     domctl.domain = domid;
     domctl.u.assign_device.dev = XEN_DOMCTL_DEV_PCI;
     domctl.u.assign_device.u.pci.machine_sbdf = machine_sbdf;
-    domctl.u.assign_device.u.pci.virtual_sbdf = XEN_DOMCTL_DEV_SDBF_ANY;
+    if (!virtual_sbdf)
+        domctl.u.assign_device.u.pci.virtual_sbdf = XEN_DOMCTL_DEV_SDBF_ANY;
+    else
+        domctl.u.assign_device.u.pci.virtual_sbdf = *virtual_sbdf;
     domctl.u.assign_device.flags = flags;
 
-    return do_domctl(xch, &domctl);
+    rc = do_domctl(xch, &domctl);
+
+    if (!rc && virtual_sbdf)
+        *virtual_sbdf = domctl.u.assign_device.u.pci.virtual_sbdf;
+
+    return rc;
 }
 
 int xc_get_device_group(

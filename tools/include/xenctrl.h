@@ -1689,6 +1689,7 @@ int xc_get_hvm_param(xc_interface *handle, uint32_t dom, int param, unsigned lon
 int xc_assign_device(xc_interface *xch,
                      uint32_t domid,
                      uint32_t machine_sbdf,
+                     uint32_t *virtual_sbdf,
                      uint32_t flag);
 
 int xc_get_device_group(xc_interface *xch,

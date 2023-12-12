@@ -795,7 +795,7 @@ static int libxl__device_pci_assignable_add(libxl__gc *gc,
      * so always pass XEN_DOMCTL_DEV_RDM_RELAXED to avoid assignment being
      * unnecessarily denied.
      */
-    rc = xc_assign_device(ctx->xch, DOMID_IO, pci_encode_bdf(pci),
+    rc = xc_assign_device(ctx->xch, DOMID_IO, pci_encode_bdf(pci), NULL,
                           XEN_DOMCTL_DEV_RDM_RELAXED);
     if ( rc < 0 )
         LOG(ERROR, "failed to quarantine "PCI_BDF, pci->domain, pci->bus,
@@ -1505,7 +1505,7 @@ out_no_irq:
             rc = ERROR_FAIL;
             goto out;
         }
-        r = xc_assign_device(ctx->xch, domid, pci_encode_bdf(pci), flag);
+        r = xc_assign_device(ctx->xch, domid, pci_encode_bdf(pci), NULL, flag);
         if (r < 0 && (hvm || errno != ENOSYS)) {
             LOGED(ERROR, domainid, "xc_assign_device failed");
             rc = ERROR_FAIL;

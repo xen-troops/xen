@@ -1323,7 +1323,7 @@ CAMLprim value stub_xc_domain_assign_device(value xch_val, value domid, value de
 	func = Int_val(Field(desc, 3));
 	sbdf = encode_sbdf(domain, bus, dev, func);
 
-	ret = xc_assign_device(xch, Int_val(domid), sbdf,
+	ret = xc_assign_device(xch, Int_val(domid), sbdf, NULL,
 			       XEN_DOMCTL_DEV_RDM_RELAXED);
 
 	if (ret < 0)

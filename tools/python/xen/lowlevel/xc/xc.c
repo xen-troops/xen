@@ -589,7 +589,7 @@ static PyObject *pyxc_assign_device(XcObject *self,
         sbdf |= (dev & 0x1f) << 3;
         sbdf |= (func & 0x7);
 
-        if ( xc_assign_device(self->xc_handle, dom, sbdf, 0) != 0 )
+        if ( xc_assign_device(self->xc_handle, dom, sbdf, NULL, 0) != 0 )
         {
             if (errno == ENOSYS)
                 sbdf = -1;
