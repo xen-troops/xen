@@ -834,11 +834,33 @@ static int __init construct_domU(struct domain *d,
 
     if ( kinfo.dom0less_feature & DOM0LESS_XENSTORE )
     {
+        struct page_info *magic_pg;
+        mfn_t mfn;
+        gfn_t gfn;
+
         ASSERT(hardware_domain);
         rc = alloc_xenstore_evtchn(d);
         if ( rc < 0 )
             return rc;
         d->arch.hvm.params[HVM_PARAM_STORE_PFN] = ~0ULL;
+
+        d->max_pages += NR_MAGIC_PAGES;
+        magic_pg = alloc_domheap_pages(d, get_order_from_pages(NR_MAGIC_PAGES), 0);
+        if ( magic_pg == NULL )
+            return -ENOMEM;
+
+        mfn = page_to_mfn(magic_pg);
+        if ( !is_domain_direct_mapped(d) )
+            gfn = gaddr_to_gfn(GUEST_MAGIC_BASE);
+        else
+            gfn = gaddr_to_gfn(mfn_to_maddr(mfn));
+
+        rc = guest_physmap_add_pages(d, gfn, mfn, NR_MAGIC_PAGES);
+        if ( rc )
+        {
+            free_domheap_pages(magic_pg, get_order_from_pages(NR_MAGIC_PAGES));
+            return rc;
+        }
     }
 
     return rc;

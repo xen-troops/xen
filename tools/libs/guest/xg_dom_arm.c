@@ -25,7 +25,6 @@
 
 #include "xg_private.h"
 
-#define NR_MAGIC_PAGES 4
 #define CONSOLE_PFN_OFFSET 0
 #define XENSTORE_PFN_OFFSET 1
 #define MEMACCESS_PFN_OFFSET 2
