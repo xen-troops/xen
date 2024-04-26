@@ -861,6 +861,8 @@ static int __init construct_domU(struct domain *d,
             free_domheap_pages(magic_pg, get_order_from_pages(NR_MAGIC_PAGES));
             return rc;
         }
+
+        d->arch.hvm.params[HVM_PARAM_MAGIC_BASE_PFN] = gfn_x(gfn);
     }
 
     return rc;

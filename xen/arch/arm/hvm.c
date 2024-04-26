@@ -55,6 +55,7 @@ static int hvm_allow_get_param(const struct domain *d, unsigned int param)
     case HVM_PARAM_STORE_EVTCHN:
     case HVM_PARAM_CONSOLE_PFN:
     case HVM_PARAM_CONSOLE_EVTCHN:
+    case HVM_PARAM_MAGIC_BASE_PFN:
         return 0;
 
         /*
