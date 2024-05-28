@@ -15,6 +15,7 @@
 #include <asm/domain_build.h>
 #include <asm/static-memory.h>
 #include <asm/static-shmem.h>
+#include <asm/tee/tee.h>
 
 bool __init is_dom0less_mode(void)
 {
@@ -269,6 +270,42 @@ static int __init make_vpl011_uart_node(struct kernel_info *kinfo)
     /* Use a default baud rate of 115200. */
     fdt_property_u32(fdt, "current-speed", 115200);
 
+    res = fdt_end_node(fdt);
+    if ( res )
+        return res;
+
+    return 0;
+}
+#endif
+
+#ifdef CONFIG_OPTEE
+static int __init make_optee_node(struct kernel_info *kinfo)
+{
+    void *fdt = kinfo->fdt;
+    int res;
+
+    res = fdt_begin_node(fdt, "firmware");
+    if ( res )
+        return res;
+
+    res = fdt_begin_node(fdt, "optee");
+    if ( res )
+        return res;
+
+    res = fdt_property_string(fdt, "compatible", "linaro,optee-tz");
+    if ( res )
+        return res;
+
+    res = fdt_property_string(fdt, "method", "hvc");
+    if ( res )
+        return res;
+
+    /* end of "optee" */
+    res = fdt_end_node(fdt);
+    if ( res )
+        return res;
+
+    /* end of "firmware" */
     res = fdt_end_node(fdt);
     if ( res )
         return res;
@@ -650,6 +687,15 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     if ( ret )
         goto err;
 
+#ifdef CONFIG_OPTEE
+    if ( kinfo->tee_type == XEN_DOMCTL_CONFIG_TEE_OPTEE)
+    {
+        ret = make_optee_node(kinfo);
+        if ( ret )
+            goto err;
+    }
+#endif
+
     /*
      * domain_handle_dtb_bootmodule has to be called before the rest of
      * the device tree is generated because it depends on the value of
@@ -743,6 +789,9 @@ static int __init construct_domU(struct domain *d,
 {
     struct kernel_info kinfo = {};
     const char *dom0less_enhanced;
+#ifdef CONFIG_TEE
+    const char *tee;
+#endif
     int rc;
     u64 mem;
     u32 p2m_mem_mb;
@@ -786,6 +835,18 @@ static int __init construct_domU(struct domain *d,
     else if ( rc == 0 && !strcmp(dom0less_enhanced, "no-xenstore") )
         kinfo.dom0less_feature = DOM0LESS_ENHANCED_NO_XS;
 
+#ifdef CONFIG_TEE
+    rc = dt_property_read_string(node, "xen,tee", &tee);
+    if ( rc == -EILSEQ ||
+         rc == -ENODATA ||
+         (rc == 0 && !strcmp(tee, "none")) )
+    {
+        if ( !hardware_domain )
+            kinfo.tee_type = XEN_DOMCTL_CONFIG_TEE_NONE;
+    }
+    else if ( rc == 0 && !strcmp(tee, "optee") )
+        kinfo.tee_type = XEN_DOMCTL_CONFIG_TEE_OPTEE;
+#endif
     if ( vcpu_create(d, 0) == NULL )
         return -ENOMEM;
 
@@ -824,6 +885,14 @@ static int __init construct_domU(struct domain *d,
             return rc;
     }
 
+#ifdef CONFIG_TEE
+    if ( kinfo.tee_type )
+    {
+        rc = tee_domain_init(d, kinfo.tee_type);
+        if ( rc < 0 )
+            return rc;
+    }
+#endif
     rc = prepare_dtb_domU(d, &kinfo);
     if ( rc < 0 )
         return rc;
