@@ -374,6 +374,9 @@ struct domain_iommu {
      * necessarily imply this is true.
      */
     bool need_sync;
+
+    /* Do not return error if the device without iommu is assigned */
+    bool force_assign_iommu;
 };
 
 #define dom_iommu(d)              (&(d)->iommu)

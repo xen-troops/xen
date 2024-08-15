@@ -64,8 +64,11 @@ struct xen_domctl_createdomain {
 #define _XEN_DOMCTL_IOMMU_no_sharept  0
 #define XEN_DOMCTL_IOMMU_no_sharept   (1U << _XEN_DOMCTL_IOMMU_no_sharept)
 
+#define _XEN_DOMCTL_IOMMU_force_iommu 1
+#define XEN_DOMCTL_IOMMU_force_iommu  (1U << _XEN_DOMCTL_IOMMU_force_iommu)
+
 /* Max XEN_DOMCTL_IOMMU_* constant.  Used for ABI checking. */
-#define XEN_DOMCTL_IOMMU_MAX XEN_DOMCTL_IOMMU_no_sharept
+#define XEN_DOMCTL_IOMMU_MAX XEN_DOMCTL_IOMMU_force_iommu
 
     uint32_t iommu_opts;
 

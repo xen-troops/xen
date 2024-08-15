@@ -44,6 +44,7 @@
 #include <asm/cpufeature.h>
 #include <asm/platform.h>
 #include <asm/procinfo.h>
+#include <asm/sci/sci.h>
 #include <asm/setup.h>
 #include <xsm/xsm.h>
 #include <asm/acpi.h>

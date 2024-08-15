@@ -57,6 +57,9 @@ struct kernel_info {
     /* Enable pl011 emulation */
     bool vpl011;
 
+    /* TEE type */
+    uint16_t tee_type;
+
     /* Enable/Disable PV drivers interfaces */
     uint16_t dom0less_feature;
 

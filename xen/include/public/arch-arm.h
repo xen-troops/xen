@@ -327,6 +327,9 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_guest_context_t);
 #define XEN_DOMCTL_CONFIG_TEE_OPTEE     1
 #define XEN_DOMCTL_CONFIG_TEE_FFA       2
 
+#define XEN_DOMCTL_CONFIG_ARM_SCI_NONE      0
+#define XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC  1
+
 struct xen_arch_domainconfig {
     /* IN/OUT */
     uint8_t gic_version;
@@ -334,6 +337,8 @@ struct xen_arch_domainconfig {
     uint8_t sve_vl;
     /* IN */
     uint16_t tee_type;
+    /* IN */
+    uint16_t arm_sci_type;
     /* IN */
     uint32_t nr_spis;
     /*
@@ -443,12 +448,12 @@ typedef uint64_t xen_callback_t;
 #define GUEST_GICC_SIZE   xen_mk_ullong(0x00002000)
 
 /* vGIC v3 mappings */
-#define GUEST_GICV3_GICD_BASE      xen_mk_ullong(0x03001000)
+#define GUEST_GICV3_GICD_BASE      xen_mk_ullong(0x100000000)
 #define GUEST_GICV3_GICD_SIZE      xen_mk_ullong(0x00010000)
 
 #define GUEST_GICV3_RDIST_REGIONS  1
 
-#define GUEST_GICV3_GICR0_BASE     xen_mk_ullong(0x03020000) /* vCPU0..127 */
+#define GUEST_GICV3_GICR0_BASE     xen_mk_ullong(0x110000000) /* vCPU0..127 */
 #define GUEST_GICV3_GICR0_SIZE     xen_mk_ullong(0x01000000)
 
 /*
@@ -461,6 +466,10 @@ typedef uint64_t xen_callback_t;
 /* ACPI tables physical address */
 #define GUEST_ACPI_BASE xen_mk_ullong(0x20000000)
 #define GUEST_ACPI_SIZE xen_mk_ullong(0x02000000)
+
+/* SCMI shared memory address */
+#define GUEST_SCI_SHMEM_BASE   xen_mk_ullong(0x05ff0000)
+#define GUEST_SCI_SHMEM_SIZE   xen_mk_ullong(0x01000)
 
 /* PL011 mappings */
 #define GUEST_PL011_BASE    xen_mk_ullong(0x22000000)
@@ -497,6 +506,7 @@ typedef uint64_t xen_callback_t;
 
 #define GUEST_MAGIC_BASE  xen_mk_ullong(0x39000000)
 #define GUEST_MAGIC_SIZE  xen_mk_ullong(0x01000000)
+#define NR_MAGIC_PAGES 4
 
 /* 64 MB is reserved for virtio-pci Prefetch memory */
 #define GUEST_VIRTIO_PCI_ADDR_TYPE_PREFETCH_MEM    xen_mk_ullong(0x42000000)
@@ -510,8 +520,8 @@ typedef uint64_t xen_callback_t;
  * address space) relies on the fact that the regions reserved for the RAM
  * below are big enough to also accommodate such regions.
  */
-#define GUEST_RAM0_BASE   xen_mk_ullong(0x40000000) /* 2GB of low RAM @ 1GB */
-#define GUEST_RAM0_SIZE   xen_mk_ullong(0x80000000)
+#define GUEST_RAM0_BASE   xen_mk_ullong(0xA0000000) /* 2GB of low RAM @ 1GB */
+#define GUEST_RAM0_SIZE   xen_mk_ullong(0x60000000)
 
 /* 4GB @ 4GB Prefetch Memory for VPCI */
 #define GUEST_VPCI_ADDR_TYPE_PREFETCH_MEM   xen_mk_ullong(0x42000000)

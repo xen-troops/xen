@@ -1114,9 +1114,9 @@ static long xatp_permission_check(struct domain *d, unsigned int space)
      * XENMAPSPACE_dev_mmio mapping is only supported for hardware Domain
      * to map this kind of space to itself.
      */
-    if ( (space == XENMAPSPACE_dev_mmio) &&
-         (!is_hardware_domain(d) || (d != current->domain)) )
-        return -EACCES;
+    /* if ( (space == XENMAPSPACE_dev_mmio) && */
+    /*      (!is_hardware_domain(d) || (d != current->domain)) ) */
+    /*     return -EACCES; */
 
     return xsm_add_to_physmap(XSM_TARGET, current->domain, d);
 }

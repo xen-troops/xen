@@ -118,6 +118,9 @@ struct arch_domain
 #ifdef CONFIG_TEE
     void *tee;
 #endif
+#ifdef CONFIG_ARM_SCI
+    void *sci;
+#endif
 
     /* OSID used by virtual GSX device */
     uint8_t vgsx_osid;

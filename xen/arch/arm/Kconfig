@@ -225,6 +225,17 @@ config STATIC_EVTCHN
 	  This option enables establishing static event channel communication
 	  between domains on a dom0less system (domU-domU as well as domU-dom0).
 
+config ARM_SCI
+	bool "Enable ARM_SCI mediators support"
+	depends on ARM
+	default n
+	help
+	  This option enables generic ARM_SCI (System Control Interface) mediators
+	  support. It allows guests to control system resourcess via one of
+	  ARM_SCI mediators implemented in XEN.
+
+	source "arch/arm/sci/Kconfig"
+
 endmenu
 
 menu "ARM errata workaround via the alternative framework"

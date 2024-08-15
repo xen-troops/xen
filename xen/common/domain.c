@@ -540,7 +540,7 @@ static int sanitise_domain_config(struct xen_domctl_createdomain *config)
 
     if ( iommu )
     {
-        if ( config->iommu_opts & ~XEN_DOMCTL_IOMMU_no_sharept )
+        if ( config->iommu_opts >> XEN_DOMCTL_IOMMU_MAX )
         {
             dprintk(XENLOG_INFO, "Unknown IOMMU options %#x\n",
                     config->iommu_opts);

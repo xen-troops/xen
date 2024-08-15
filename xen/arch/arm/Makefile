@@ -8,6 +8,7 @@ obj-y += platforms/
 endif
 obj-$(CONFIG_TEE) += tee/
 obj-$(CONFIG_HAS_VPCI) += vpci.o
+obj-$(CONFIG_ARM_SCI) += sci/
 
 obj-$(CONFIG_HAS_ALTERNATIVE) += alternative.o
 obj-y += bootfdt.init.o

@@ -145,6 +145,11 @@ static int __init device_tree_get_meminfo(const void *fdt, int node,
         mem->bank[mem->nr_banks].start = start;
         mem->bank[mem->nr_banks].size = size;
         mem->bank[mem->nr_banks].type = type;
+
+        if ( mem == &bootinfo.reserved_mem &&
+             fdt_get_property(fdt, node, "xen,passthrough", NULL) )
+            mem->bank[mem->nr_banks].type = MEMBANK_PASS_THROUGH;
+
         mem->nr_banks++;
     }
 

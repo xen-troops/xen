@@ -262,6 +262,10 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         if (b_info->iomem[i].gfn == LIBXL_INVALID_GFN)
             b_info->iomem[i].gfn = b_info->iomem[i].start;
 
+    for (i = 0 ; i < b_info->num_resvmem; i++)
+        if (b_info->resvmem[i].gfn == LIBXL_INVALID_GFN)
+            b_info->resvmem[i].gfn = b_info->resvmem[i].start;
+
     if (!b_info->event_channels)
         b_info->event_channels = 1023;
 
@@ -614,6 +618,38 @@ out:
     return ret;
 }
 
+static int map_sci_page(libxl__gc *gc, uint32_t domid, uint64_t paddr,
+                         uint64_t guest_addr)
+{
+    int ret;
+    uint64_t _paddr_pfn = paddr >> XC_PAGE_SHIFT;
+    uint64_t _guest_pfn = guest_addr >> XC_PAGE_SHIFT;
+
+    assert(paddr && guest_addr);
+    LOG(DEBUG, "iomem %"PRIx64, _paddr_pfn);
+
+    ret = xc_domain_iomem_permission(CTX->xch, domid, _paddr_pfn, 1, 1);
+    if (ret < 0) {
+        LOG(ERROR,
+              "failed give domain access to iomem page %"PRIx64,
+             _paddr_pfn);
+        return ret;
+    }
+
+    ret = xc_domain_memory_mapping(CTX->xch, domid,
+                                   _guest_pfn, _paddr_pfn,
+                                   1, 1);
+    if (ret < 0) {
+        LOG(ERROR,
+              "failed to map to domain iomem page %"PRIx64
+              " to guest address %"PRIx64,
+              _paddr_pfn, _guest_pfn);
+        return ret;
+    }
+
+    return 0;
+}
+
 int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
                        libxl__domain_build_state *state,
                        uint32_t *domid, bool soft_reset)
@@ -773,6 +809,16 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
      * valid.
      */
     assert(libxl_domid_valid_guest(*domid));
+
+    if (d_config->b_info.arm_sci == LIBXL_ARM_SCI_TYPE_SCMI_SMC) {
+        ret = map_sci_page(gc, *domid, state->arm_sci_agent_paddr,
+                            GUEST_SCI_SHMEM_BASE);
+        if (ret < 0) {
+            LOGED(ERROR, *domid, "map scmi fail");
+            rc = ERROR_FAIL;
+            goto out;
+        }
+    }
 
     dom_path = libxl__xs_get_dompath(gc, *domid);
     if (!dom_path) {
@@ -1748,6 +1794,63 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         }
     }
 
+    for (i = 0; i < d_config->b_info.num_resvmem; i++) {
+        libxl_iomem_range *io = &d_config->b_info.resvmem[i];
+        xen_ulong_t *idxs = calloc(io->number, sizeof(xen_ulong_t));
+        xen_pfn_t *gpfns = calloc(io->number, sizeof(xen_pfn_t));
+        int *errs = calloc(io->number, sizeof(int));
+        int k;
+
+        if (!idxs || !gpfns || !errs) {
+            LOGD(ERROR, domid, "Can't allocate memory for indexes/gpfns/errs");
+            free(idxs);
+            free(gpfns);
+            free(errs);
+            ret = ERROR_FAIL;
+            goto error_out;
+        }
+
+        LOGD(DEBUG, domid, "resvmem %"PRIx64"-%"PRIx64,
+             io->start, io->start + io->number - 1);
+
+        ret = xc_domain_iomem_permission(CTX->xch, domid,
+                                          io->start, io->number, 1);
+        if (ret < 0) {
+            LOGED(ERROR, domid,
+                  "failed give domain access to iomem range %"PRIx64"-%"PRIx64,
+                  io->start, io->start + io->number - 1);
+            ret = ERROR_FAIL;
+            free(idxs);
+            free(gpfns);
+            free(errs);
+            goto error_out;
+        }
+
+        for (k = 0; k < io->number; k++) {
+            idxs[k] = io->start + k;
+            gpfns[k] = io->gfn + k;
+        };
+        ret = xc_domain_add_to_physmap_batch(CTX->xch, domid,
+                                             0, /* TODO: Set correct foreign domid */
+                                             XENMAPSPACE_dev_mmio,
+                                             io->number,
+                                             idxs, gpfns, errs);
+        if (ret < 0) {
+            LOGED(ERROR, domid,
+                  "failed to map to domain reserved range %"PRIx64"-%"PRIx64
+                  " to guest address %"PRIx64,
+                  io->start, io->start + io->number - 1, io->gfn);
+            ret = ERROR_FAIL;
+            free(idxs);
+            free(gpfns);
+            free(errs);
+            goto error_out;
+        }
+        free(idxs);
+        free(gpfns);
+        free(errs);
+    }
+
     /* For both HVM and PV the 0th console is a regular console. We
        map channels to IOEMU consoles starting at 1 */
     for (i = 0; i < d_config->num_channels; i++) {
@@ -1912,7 +2015,7 @@ static void libxl__add_dtdevs(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
         LOGD(DEBUG, domid, "Assign device \"%s\" to domain", dtdev->path);
         rc = xc_assign_dt_device(CTX->xch, domid, dtdev->path);
         if (rc < 0) {
-            LOGD(ERROR, domid, "xc_assign_dtdevice failed: %d", rc);
+            LOGD(ERROR, domid, "xc_assign_dt_device failed: %d", rc);
             goto out;
         }
     }

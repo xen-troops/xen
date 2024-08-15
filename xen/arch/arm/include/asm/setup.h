@@ -41,6 +41,12 @@ enum membank_type {
      * in reserved_mem.
      */
     MEMBANK_STATIC_HEAP,
+    /*
+     * The MEMBANK_PASS_THROUGH type is used to indicate whether the memory
+     * bank is marked for pass-through. It is only valid when the bank is
+     * in reserved_mem.
+     */
+    MEMBANK_PASS_THROUGH,
 };
 
 /* Indicates the maximum number of characters(\0 included) for shm_id */

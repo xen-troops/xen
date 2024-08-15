@@ -76,6 +76,7 @@
  */
 #define HVM_PARAM_STORE_PFN    1
 #define HVM_PARAM_STORE_EVTCHN 2
+#define HVM_PARAM_MAGIC_BASE_PFN    3
 
 #define HVM_PARAM_IOREQ_PFN    5
 

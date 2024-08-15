@@ -1647,9 +1647,9 @@ void parse_config_data(const char *config_source,
     XLU_ConfigList *cpus, *vbds, *nics, *pcis, *cvfbs, *cpuids, *vtpms,
                    *usbctrls, *usbdevs, *p9devs, *vdispls, *pvcallsifs_devs;
     XLU_ConfigList *channels, *ioports, *irqs, *iomem, *viridian, *dtdevs,
-                   *mca_caps, *smbios;
+                   *mca_caps, *smbios, *resvmem;
     int num_ioports, num_irqs, num_iomem, num_cpus, num_viridian, num_mca_caps;
-    int num_smbios;
+    int num_smbios, num_resvmem;
     int pci_power_mgmt = 0;
     int pci_msitranslate = 0;
     int pci_permissive = 0;
@@ -2532,6 +2532,35 @@ void parse_config_data(const char *config_source,
         }
     }
 
+    if (!xlu_cfg_get_list(config, "reserved_mem", &resvmem, &num_resvmem, 0)) {
+        int ret;
+        b_info->num_resvmem = num_resvmem;
+        b_info->resvmem = calloc(num_resvmem, sizeof(*b_info->resvmem));
+        if (b_info->resvmem == NULL) {
+            fprintf(stderr, "unable to allocate memory for reserved memory\n");
+            exit(-1);
+        }
+        for (i = 0; i < num_resvmem; i++) {
+            int used;
+
+            buf = xlu_cfg_get_listitem (resvmem, i);
+            if (!buf) {
+                fprintf(stderr,
+                        "xl: Unable to get element %d in reserved memory list\n", i);
+                exit(1);
+            }
+            libxl_iomem_range_init(&b_info->resvmem[i]);
+            ret = sscanf(buf, "%" SCNx64",%" SCNx64"%n@%" SCNx64"%n",
+                         &b_info->resvmem[i].start,
+                         &b_info->resvmem[i].number, &used,
+                         &b_info->resvmem[i].gfn, &used);
+            if (ret < 2 || buf[used] != '\0') {
+                fprintf(stderr,
+                        "xl: Invalid argument parsing reserved mem: %s\n", buf);
+                exit(1);
+            }
+        }
+    }
 
 
     if (!xlu_cfg_get_list (config, "disk", &vbds, 0, 0)) {
@@ -3285,6 +3314,17 @@ skip_usbdev:
         }
     }
 
+    if (!xlu_cfg_get_string (config, "arm_sci", &buf, 1)) {
+        e = libxl_arm_sci_type_from_string(buf, &b_info->arm_sci);
+        if (e) {
+            fprintf(stderr,
+                    "Unknown arm_sci \"%s\" specified\n", buf);
+            exit(-ERROR_FAIL);
+        }
+    }
+
+    xlu_cfg_get_defbool(config, "force_assign_without_iommu",
+	&b_info->force_assign_without_iommu, 0);
     parse_vkb_list(config, d_config);
     parse_vgsx_list(config, d_config);
     parse_vcamera_list(config, d_config);
