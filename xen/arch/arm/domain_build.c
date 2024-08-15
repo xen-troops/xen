@@ -1612,6 +1612,8 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
         DT_MATCH_TYPE("memory"),
         /* The memory mapped timer is not supported by Xen. */
         DT_MATCH_COMPATIBLE("arm,armv7-timer-mem"),
+        /* SCPI shared memory is handled by Xen */
+        DT_MATCH_COMPATIBLE("arm,scmi-shmem"),
         { /* sentinel */ },
     };
     static const struct dt_device_match timer_matches[] __initconst =
