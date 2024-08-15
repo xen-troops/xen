@@ -261,7 +261,7 @@ int __init process_shm(struct domain *d, struct kernel_info *kinfo,
         if ( owner_dom_io || (strcmp(role_str, "borrower") == 0) )
         {
             /* Set up P2M foreign mapping for borrower domain. */
-            ret = map_regions_p2mt(d, _gfn(PFN_UP(gbase)), PFN_DOWN(psize),
+            ret = map_mmio_regions(d, _gfn(PFN_UP(gbase)), PFN_DOWN(psize),
                                    _mfn(PFN_UP(pbase)), p2m_map_foreign_rw);
             if ( ret )
                 return ret;
