@@ -4,3 +4,4 @@ obj-$(CONFIG_IPMMU_VMSA) += ipmmu-vmsa.o
 obj-$(CONFIG_IPMMU_VMSA) += ipmmu-vmsa-plat.o
 obj-$(CONFIG_RCAR4_PLATFORM) += plat-rcar/rproc.o
 obj-$(CONFIG_ARM_SMMU_V3) += smmu-v3.o
+obj-$(CONFIG_SCMI_SMC) += scmi_dt_maker.o
