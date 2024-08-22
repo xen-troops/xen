@@ -804,6 +804,7 @@ static void ipmmu_device_reset(struct ipmmu_vmsa_device *mmu)
 #define RCAR_PRODUCT_M3W     0x00005200
 #define RCAR_PRODUCT_M3N     0x00005500
 #define RCAR_PRODUCT_S4      0x00005A00
+#define RCAR_PRODUCT_V4H     0x00005C00
 #define RCAR_CUT_MASK        0x000000FF
 #define RCAR_CUT_VER30       0x00000020
 
@@ -852,6 +853,7 @@ static __init bool ipmmu_stage2_supported(void)
         break;
 
     case RCAR_PRODUCT_S4:
+    case RCAR_PRODUCT_V4H:
         stage2_supported = true;
         break;
 
@@ -885,6 +887,10 @@ static const struct dt_device_match ipmmu_dt_match[] __initconst =
     },
     {
         .compatible = "renesas,ipmmu-r8a779f0",
+        .data = &ipmmu_features_rcar_gen4,
+    },
+    {
+        .compatible = "renesas,ipmmu-r8a779g0",
         .data = &ipmmu_features_rcar_gen4,
     },
     { /* sentinel */ },
@@ -1628,7 +1634,7 @@ static const struct iommu_ops ipmmu_iommu_ops =
 
 static __init int ipmmu_init(struct dt_device_node *node, const void *data)
 {
-    static bool s4;
+    static bool gen4;
     int ret;
 
     /*
@@ -1638,10 +1644,11 @@ static __init int ipmmu_init(struct dt_device_node *node, const void *data)
     dt_device_set_used_by(node, DOMID_XEN);
 
 
-    if ( !s4 && dt_device_is_compatible(node, "renesas,ipmmu-r8a779f0") )
-        s4 = true;
+    if ( !gen4 && (dt_device_is_compatible(node, "renesas,ipmmu-r8a779f0") ||
+         (dt_device_is_compatible(node, "renesas,ipmmu-r8a779g0"))))
+        gen4 = true;
 
-    if ( !s4 )
+    if ( !gen4 )
     {
         /*
          * Perform platform specific actions such as power-on, errata maintenance
