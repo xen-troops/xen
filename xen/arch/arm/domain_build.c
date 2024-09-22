@@ -1590,6 +1590,20 @@ int __init make_chosen_node(const struct kernel_info *kinfo)
     return res;
 }
 
+#ifdef CONFIG_SCMI_SMC
+static int __init mem_permit_access(struct domain *d, uint64_t addr, uint64_t len)
+{
+    int res;
+    res = iomem_permit_access(d, paddr_to_pfn(addr),
+            paddr_to_pfn(PAGE_ALIGN(addr + len - 1)));
+    if ( res )
+        return res;
+
+    return map_regions_p2mt(d, gaddr_to_gfn(addr), PFN_DOWN(len),
+            maddr_to_mfn(addr), p2m_mmio_direct_nc);
+}
+#endif /* CONFIG_SCMI_SMC */
+
 static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
                               struct dt_device_node *node,
                               p2m_type_t p2mt)
@@ -1741,6 +1755,12 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
          */
         evtchn_allocate(d);
 
+#ifdef CONFIG_SCMI_SMC
+        res = mem_permit_access(kinfo->d, kinfo->d->arch.sci_channel.paddr,
+                0x1000);
+        if ( res )
+            return res;
+#endif
         /*
          * The hypervisor node should always be created after all nodes
          * from the host DT have been parsed.

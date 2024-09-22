@@ -454,58 +454,6 @@ static struct scmi_channel *smc_create_channel(uint8_t agent_id,
     return channel;
 }
 
-static int mem_permit_access(struct domain *d, uint64_t addr, uint64_t len)
-{
-    return iomem_permit_access(d, paddr_to_pfn(addr),
-                paddr_to_pfn(PAGE_ALIGN(addr + len -1)));
-}
-
-static int mem_deny_access(struct domain *d, uint64_t addr,
-                                     uint64_t len)
-{
-    return iomem_deny_access(d, paddr_to_pfn(addr),
-                paddr_to_pfn(PAGE_ALIGN(addr + len -1)));
-}
-
-static int dt_update_domain_range(uint64_t addr, uint64_t size)
-{
-    struct dt_device_node *scmi_node, *shmem_node;
-    const __be32 *shmem_phandle;
-    __be32 *hw_reg;
-    const struct dt_property *pp;
-    uint32_t len;
-
-    scmi_node = dt_find_compatible_node(NULL, NULL, "arm,scmi-smc");
-    if ( !scmi_node )
-    {
-        printk(XENLOG_ERR "scmi: Unable to find scmi node in DT\n");
-        return -EINVAL;
-    }
-
-    shmem_phandle = dt_get_property(scmi_node, "shmem", NULL);
-    if ( !shmem_phandle )
-    {
-        printk(XENLOG_ERR "scmi: No shmem property in scmi node\n");
-        return -ENOENT;
-    }
-
-    shmem_node = dt_find_node_by_phandle(be32_to_cpup(shmem_phandle));
-    if ( !shmem_node )
-        return -ENOENT;
-
-    pp = dt_find_property(shmem_node, "reg", &len);
-    if ( !pp )
-    {
-        printk(XENLOG_ERR "scmi: Unable to find regs entry in shmem node\n");
-        return -ENOENT;
-    }
-
-    hw_reg = pp->value;
-    dt_set_range(&hw_reg, shmem_node, addr, size);
-
-    return 0;
-}
-
 static void free_channel_list(void)
 {
     struct scmi_channel *curr, *_curr;
@@ -729,7 +677,6 @@ static int scmi_domain_init(struct domain *d,
                            struct xen_arch_domainconfig *config)
 {
     struct scmi_channel *channel;
-    int ret;
 
     if ( !scmi_data.initialized )
         return 0;
@@ -742,32 +689,11 @@ static int scmi_domain_init(struct domain *d,
            "scmi: Aquire SCMI channel id = 0x%x , domain_id = %d paddr = 0x%lx\n",
            channel->agent_id, channel->domain_id, channel->paddr);
 
-    if ( is_hardware_domain(d) )
-    {
-        ret = mem_permit_access(d, channel->paddr, PAGE_SIZE);
-        if ( IS_ERR_VALUE(ret) )
-            goto error;
-
-        ret = dt_update_domain_range(channel->paddr, PAGE_SIZE);
-        if ( IS_ERR_VALUE(ret) )
-        {
-            int rc = mem_deny_access(d, channel->paddr, PAGE_SIZE);
-            if ( rc )
-                printk(XENLOG_ERR "Unable to mem_deny_access\n");
-
-            goto error;
-        }
-    }
-
     d->arch.sci = channel;
     d->arch.sci_channel.paddr = channel->paddr;
     d->arch.sci_channel.guest_func_id = scmi_data.func_id;
 
     return 0;
-error:
-    relinquish_scmi_channel(channel);
-
-    return ret;
 }
 
 static int scmi_add_device_by_devid(struct domain *d, uint32_t scmi_devid)
@@ -857,7 +783,6 @@ static void scmi_domain_destroy(struct domain *d)
 
     d->arch.sci = NULL;
 
-    mem_deny_access(d, channel->paddr, PAGE_SIZE);
     spin_unlock(&channel->lock);
 }
 
