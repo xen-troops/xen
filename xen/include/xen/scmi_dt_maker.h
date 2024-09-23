@@ -16,10 +16,13 @@ int __init scmi_dt_make_shmem_node(struct kernel_info *kinfo);
 int __init scmi_dt_create_node(struct kernel_info *kinfo);
 int __init scmi_dt_scan_node(struct kernel_info *kinfo, void *pfdt,
                              int nodeoff);
+int __init scmi_dt_set_phandle(struct kernel_info *kinfo,
+                               const char *name);
 #else
 #define scmi_dt_make_shmem_node(kinfo)          (0)
 #define scmi_dt_create_node(kinfo)              (0)
 #define scmi_dt_scan_node(kinfo, pfdt, nodeoff) (0)
+#define scmi_dt_set_phandle(kinfo, name)        (0)
 
 #endif /* CONFIG_SCMI_SMC */
 
