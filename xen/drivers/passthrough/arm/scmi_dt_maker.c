@@ -311,3 +311,16 @@ err:
     clean_handles();
     return rc;
 }
+
+int __init scmi_dt_set_phandle(struct kernel_info *kinfo,
+        const char *name)
+{
+    int offset = fdt_path_offset(kinfo->fdt, name);
+    __be32 val = cpu_to_be32(kinfo->phandle_sci_shmem);
+
+    if ( !offset )
+        return -ENODEV;
+
+    return fdt_setprop_inplace(kinfo->fdt, offset, "shmem",
+            &val,sizeof(val));
+}
