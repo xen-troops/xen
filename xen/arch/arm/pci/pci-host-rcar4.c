@@ -474,6 +474,7 @@ const struct pci_ecam_ops rcar4_pcie_child_ops = {
 static const struct dt_device_match __initconstrel rcar4_pcie_dt_match[] =
 {
     { .compatible = "renesas,r8a779f0-pcie" },
+    { .compatible = "renesas,r8a779g0-pcie" },
     { },
 };
 
