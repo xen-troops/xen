@@ -15,6 +15,7 @@
  * GNU General Public License for more details.
  */
 
+#include <xen/access_controller.h>
 #include <xen/device_tree.h>
 #include <xen/guest_access.h>
 #include <xen/iommu.h>
@@ -378,6 +379,10 @@ int iommu_do_dt_domctl(struct xen_domctl *domctl, struct domain *d,
                    dt_node_full_name(dev));
             break;
         }
+
+        ret = ac_assign_dt_device(dev, d);
+        if ( ret < 0 )
+            return ret;
 
         ret = iommu_assign_dt_device(d, dev);
 
