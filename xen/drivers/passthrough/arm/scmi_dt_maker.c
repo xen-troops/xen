@@ -25,7 +25,7 @@ struct scmi_phandle {
 
 LIST_HEAD(scmi_ph_list);
 
- int __init scmi_dt_make_shmem_node(struct kernel_info *kinfo)
+int __init scmi_dt_make_shmem_node(struct kernel_info *kinfo)
 {
     int res;
     void *fdt = kinfo->fdt;
