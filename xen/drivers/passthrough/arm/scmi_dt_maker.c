@@ -25,7 +25,7 @@ struct scmi_phandle {
 
 LIST_HEAD(scmi_ph_list);
 
- int __init scmi_dt_make_shmem_node(struct kernel_info *kinfo)
+int __init scmi_dt_make_shmem_node(struct kernel_info *kinfo)
 {
     int res;
     void *fdt = kinfo->fdt;
@@ -310,4 +310,17 @@ int __init scmi_dt_scan_node(struct kernel_info *kinfo, void *pfdt,
 err:
     clean_handles();
     return rc;
+}
+
+int __init scmi_dt_set_phandle(struct kernel_info *kinfo,
+        const char *name)
+{
+    int offset = fdt_path_offset(kinfo->fdt, name);
+    __be32 val = cpu_to_be32(kinfo->phandle_sci_shmem);
+
+    if ( !offset )
+        return -ENODEV;
+
+    return fdt_setprop_inplace(kinfo->fdt, offset, "shmem",
+            &val,sizeof(val));
 }

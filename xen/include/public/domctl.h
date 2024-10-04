@@ -1187,6 +1187,13 @@ struct xen_domctl_vmtrace_op {
 #define XEN_DOMCTL_vmtrace_get_option         5
 #define XEN_DOMCTL_vmtrace_set_option         6
 };
+
+/* XEN_DOMCTL_get_sci_info */
+struct xen_domctl_sci_info {
+    uint64_t paddr;
+    uint32_t func_id;
+};
+
 typedef struct xen_domctl_vmtrace_op xen_domctl_vmtrace_op_t;
 DEFINE_XEN_GUEST_HANDLE(xen_domctl_vmtrace_op_t);
 
@@ -1277,6 +1284,7 @@ struct xen_domctl {
 #define XEN_DOMCTL_vmtrace_op                    84
 #define XEN_DOMCTL_get_paging_mempool_size       85
 #define XEN_DOMCTL_set_paging_mempool_size       86
+#define XEN_DOMCTL_get_sci_info                  87
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
@@ -1339,6 +1347,7 @@ struct xen_domctl {
         struct xen_domctl_vuart_op          vuart_op;
         struct xen_domctl_vmtrace_op        vmtrace_op;
         struct xen_domctl_paging_mempool    paging_mempool;
+        struct xen_domctl_sci_info          sci_info;
         uint8_t                             pad[128];
     } u;
 };
