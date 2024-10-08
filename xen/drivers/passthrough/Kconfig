@@ -61,6 +61,21 @@ config INTEL_IOMMU
 	  This is required if your system has more than 254 CPUs.
 	  If in doubt, say Y.
 
+config ACCESS_CONTROLLER
+	bool "Access Controllers support"
+	depends on HAS_DEVICE_TREE
+	default y
+	help
+	  Enables support for Generic Access controllers.
+
+	  Access controllers are in charge of stating which of the
+	  hardware blocks under their responsibility (their domain) can be
+	  accesssed by which compartment. A compartment can be a cluster of
+	  CPUs (or coprocessors), a range of addresses or a group of hardware
+	  blocks. An access controller's domain is the set of resources covered
+	  by the access controller.
+
+
 config IOMMU_FORCE_PT_SHARE
 	bool
 

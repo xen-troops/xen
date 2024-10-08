@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#include <xen/access_controller.h>
 #include <xen/device_tree.h>
 #include <xen/err.h>
 #include <xen/event.h>
@@ -6,6 +7,7 @@
 #include <xen/iocap.h>
 #include <xen/libfdt/libfdt.h>
 #include <xen/sched.h>
+#include <xen/scmi_dt_maker.h>
 #include <xen/serial.h>
 #include <xen/sizes.h>
 #include <xen/vmap.h>
@@ -13,6 +15,7 @@
 #include <asm/arm64/sve.h>
 #include <asm/dom0less-build.h>
 #include <asm/domain_build.h>
+#include <asm/sci/sci.h>
 #include <asm/static-memory.h>
 #include <asm/static-shmem.h>
 #include <asm/tee/tee.h>
@@ -284,10 +287,6 @@ static int __init make_optee_node(struct kernel_info *kinfo)
     void *fdt = kinfo->fdt;
     int res;
 
-    res = fdt_begin_node(fdt, "firmware");
-    if ( res )
-        return res;
-
     res = fdt_begin_node(fdt, "optee");
     if ( res )
         return res;
@@ -301,11 +300,6 @@ static int __init make_optee_node(struct kernel_info *kinfo)
         return res;
 
     /* end of "optee" */
-    res = fdt_end_node(fdt);
-    if ( res )
-        return res;
-
-    /* end of "firmware" */
     res = fdt_end_node(fdt);
     if ( res )
         return res;
@@ -400,6 +394,10 @@ static int __init handle_passthrough_prop(struct kernel_info *kinfo,
         return res;
 
     res = iommu_add_dt_device(node);
+    if ( res < 0 )
+        return res;
+
+    res = ac_assign_dt_device(node, kinfo->d);
     if ( res < 0 )
         return res;
 
@@ -552,6 +550,33 @@ static int __init check_partial_fdt(void *pfdt, size_t size)
     return 0;
 }
 
+#ifdef CONFIG_SCMI_SMC
+int __init scan_firmware_node(struct kernel_info *kinfo, void *pfdt,
+                                int nodeoff)
+{
+    int res;
+    int node_next = fdt_first_subnode(pfdt, nodeoff);
+
+    while ( node_next > 0 )
+    {
+        const char *name = fdt_get_name(pfdt, node_next, NULL);
+
+        if ( dt_node_cmp(name, "scmi") == 0 )
+        {
+            res = scmi_dt_scan_node(kinfo, pfdt, node_next);
+            if ( res )
+                return res;
+
+            break;
+        }
+
+        node_next = fdt_next_subnode(pfdt, node_next);
+    }
+
+    return 0;
+}
+#endif /* CONFIG_SCMI_SMC */
+
 static int __init domain_handle_dtb_bootmodule(struct domain *d,
                                                struct kernel_info *kinfo)
 {
@@ -589,6 +614,16 @@ static int __init domain_handle_dtb_bootmodule(struct domain *d,
             continue;
         }
 
+#ifdef CONFIG_SCMI_SMC
+        if ( dt_node_cmp(name, "firmware") == 0 )
+        {
+            res = scan_firmware_node(kinfo, pfdt, node_next);
+            if ( res )
+                goto out;
+            continue;
+        }
+#endif
+
         if ( dt_node_cmp(name, "aliases") == 0 )
         {
             res = scan_pfdt_node(kinfo, pfdt, node_next,
@@ -617,6 +652,73 @@ static int __init domain_handle_dtb_bootmodule(struct domain *d,
     return res;
 }
 
+#ifdef CONFIG_SCMI_SMC
+static int __init mem_permit_access(struct domain *d, uint64_t addr, uint64_t len)
+{
+    int res;
+    res = iomem_permit_access(d, paddr_to_pfn(addr),
+            paddr_to_pfn(PAGE_ALIGN(addr + len - 1)));
+    if ( res )
+        return res;
+
+    return map_regions_p2mt(d, gaddr_to_gfn(addr), PFN_DOWN(len),
+            maddr_to_mfn(addr), p2m_mmio_direct_nc);
+}
+#endif /* CONFIG_SCMI_SMC */
+
+static int __init make_firmware_node(struct kernel_info *kinfo)
+{
+#if defined(CONFIG_SCMI_SMC) || defined(CONFIG_OPTEE)
+    int ret;
+
+#ifdef CONFIG_SCMI_SMC
+    if ( kinfo->sci_type == XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC )
+    {
+        ret = scmi_dt_make_shmem_node(kinfo);
+        if ( ret )
+            return ret;
+
+        if ( !is_domain_direct_mapped(kinfo->d) )
+        {
+            printk(XENLOG_ERR "Non-direct mapped domains doesn't support SCMI\n");
+            return -ENODEV;
+        }
+
+        ret = mem_permit_access(kinfo->d, kinfo->d->arch.sci_channel.paddr, 0x1000);
+        if ( ret )
+            return ret;
+    }
+#endif
+
+    ret = fdt_begin_node(kinfo->fdt, "/firmware");
+    if ( ret )
+        return ret;
+
+#ifdef CONFIG_SCMI_SMC
+    if ( kinfo->sci_type == XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC )
+    {
+        ret = scmi_dt_create_node(kinfo);
+        if ( ret )
+            return ret;
+    }
+#endif
+
+#ifdef CONFIG_OPTEE
+    if ( kinfo->tee_type == XEN_DOMCTL_CONFIG_TEE_OPTEE)
+    {
+        ret = make_optee_node(kinfo);
+        if ( ret )
+            return ret;
+    }
+#endif
+
+    ret = fdt_end_node(kinfo->fdt);
+    if ( ret )
+        return ret;
+#endif
+    return 0;
+}
+
 /*
  * The max size for DT is 2MB. However, the generated DT is small (not including
  * domU passthrough DT nodes whose size we account separately), 4KB are enough
@@ -631,6 +733,7 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     kinfo->phandle_gic = GUEST_PHANDLE_GIC;
     kinfo->gnttab_start = GUEST_GNTTAB_BASE;
     kinfo->gnttab_size = GUEST_GNTTAB_SIZE;
+    kinfo->phandle_sci_shmem = GUEST_PHANDLE_SCMI;
 
     addrcells = GUEST_ROOT_ADDRESS_CELLS;
     sizecells = GUEST_ROOT_SIZE_CELLS;
@@ -687,15 +790,6 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
     if ( ret )
         goto err;
 
-#ifdef CONFIG_OPTEE
-    if ( kinfo->tee_type == XEN_DOMCTL_CONFIG_TEE_OPTEE)
-    {
-        ret = make_optee_node(kinfo);
-        if ( ret )
-            goto err;
-    }
-#endif
-
     /*
      * domain_handle_dtb_bootmodule has to be called before the rest of
      * the device tree is generated because it depends on the value of
@@ -708,6 +802,9 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
             goto err;
     }
 
+    ret = make_firmware_node(kinfo);
+    if ( ret )
+        goto err;
     ret = make_gic_domU_node(kinfo);
     if ( ret )
         goto err;
@@ -792,6 +889,9 @@ static int __init construct_domU(struct domain *d,
 #ifdef CONFIG_TEE
     const char *tee;
 #endif
+#ifdef CONFIG_ARM_SCI
+    const char *arm_sci;
+#endif
     int rc;
     u64 mem;
     u32 p2m_mem_mb;
@@ -834,6 +934,26 @@ static int __init construct_domU(struct domain *d,
     }
     else if ( rc == 0 && !strcmp(dom0less_enhanced, "no-xenstore") )
         kinfo.dom0less_feature = DOM0LESS_ENHANCED_NO_XS;
+
+#ifdef CONFIG_ARM_SCI
+    rc = dt_property_read_string(node, "xen,arm_sci", &arm_sci);
+    if ( rc == -EILSEQ ||
+         rc == -ENODATA ||
+         (rc == 0 && !strcmp(arm_sci, "none")) )
+    {
+        if ( !hardware_domain )
+            kinfo.sci_type = XEN_DOMCTL_CONFIG_ARM_SCI_NONE;
+    }
+    else if ( rc == 0 && !strcmp(arm_sci, "scmi_smc") )
+        kinfo.sci_type = XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC;
+#endif
+
+    if (kinfo.sci_type != XEN_DOMCTL_CONFIG_ARM_SCI_NONE)
+    {
+        rc = sci_domain_init(d, kinfo.sci_type, NULL);
+        if ( rc < 0 )
+            return rc;
+    }
 
 #ifdef CONFIG_TEE
     rc = dt_property_read_string(node, "xen,tee", &tee);

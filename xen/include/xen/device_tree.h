@@ -943,6 +943,12 @@ int dt_count_phandle_with_args(const struct dt_device_node *np,
  */
 int dt_get_pci_domain_nr(struct dt_device_node *node);
 
+/**
+ * dt_find_node_by_phandle - Find a node given a phandle
+ * @handle: phandle of the node to find
+ *
+ * Returns a node pointer.
+ */
 struct dt_device_node *dt_find_node_by_phandle(dt_phandle handle);
 
 #ifdef CONFIG_DEVICE_TREE_DEBUG

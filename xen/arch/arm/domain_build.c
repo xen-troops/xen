@@ -24,6 +24,7 @@
 #include <asm/setup.h>
 #include <asm/tee/tee.h>
 #include <asm/pci.h>
+#include <asm/sci/sci.h>
 #include <asm/platform.h>
 #include <asm/psci.h>
 #include <asm/setup.h>
@@ -37,6 +38,7 @@
 #include <xen/irq.h>
 #include <xen/grant_table.h>
 #include <asm/grant_table.h>
+#include <xen/scmi_dt_maker.h>
 #include <xen/serial.h>
 
 static unsigned int __initdata opt_dom0_max_vcpus;
@@ -1589,6 +1591,29 @@ int __init make_chosen_node(const struct kernel_info *kinfo)
     return res;
 }
 
+#ifdef CONFIG_SCMI_SMC
+static int __init mem_permit_access(struct domain *d, uint64_t addr, uint64_t len)
+{
+    int res, rc;
+    res = iomem_permit_access(d, paddr_to_pfn(addr),
+                              paddr_to_pfn(PAGE_ALIGN(addr + len - 1)));
+    if ( res )
+        return res;
+
+    res = map_regions_p2mt(d, gaddr_to_gfn(addr), PFN_DOWN(len),
+            maddr_to_mfn(addr), p2m_mmio_direct_nc);
+    if ( res )
+    {
+        rc = iomem_deny_access(d, paddr_to_pfn(addr),
+                               paddr_to_pfn(PAGE_ALIGN(addr + len -1)));
+        if ( rc )
+            printk(XENLOG_ERR "Unable to deny iomem access , err = %d\n", rc);
+    }
+
+    return res;
+}
+#endif /* CONFIG_SCMI_SMC */
+
 static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
                               struct dt_device_node *node,
                               p2m_type_t p2mt)
@@ -1612,6 +1637,8 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
         DT_MATCH_TYPE("memory"),
         /* The memory mapped timer is not supported by Xen. */
         DT_MATCH_COMPATIBLE("arm,armv7-timer-mem"),
+        /* SCMI shared memory is handled by Xen */
+        DT_MATCH_COMPATIBLE("arm,scmi-shmem"),
         { /* sentinel */ },
     };
     static const struct dt_device_match timer_matches[] __initconst =
@@ -1626,6 +1653,13 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
         DT_MATCH_PATH("/hypervisor"),
         { /* sentinel */ },
     };
+#ifdef CONFIG_SCMI_SMC
+    static const struct dt_device_match scmi_matches[] __initconst =
+    {
+        DT_MATCH_PATH("/firmware/scmi"),
+        { /* sentinel */ },
+    };
+#endif /* CONFIG_SCMI_SMC */
     struct dt_device_node *child;
     int res, i, nirq, irq_id;
     const char *name;
@@ -1738,6 +1772,16 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
          */
         evtchn_allocate(d);
 
+#ifdef CONFIG_SCMI_SMC
+        res = scmi_dt_make_shmem_node(kinfo);
+        if ( res )
+            return res;
+
+        res = mem_permit_access(kinfo->d, kinfo->d->arch.sci_channel.paddr,
+                                PAGE_SIZE);
+        if ( res )
+            return res;
+#endif
         /*
          * The hypervisor node should always be created after all nodes
          * from the host DT have been parsed.
@@ -1776,6 +1820,15 @@ static int __init handle_node(struct domain *d, struct kernel_info *kinfo,
             return res;
     }
 
+#ifdef CONFIG_SCMI_SMC
+    if ( dt_match_node(scmi_matches, node) )
+    {
+        res = scmi_dt_set_phandle(kinfo, dt_node_full_name(node));
+        if ( res )
+            return res;
+    }
+#endif
+
     res = fdt_end_node(kinfo->fdt);
 
     return res;
@@ -1791,6 +1844,8 @@ static int __init prepare_dtb_hwdom(struct domain *d, struct kernel_info *kinfo)
     ASSERT(dt_host && (dt_host->sibling == NULL));
 
     kinfo->phandle_gic = dt_interrupt_controller->phandle;
+    kinfo->phandle_sci_shmem = GUEST_PHANDLE_SCMI;
+
     fdt = device_tree_flattened;
 
     new_size = fdt_totalsize(fdt) + DOM0_FDT_EXTRA_SIZE;
@@ -2089,6 +2144,12 @@ static int __init construct_dom0(struct domain *d)
     if ( rc < 0 )
         return rc;
 
+#if CONFIG_ARM_SCI
+    rc = sci_domain_init(d, sci_get_type(), NULL);
+    if ( rc < 0 )
+        return rc;
+#endif
+
     if ( acpi_disabled )
     {
         rc = prepare_dtb_hwdom(d, &kinfo);
@@ -2130,6 +2191,8 @@ void __init create_dom0(void)
         printk(XENLOG_WARNING "Maximum number of vGIC IRQs exceeded.\n");
     dom0_cfg.arch.tee_type = tee_get_type();
     dom0_cfg.max_vcpus = dom0_max_vcpus();
+
+    dom0_cfg.arch.arm_sci_type = sci_get_type();
 
     if ( iommu_enabled )
         dom0_cfg.flags |= XEN_DOMCTL_CDF_iommu;

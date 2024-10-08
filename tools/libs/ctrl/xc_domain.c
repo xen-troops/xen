@@ -2180,6 +2180,24 @@ int xc_domain_soft_reset(xc_interface *xch,
     domctl.domain = domid;
     return do_domctl(xch, &domctl);
 }
+
+int xc_domain_get_sci_info(xc_interface *xch, uint32_t domid,
+                            uint64_t *paddr, uint32_t *func_id)
+{
+    struct xen_domctl domctl = {};
+
+    memset(&domctl, 0, sizeof(domctl));
+    domctl.cmd = XEN_DOMCTL_get_sci_info;
+    domctl.domain = domid;
+
+    if ( do_domctl(xch, &domctl) != 0 )
+        return 1;
+
+    *paddr = domctl.u.sci_info.paddr;
+    *func_id = domctl.u.sci_info.func_id;
+    return 0;
+}
+
 /*
  * Local variables:
  * mode: C
