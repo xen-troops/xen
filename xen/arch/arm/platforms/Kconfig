@@ -53,6 +53,12 @@ config NO_PLAT
 
 endchoice
 
+config RCAR4_RPROC
+       bool "Renesas RPROC pass-through for Gen4"
+       depends on RCAR4
+	---help---
+	Enable experimental RPROC support for RCar4 boards
+
 config ALL64_PLAT
 	bool
 	default (ALL_PLAT && ARM_64)
