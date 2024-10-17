@@ -552,7 +552,7 @@ typedef uint64_t xen_callback_t;
 #define GUEST_EVTCHN_PPI        31
 
 #define GUEST_VPL011_SPI        32
-#define GUEST_MFIS_SPI          265 /* "Reserved" on Gen3 */
+#define GUEST_MFIS_SPI          256 /* "Reserved" on Gen4 */
 
 #define GUEST_VIRTIO_MMIO_SPI_FIRST   33
 #define GUEST_VIRTIO_MMIO_SPI_LAST    43
