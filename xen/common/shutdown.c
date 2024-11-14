@@ -1,5 +1,6 @@
 #include <xen/init.h>
 #include <xen/lib.h>
+#include <xen/fuzzer.h>
 #include <xen/param.h>
 #include <xen/sched.h>
 #include <xen/sections.h>
@@ -32,6 +33,8 @@ static void noreturn reboot_or_halt(void)
 
 void hwdom_shutdown(unsigned char reason)
 {
+    fuzzer_on_block();
+
     switch ( reason )
     {
     case SHUTDOWN_poweroff:

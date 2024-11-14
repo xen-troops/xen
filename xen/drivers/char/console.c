@@ -16,6 +16,7 @@
 #include <xen/event.h>
 #include <xen/console.h>
 #include <xen/param.h>
+#include <xen/fuzzer.h>
 #include <xen/serial.h>
 #include <xen/softirq.h>
 #include <xen/keyhandler.h>
@@ -1288,6 +1289,8 @@ void panic(const char *fmt, ...)
     spin_unlock_irqrestore(&lock, flags);
 
     kexec_crash(CRASHREASON_PANIC);
+
+    fuzzer_crash();
 
     if ( opt_noreboot )
         machine_halt();

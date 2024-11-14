@@ -5,6 +5,7 @@
  */
 
 #include <xen/compat.h>
+#include <xen/fuzzer.h>
 #include <xen/init.h>
 #include <xen/lib.h>
 #include <xen/ctype.h>
@@ -1316,6 +1317,8 @@ int domain_shutdown(struct domain *d, u8 reason)
     __domain_finalise_shutdown(d);
 
     spin_unlock(&d->shutdown_lock);
+
+    fuzzer_on_block();
 
     return 0;
 }

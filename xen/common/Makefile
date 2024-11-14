@@ -78,6 +78,7 @@ extra-y := symbols-dummy.o
 obj-$(CONFIG_COVERAGE) += coverage/
 obj-y += sched/
 obj-$(CONFIG_UBSAN) += ubsan/
+obj-$(CONFIG_FUZZER_LIBAFL_QEMU) += libafl-qemu.o
 
 obj-$(CONFIG_NEEDS_LIBELF) += libelf/
 obj-$(CONFIG_LIBFDT) += libfdt/

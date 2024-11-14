@@ -10,6 +10,7 @@
 
 
 #include <xen/acpi.h>
+#include <xen/fuzzer.h>
 #include <xen/types.h>
 #include <xen/init.h>
 #include <xen/mm.h>
@@ -62,12 +63,16 @@ void call_psci_cpu_off(void)
 
 void call_psci_system_off(void)
 {
+    fuzzer_on_block();
+
     if ( psci_ver > PSCI_VERSION(0, 1) )
         arm_smccc_smc(PSCI_0_2_FN32_SYSTEM_OFF, NULL);
 }
 
 void call_psci_system_reset(void)
 {
+    fuzzer_on_block();
+
     if ( psci_ver > PSCI_VERSION(0, 1) )
         arm_smccc_smc(PSCI_0_2_FN32_SYSTEM_RESET, NULL);
 }

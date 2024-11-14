@@ -190,3 +190,40 @@ config EARLY_PRINTK_INC
 	default "debug-mvebu.inc" if EARLY_UART_MVEBU
 	default "debug-pl011.inc" if EARLY_UART_PL011
 	default "debug-scif.inc" if EARLY_UART_SCIF
+
+config FUZZING
+       bool "Build Xen for fuzzing"
+       help
+          Enable this option only if you are going to run the hypervisor
+	  inside a fuzzer. Do not try to run run Xen built with this option
+	  on any real hardware, because it will likely crash during boot.
+
+choice FUZZER
+       depends on FUZZING
+       prompt "Fuzzer"
+
+config FUZZER_LIBAFL_QEMU
+	depends on ARM_64
+	bool "LibAFL-QEMU"
+	help
+	  This option enables support for LibAFL-QEMU fuzzer. Choose this
+	  option only when you are going to run hypervisor inside LibAFL-QEMU.
+	  Xen will report code section to LibAFL and will report about
+	  crash when it panics.
+
+endchoice
+
+config FUZZER_PASS_BLOCKING
+	depends on FUZZING
+	bool "Fuzzing: Report any attempt to suspend/destroy a domain as a success"
+	help
+	  When fuzzing hypercalls, a fuzzer might make Xen to do something
+	  that prevents from returning to the caller: reboot or turn off the
+	  machine, block calling vCPU, crash a domain, etc. Depending on
+	  fuzzing goal this may be a valid behavior, but as control is not
+	  returned to the fuzzing harness, it can't tell the fuzzer about
+	  success. With this option enabled, Xen will do this by itself.
+
+          Enable this option only if fuzzing attempt can lead to a
+	  correct stop, like when fuzzing hypercalls or PSCI.
+
