@@ -183,7 +183,7 @@ cpp_flags = $(filter-out -Wa$(comma)% -flto,$(1))
 # Calculation of flags, first the generic flags, then the arch specific flags,
 # and last the flags modified for a target or a directory.
 
-c_flags = -MMD -MP -MF $(depfile) $(XEN_CFLAGS)
+c_flags = -MMD -MP -MF $(depfile) $(filter-out $(CFLAGS_REMOVE),$(XEN_CFLAGS))
 a_flags = -MMD -MP -MF $(depfile) $(XEN_AFLAGS)
 
 include $(srctree)/arch/$(SRCARCH)/Rules.mk
