@@ -30,6 +30,9 @@ struct bug_frame {
  * be preferable to this unpleasantness. We use mergeable string
  * sections to avoid multiple copies of the string appearing in the
  * Xen image. BUGFRAME_run_fn needs to be handled separately.
+ *
+ * LLVM's LD has issue with zero-length symbols that point at a section end,
+ * so we need to check for #has_msg end emit 0 instead of (3b-4b)
  */
 #define BUG_FRAME(type, line, file, has_msg, msg) do {                      \
     BUILD_BUG_ON((line) >> 16);                                             \
@@ -47,7 +50,11 @@ struct bug_frame {
          ".p2align 2\n"                                                     \
          ".long (1b - 4b)\n"                                                \
          ".long (2b - 4b)\n"                                                \
+         ".if " #has_msg "\n"                                               \
          ".long (3b - 4b)\n"                                                \
+         ".else\n"                                                          \
+         ".long 0\n"                                                        \
+         ".endif\n"                                                         \
          ".hword " __stringify(line) ", 0\n"                                \
          ".popsection");                                                    \
 } while (0)
