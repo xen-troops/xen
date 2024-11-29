@@ -18,3 +18,5 @@ obj-$(CONFIG_ARM64_SVE) += sve.o sve-asm.o
 obj-y += traps.o
 obj-y += vfp.o
 obj-y += vsysreg.o
+
+$(obj)/vfp.o: CFLAGS_REMOVE += -mgeneral-regs-only
