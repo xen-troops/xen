@@ -48,7 +48,11 @@ struct bug_frame {
          ".p2align 2\n"                                                     \
          ".long (1b - 4b)\n"                                                \
          ".long (2b - 4b)\n"                                                \
+         ".if " #has_msg "\n"                                               \
          ".long (3b - 4b)\n"                                                \
+         ".else\n"                                                          \
+         ".long 0\n"                                                        \
+         ".endif\n"                                                         \
          ".hword " __stringify(line) ", 0\n"                                \
          ".popsection");                                                    \
 } while (0)
