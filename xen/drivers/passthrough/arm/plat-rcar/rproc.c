@@ -28,8 +28,8 @@
 
 #define MFIS_MAX_CHANNELS 8
 
-#define MFIS_IICR(k) (0x1400 + 0x1008 * k + 0x20 * 0)
-#define MFIS_EICR(i) (0x9404 + 0x1020 * 0 + 0x8 * i)
+#define MFIS_IICR(k,i) (0x1400 + 0x1008 * (i) + 0x20 * (k))
+#define MFIS_EICR(k,i) (0x9404 + 0x1020 * (k) + 0x8 * (i))
 
 #define MFIS_SMC_TRIG  ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
                                           ARM_SMCCC_CONV_32,           \
@@ -148,7 +148,7 @@ static void mfis_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)
 
             uint32_t val;
 
-            val = readl(mfis_data->base + MFIS_EICR(i));
+            val = readl(mfis_data->base + MFIS_EICR(0,i));
 
             if ( !(val & 0x1 ) )
             {
@@ -156,7 +156,7 @@ static void mfis_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)
                 break;
             }
 
-            writel(val & ~0x1, mfis_data->base + MFIS_EICR(i));
+            writel(val & ~0x1, mfis_data->base + MFIS_EICR(0,i));
 
 	    if ( mfis_data->domains[i] )
                 vgic_inject_irq(mfis_data->domains[i], NULL, GUEST_MFIS_SPI, true);
@@ -167,57 +167,62 @@ static void mfis_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)
         }
 }
 
-static int mfis_add_domain(struct domain* d, int chan)
-{
-    int ret;
-
-    if ( chan >= mfis_data->chan_cnt )
-        return -EINVAL;
-
-    ret = vgic_reserve_virq(d, GUEST_MFIS_SPI);
-    if ( ret < 0)
-        return ret;
-
-    mfis_data->domains[chan] = d;
-
-    printk("MFIS: Added chan %d for domain %d\n", chan, d->domain_id);
-
-    return 0;
-}
-
-static int mfis_remove_domain(int chan)
-{
-
-    if ( chan >= mfis_data->chan_cnt )
-        return -EINVAL;
-
-    mfis_data->domains[chan] = NULL;
-
-    return 0;
-}
-
-static int mfis_trigger_chan(struct domain *d)
+static int mfis_find_chan(struct domain *d)
 {
     int i;
-    uint32_t val;
 
-    /* Find chan for domain */
     for ( i = 0; i < mfis_data->chan_cnt; i++)
         if ( mfis_data->domains[i] == d )
-        {
-            val = readl(mfis_data->base + MFIS_IICR(i));
-
-            if ( val & 0x1 )
-                return -EBUSY;
-
-            writel(1, mfis_data->base + MFIS_IICR(i));
-            return 0;
-        }
+            return i;
 
     return -ENOENT;
 }
 
-static int mfis_init(struct dt_device_node *node, const void *data)
+static int mfis_trigger_chan(int chan)
+{
+    uint32_t val;
+
+    val = readl(mfis_data->base + MFIS_IICR(0,chan));
+
+    if ( val & 0x1 )
+        return -EBUSY;
+
+    writel(1, mfis_data->base + MFIS_IICR(0,chan));
+    return 0;
+}
+
+static int mfis_add_domain(struct domain* d, int chan)
+{
+    if ( chan >= mfis_data->chan_cnt )
+        return -EINVAL;
+
+    if ( !vgic_reserve_virq(d, GUEST_MFIS_SPI) )
+        return -EINVAL;
+
+    mfis_data->domains[chan] = d;
+
+    printk(XENLOG_INFO"MFIS: Added chan %d for domain %d\n", chan, d->domain_id);
+
+    return 0;
+}
+
+static int mfis_remove_domain(struct domain *d)
+{
+    int chan = mfis_find_chan(d);
+
+    if ( chan < 0 )
+        return 0;
+
+    vgic_free_virq(d, GUEST_MFIS_SPI);
+
+    mfis_data->domains[chan] = NULL;
+
+    printk(XENLOG_INFO"MFIS: Removed chan %d for domain %d\n", chan, d->domain_id);
+
+    return 0;
+}
+
+static int __init mfis_init(struct dt_device_node *node, const void *data)
 {
     paddr_t start, len;
     int ret, i;
@@ -451,8 +456,14 @@ static int rproc_assign_domain(struct domain *d, int chan)
 
     if ( chan >= rproc_data->vq_cnt )
         return -EINVAL;
-    ret = mfis_add_domain(d, chan);
 
+    if ( rproc_data->channels[chan].d )
+    {
+        printk(XENLOG_WARNING"rproc is already assigned\n");
+        return -EEXIST;
+    }
+
+    ret = mfis_add_domain(d, chan);
     if ( ret )
         return ret;
     rproc_data->channels[chan].d = d;
@@ -471,11 +482,18 @@ static int rproc_remove_domain(struct domain *d)
     if ( !mfis_data )
         return 0;
 
-    for ( i = 0; i < mfis_data->chan_cnt; i++)
+    mfis_remove_domain(d);
+
+    for ( i = 0; i < rproc_data->vq_cnt; i++)
     {
-        if ( mfis_data->domains[i] == d )
+        if ( rproc_data->channels[i].d == d )
         {
-            mfis_remove_domain(i);
+            if ( rproc_data->channels[i].vring_pg[0] )
+                put_page(rproc_data->channels[i].vring_pg[0]);
+            if ( rproc_data->channels[i].vring_pg[1] )
+                put_page(rproc_data->channels[i].vring_pg[1]);
+
+            rproc_data->channels[i].d = NULL;
             break;
         }
     }
@@ -492,6 +510,28 @@ static int rproc_find_chan(struct domain *d)
             return i;
 
     return -ENOENT;
+}
+
+static int mfis_handle_trig(struct domain *d, struct cpu_user_regs *regs)
+{
+    int chan = mfis_find_chan(d);
+    int ret;
+
+    if ( chan < 0 )
+    {
+        set_user_reg(regs, 0, MFIS_SMC_ERR_NOT_AVAILABLE);
+        return chan;
+    }
+
+    ret = mfis_trigger_chan(chan);
+    if ( ret == 0 )
+        set_user_reg(regs, 0, ARM_SMCCC_SUCCESS);
+    else if ( ret == -EBUSY )
+        set_user_reg(regs, 0, MFIS_SMC_ERR_BUSY);
+    else
+        set_user_reg(regs, 0, MFIS_SMC_ERR_NOT_AVAILABLE);
+
+    return ret;
 }
 
 static int rproc_handle_get_vdev_info(struct domain *d,
@@ -560,12 +600,7 @@ static int rproc_handle_set_vring_data(struct domain *d,
         goto got_pa;
     }
     if ( !pg || t != p2m_ram_rw )
-    {
-        if ( pg )
-            goto put_pg;
-
         goto err;
-    }
 
     pa = page_to_maddr(pg);
 got_pa:
@@ -573,7 +608,7 @@ got_pa:
     if ( pa & 0xFFFFFFFF00000000UL )
     {
         printk(XENLOG_ERR"rproc: provided page is above 4GB\n");
-        goto put_pg;
+        goto err;
     }
 
     rproc_data->channels[ch].vdev->vring[ring].notifyid = notify_id;
@@ -591,10 +626,9 @@ got_pa:
 
     return 0;
 
-put_pg:
-    put_page(pg);
-
 err:
+    if ( pg )
+        put_page(pg);
     set_user_reg(regs, 0, RPROC_SMC_ERR_NOT_AVAILABLE);
 
     return -EINVAL;
@@ -611,20 +645,8 @@ static bool rproc_handle_smc(struct cpu_user_regs *regs)
     switch ( get_user_reg(regs, 0) )
     {
     case MFIS_SMC_TRIG:
-    {
-        int ret;
-
-        ret = mfis_trigger_chan(current->domain);
-        if ( ret == 0 )
-            set_user_reg(regs, 0, ARM_SMCCC_SUCCESS);
-        else if ( ret == -EBUSY )
-            set_user_reg(regs, 0, MFIS_SMC_ERR_BUSY);
-        else if ( ret == -EINVAL )
-            set_user_reg(regs, 0, MFIS_SMC_ERR_NOT_AVAILABLE);
-        else
-            set_user_reg(regs, 0, ARM_SMCCC_ERR_UNKNOWN_FUNCTION);
+        mfis_handle_trig(current->domain, regs);
         return true;
-    }
     case RPMSG_SMC_GET_VDEV_INFO:
         rproc_handle_get_vdev_info(current->domain, regs);
         return true;
