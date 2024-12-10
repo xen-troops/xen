@@ -15,6 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+#include <xen/delay.h>
 #include <xen/types.h>
 #include <xen/vmap.h>
 
@@ -30,6 +31,15 @@
 
 #define MFIS_IICR(k,i) (0x1400 + 0x1008 * (i) + 0x20 * (k))
 #define MFIS_EICR(k,i) (0x9404 + 0x1020 * (k) + 0x8 * (i))
+#define MFIS_IMBR(k,i) (0x1440 + 0x1004 * (i) + 0x10 * (k))
+#define MFIS_EMBR(k,i) (0x9460 + 0x1010 * (k) + 0x4 * (i))
+
+#define HYP_EVT_NONE    0
+#define HYP_EVT_CREATE  1
+#define HYP_EVT_DESTROY 2
+#define HYP_EVT_REBOOT  3
+#define HYP_EVT_MASK    GENMASK(15, 0)
+#define HYP_EVT_FAIL    BIT(16, UL)
 
 #define MFIS_SMC_TRIG  ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,         \
                                           ARM_SMCCC_CONV_32,           \
@@ -63,6 +73,7 @@ struct mfis_data
     void *base;
     uint8_t chan_cnt;
     int irqs[MFIS_MAX_CHANNELS];
+    int evts[MFIS_MAX_CHANNELS];
     struct domain* domains[MFIS_MAX_CHANNELS];
 };
 
@@ -158,6 +169,14 @@ static void mfis_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)
 
             writel(val & ~0x1, mfis_data->base + MFIS_EICR(0,i));
 
+            val = readl(mfis_data->base + MFIS_EMBR(0,i));
+            if ( (val & HYP_EVT_MASK) != HYP_EVT_NONE )
+            {
+                mfis_data->evts[i] = val;
+                writel(HYP_EVT_NONE, mfis_data->base + MFIS_EMBR(0,i));
+                break;
+            }
+
 	    if ( mfis_data->domains[i] )
                 vgic_inject_irq(mfis_data->domains[i], NULL, GUEST_MFIS_SPI, true);
             else
@@ -165,6 +184,29 @@ static void mfis_irq_handler(int irq, void *dev_id, struct cpu_user_regs *regs)
 
             break;
         }
+}
+
+static int mfis_wait_for_evt(int chan, int evt)
+{
+    s_time_t deadline = NOW() + MILLISECS(1000);
+    int ret;
+
+    do {
+        if ( (mfis_data->evts[chan] & HYP_EVT_MASK) == evt )
+        {
+            ret = mfis_data->evts[chan] & HYP_EVT_FAIL ? -EIO : 0;
+            break;
+        }
+        if ( NOW() > deadline )
+        {
+            ret = -ETIMEDOUT;
+            break;
+        }
+        cpu_relax();
+        udelay(1);
+    } while ( 1 );
+
+    return ret;
 }
 
 static int mfis_find_chan(struct domain *d)
@@ -178,7 +220,7 @@ static int mfis_find_chan(struct domain *d)
     return -ENOENT;
 }
 
-static int mfis_trigger_chan(int chan)
+static int mfis_trigger_chan(int chan, int evt)
 {
     uint32_t val;
 
@@ -187,17 +229,35 @@ static int mfis_trigger_chan(int chan)
     if ( val & 0x1 )
         return -EBUSY;
 
+    mfis_data->evts[chan] = HYP_EVT_NONE;
+    writel(evt, mfis_data->base + MFIS_IMBR(0,chan));
     writel(1, mfis_data->base + MFIS_IICR(0,chan));
     return 0;
 }
 
 static int mfis_add_domain(struct domain* d, int chan)
 {
+    int ret;
+
     if ( chan >= mfis_data->chan_cnt )
         return -EINVAL;
 
     if ( !vgic_reserve_virq(d, GUEST_MFIS_SPI) )
         return -EINVAL;
+
+    ret = mfis_trigger_chan(chan, HYP_EVT_CREATE);
+    if ( ret )
+    {
+        printk(XENLOG_ERR"MFIS: Failed to send HYP_EVT_CREATE for chan %d\n", chan);
+        return ret;
+    }
+
+    ret = mfis_wait_for_evt(chan, HYP_EVT_CREATE);
+    if ( ret )
+    {
+        printk(XENLOG_ERR"MFIS: No HYP_EVT_CREATE ack for chan %d\n", chan);
+        return ret;
+    }
 
     mfis_data->domains[chan] = d;
 
@@ -209,9 +269,19 @@ static int mfis_add_domain(struct domain* d, int chan)
 static int mfis_remove_domain(struct domain *d)
 {
     int chan = mfis_find_chan(d);
+    int ret;
 
     if ( chan < 0 )
         return 0;
+
+    /* TODO: Mark channel as broken if fail to release */
+    ret = mfis_trigger_chan(chan, HYP_EVT_DESTROY);
+    if ( ret )
+        printk(XENLOG_ERR"MFIS: Failed to send HYP_EVT_DESTROY for chan %d\n", chan);
+
+    ret = mfis_wait_for_evt(chan, HYP_EVT_DESTROY);
+    if ( ret )
+        printk(XENLOG_ERR"MFIS: No HYP_EVT_DESTROY ack for chan %d\n", chan);
 
     vgic_free_virq(d, GUEST_MFIS_SPI);
 
@@ -523,7 +593,7 @@ static int mfis_handle_trig(struct domain *d, struct cpu_user_regs *regs)
         return chan;
     }
 
-    ret = mfis_trigger_chan(chan);
+    ret = mfis_trigger_chan(chan, HYP_EVT_NONE);
     if ( ret == 0 )
         set_user_reg(regs, 0, ARM_SMCCC_SUCCESS);
     else if ( ret == -EBUSY )
