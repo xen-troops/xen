@@ -335,6 +335,8 @@ static inline bool __must_check vpci_process_pending(struct vcpu *v)
 #ifdef CONFIG_HAS_VPCI_GUEST_SUPPORT
 bool vpci_translate_virtual_device(const struct domain *d, pci_sbdf_t *sbdf);
 #else
+#include <asm/pci.h>
+
 static inline bool vpci_translate_virtual_device(const struct domain *d,
                                                  pci_sbdf_t *sbdf)
 {
