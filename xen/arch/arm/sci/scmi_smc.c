@@ -764,8 +764,8 @@ static int scmi_relinquish_resources(struct domain *d)
     tx.flags = 0;
 
     ret = do_smc_xfer(channel, &hdr, &tx, sizeof(tx), NULL, 0);
-    if ( ret )
-        return ret;
+    if ( ret == -EOPNOTSUPP )
+        return 0;
 
     return ret;
 }
