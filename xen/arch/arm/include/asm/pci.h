@@ -150,8 +150,6 @@ pci_msi_conf_write_intercept(struct pci_dev *pdev, unsigned int reg,
 
 #else   /*!CONFIG_HAS_PCI*/
 
-struct arch_pci_dev { };
-
 static inline bool is_pci_scan_enabled(void)
 {
     return false;
