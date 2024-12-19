@@ -85,7 +85,7 @@ struct scmi_shared_mem {
 };
 
 struct scmi_channel {
-    int agent_id;
+    uint32_t agent_id;
     uint32_t func_id;
     domid_t domain_id;
     uint64_t paddr;
@@ -354,7 +354,7 @@ clean:
     return ret;
 }
 
-static struct scmi_channel *get_channel_by_id(uint8_t agent_id)
+static struct scmi_channel *get_channel_by_id(uint32_t agent_id)
 {
     struct scmi_channel *curr;
     bool found = false;
@@ -376,19 +376,24 @@ static struct scmi_channel *get_channel_by_id(uint8_t agent_id)
     return NULL;
 }
 
-static struct scmi_channel *aquire_scmi_channel(domid_t domain_id)
+static struct scmi_channel *aquire_scmi_channel(struct domain *d,
+                                                uint32_t agent_id)
 {
     struct scmi_channel *curr;
-    struct scmi_channel *ret = NULL;
-
-    ASSERT(domain_id != DOMID_INVALID && domain_id >= 0);
+    struct scmi_channel *ret = ERR_PTR(-ENOENT);
 
     spin_lock(&scmi_data.channel_list_lock);
     list_for_each_entry(curr, &scmi_data.channel_list, list)
     {
-        if ( curr->domain_id == DOMID_INVALID )
+        if ( curr->agent_id == agent_id )
         {
-            curr->domain_id = domain_id;
+            if ( curr->domain_id != DOMID_INVALID )
+            {
+                ret = ERR_PTR(-EEXIST);
+                break;
+            }
+
+            curr->domain_id = d->domain_id;
             ret = curr;
             break;
         }
@@ -429,7 +434,7 @@ static void unmap_channel_memory(struct scmi_channel *channel)
     channel->shmem = NULL;
 }
 
-static struct scmi_channel *smc_create_channel(uint8_t agent_id,
+static struct scmi_channel *smc_create_channel(uint32_t agent_id,
                                                uint32_t func_id, uint64_t addr)
 {
     struct scmi_channel *channel;
@@ -717,9 +722,13 @@ static int scmi_domain_init(struct domain *d,
     if ( !scmi_data.initialized )
         return 0;
 
-    channel = aquire_scmi_channel(d->domain_id);
-    if ( IS_ERR_OR_NULL(channel) )
-        return -ENOENT;
+    channel = aquire_scmi_channel(d, config->arm_sci_agent_id);
+    if ( IS_ERR(channel) )
+    {
+        printk(XENLOG_ERR"scmi: Failed to aquire SCMI channel for agent_id %u: %ld\n",
+               config->arm_sci_agent_id, PTR_ERR(channel));
+        return PTR_ERR(channel);
+    }
 
     printk(XENLOG_INFO
            "scmi: Aquire SCMI channel id = 0x%x , domain_id = %d paddr = 0x%lx\n",

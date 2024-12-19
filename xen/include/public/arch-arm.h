@@ -342,6 +342,8 @@ struct xen_arch_domainconfig {
     /* IN */
     uint16_t arm_sci_type;
     /* IN */
+    uint8_t arm_sci_agent_id;
+    /* IN */
     uint32_t nr_spis;
     /*
      * IN

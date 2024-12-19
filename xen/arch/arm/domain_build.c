@@ -2148,12 +2148,6 @@ static int __init construct_dom0(struct domain *d)
     if ( rc < 0 )
         return rc;
 
-#if CONFIG_ARM_SCI
-    rc = sci_domain_init(d, sci_get_type(), NULL);
-    if ( rc < 0 )
-        return rc;
-#endif
-
     if ( acpi_disabled )
     {
         rc = prepare_dtb_hwdom(d, &kinfo);

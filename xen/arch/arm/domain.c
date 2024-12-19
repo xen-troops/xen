@@ -701,6 +701,12 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
         dprintk(XENLOG_INFO, "Unsupported ARM_SCI type\n");
         return -EINVAL;
     }
+    else if ( config->arch.arm_sci_type == XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC &&
+              config->arch.arm_sci_agent_id == 0 )
+    {
+        dprintk(XENLOG_INFO, "A non-zero ARM_SCI agent_id must be specified\n");
+        return -EINVAL;
+    }
 
     return 0;
 }
@@ -785,12 +791,6 @@ int arch_domain_create(struct domain *d,
         /* At this stage vgic_reserve_virq should never fail */
         if ( !vgic_reserve_virq(d, GUEST_EVTCHN_PPI) )
             BUG();
-        if ( config->arch.arm_sci_type != XEN_DOMCTL_CONFIG_ARM_SCI_NONE )
-        {
-            if ( (rc = sci_domain_init(d, config->arch.arm_sci_type,
-                                        &config->arch)) != 0)
-                goto fail;
-        }
     }
 
     /*
@@ -805,6 +805,10 @@ int arch_domain_create(struct domain *d,
     /* Copy the encoded vector length sve_vl from the domain configuration */
     d->arch.sve_vl = config->arch.sve_vl;
 #endif
+
+    if ( (rc = sci_domain_init(d, config->arch.arm_sci_type,
+                               &config->arch)) != 0 )
+        goto fail;
 
     d->arch.vgsx_osid = config->arch.vgsx_osid;
 
