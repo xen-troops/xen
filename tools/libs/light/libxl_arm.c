@@ -360,7 +360,7 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     if (d_config->num_pcidevs)
         config->arch.pci_flags = XEN_DOMCTL_CONFIG_PCI_VPCI;
 
-    switch (d_config->b_info.arm_sci) {
+    switch (d_config->b_info.arm_sci.type) {
     case LIBXL_ARM_SCI_TYPE_NONE:
         config->arch.arm_sci_type = XEN_DOMCTL_CONFIG_ARM_SCI_NONE;
         break;
@@ -369,9 +369,10 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         break;
     default:
         LOG(ERROR, "Unknown ARM_SCI type %d",
-            d_config->b_info.arm_sci);
+            d_config->b_info.arm_sci.type);
         return ERROR_FAIL;
     }
+    config->arch.arm_sci_agent_id = d_config->b_info.arm_sci.agent_id;
 
     return 0;
 }
@@ -2073,10 +2074,10 @@ next_resize:
         if (info->arch_arm.vuart == LIBXL_VUART_TYPE_SBSA_UART)
             FDT( make_vpl011_uart_node(gc, fdt, ainfo, dom) );
 
-        if (info->arm_sci == LIBXL_ARM_SCI_TYPE_SCMI_SMC)
+        if (info->arm_sci.type == LIBXL_ARM_SCI_TYPE_SCMI_SMC)
             FDT( scmi_dt_make_shmem_node(gc, fdt) );
 
-        FDT( make_firmware_node(gc, fdt, pfdt, info->tee, info->arm_sci,
+        FDT( make_firmware_node(gc, fdt, pfdt, info->tee, info->arm_sci.type,
                 state->arm_sci_agent_funcid) );
 
         if (d_config->num_pcidevs)
@@ -2375,7 +2376,7 @@ int libxl__arch_build_dom_finish(libxl__gc *gc,
         }
     }
 
-    if (info->arm_sci == LIBXL_ARM_SCI_TYPE_SCMI_SMC) {
+    if (info->arm_sci.type == LIBXL_ARM_SCI_TYPE_SCMI_SMC) {
         ret = map_sci_page(gc, dom->guest_domid, state->arm_sci_agent_paddr,
                            GUEST_SCI_SHMEM_BASE);
         if (ret < 0) {

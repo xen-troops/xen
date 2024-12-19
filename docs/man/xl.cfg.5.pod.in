@@ -1723,10 +1723,20 @@ Specifies OS ID.
 
 =back
 
-=item B<arm_sci="STRING">
+=item B<arm_sci="ARM_SCI_STRING">
 
-B<Arm only> Set ARM_SCI type for the guest. ARM_SCI is System Control Protocol
-allows domain to manage various functions that are provided by HW platform.
+B<Arm only> Set ARM_SCI specific options for the guest. ARM_SCI is System
+Control Protocol allows domain to manage various functions that are provided
+by HW platform.
+
+B<ARM_SCI_STRING> is a comma separated list of C<KEY=VALUE> settings,
+from the following list:
+
+=over 4
+
+=item B<type=STRING>
+
+Specifies an ARM_SCI type for the guest.
 
 =over 4
 
@@ -1744,6 +1754,12 @@ clocks, power-domains and resets between Domains and ATF. Disabled by default.
 SCP is used as transport.
 
 =back
+
+=item B<agent_id=NUMBER>
+
+Specifies a non-zero ARM_SCI agent id for the guest. This option is mandatory
+if the SCMI_SMC support is enabled for the guest. The agent ids of domains
+existing on a single host must be unique.
 
 =back
 
