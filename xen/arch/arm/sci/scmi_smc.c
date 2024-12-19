@@ -738,6 +738,21 @@ static int scmi_domain_init(struct domain *d,
     d->arch.sci_channel.paddr = channel->paddr;
     d->arch.sci_channel.guest_func_id = scmi_data.func_id;
 
+    /*
+     * Dom0 (if present) needs to have an access to the guest memory range
+     * to satisfy iomem_access_permitted() check in XEN_DOMCTL_iomem_permission
+     * domctl.
+     */
+    if ( hardware_domain && !is_hardware_domain(d) )
+    {
+        int res;
+
+        res = iomem_permit_access(hardware_domain, paddr_to_pfn(channel->paddr),
+                                  paddr_to_pfn(channel->paddr + PAGE_SIZE - 1));
+        if ( res )
+            return res;
+    }
+
     return 0;
 }
 
