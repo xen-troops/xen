@@ -54,6 +54,9 @@ boolean_param("ext_regions", opt_ext_regions);
 static u64 __initdata dom0_mem;
 static bool __initdata dom0_mem_set;
 
+static uint8_t __initdata opt_dom0_sci_agent_id;
+integer_param("dom0_sci_agent_id", opt_dom0_sci_agent_id);
+
 static int __init parse_dom0_mem(const char *s)
 {
     dom0_mem_set = true;
@@ -2191,6 +2194,13 @@ void __init create_dom0(void)
     dom0_cfg.max_vcpus = dom0_max_vcpus();
 
     dom0_cfg.arch.arm_sci_type = sci_get_type();
+    if ( dom0_cfg.arch.arm_sci_type == XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC &&
+         opt_dom0_sci_agent_id == 0 )
+    {
+        warning_add("WARNING: A non-zero ARM_SCI agent_id must be specified - assuming 1\n");
+        opt_dom0_sci_agent_id = 1;
+    }
+    dom0_cfg.arch.arm_sci_agent_id = opt_dom0_sci_agent_id;
 
     if ( iommu_enabled )
         dom0_cfg.flags |= XEN_DOMCTL_CDF_iommu;

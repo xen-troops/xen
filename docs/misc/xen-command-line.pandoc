@@ -1191,6 +1191,13 @@ Extended regions are ranges of unused address space exposed to the guest
 as "safe to use" for special memory mappings. Disable if your board
 device tree is incomplete.
 
+### dom0_sci_agent_id (Arm)
+> `= <integer>`
+
+Since the SCMI_SMC support is always enabled for the Dom0 if available,
+this option specifies a non-zero ARM_SCI agent id for the Dom0. The agent ids
+of domains existing on a single host must be unique.
+
 ### flask
 > `= permissive | enforcing | late | disabled`
 
