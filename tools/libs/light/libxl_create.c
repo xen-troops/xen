@@ -774,7 +774,7 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
      */
     assert(libxl_domid_valid_guest(*domid));
 
-    if (d_config->b_info.arm_sci == LIBXL_ARM_SCI_TYPE_SCMI_SMC) {
+    if (d_config->b_info.arm_sci.type == LIBXL_ARM_SCI_TYPE_SCMI_SMC) {
         ret = xc_domain_get_sci_info(ctx->xch, *domid, &state->arm_sci_agent_paddr,
                 &state->arm_sci_agent_funcid);
         LOGD(DEBUG, *domid,"sci_agent_paddr = %lx", state->arm_sci_agent_paddr);

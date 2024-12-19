@@ -1635,6 +1635,83 @@ static void parse_vcamera_list(const XLU_Config *config,
     }
 }
 
+static int parse_arm_sci_config(XLU_Config *cfg, libxl_arm_sci *arm_sci,
+                                const char *str)
+{
+#define STATE_OPTION   0
+#define STATE_TYPE     1
+#define STATE_AGENT_ID 2
+#define STATE_TERMINAL 3
+
+    int ret, state = STATE_OPTION;
+    char *buf2, *tok, *ptr, *end;
+
+    if (NULL == (buf2 = ptr = strdup(str)))
+        return ERROR_NOMEM;
+
+    for (tok = ptr, end = ptr + strlen(ptr) + 1; ptr < end; ptr++) {
+        switch(state) {
+        case STATE_OPTION:
+            if (*ptr == '=') {
+                *ptr = '\0';
+                if (!strcmp(tok, "type")) {
+                    state = STATE_TYPE;
+                } else if (!strcmp(tok, "agent_id")) {
+                    state = STATE_AGENT_ID;
+                } else {
+                    fprintf(stderr, "Unknown ARM_SCI option: %s\n", tok);
+                    goto parse_error;
+                }
+                tok = ptr + 1;
+            }
+            break;
+        case STATE_TYPE:
+            if (*ptr == '\0' || *ptr == ',') {
+                state = *ptr == ',' ? STATE_OPTION : STATE_TERMINAL;
+                *ptr = '\0';
+                ret = libxl_arm_sci_type_from_string(tok, &arm_sci->type);
+                if (ret) {
+                    fprintf(stderr, "Unknown ARM_SCI type: %s\n", tok);
+                    goto parse_error;
+                }
+                tok = ptr + 1;
+            }
+            break;
+        case STATE_AGENT_ID:
+            if (*ptr == ',' || *ptr == '\0') {
+                state = *ptr == ',' ? STATE_OPTION : STATE_TERMINAL;
+                *ptr = '\0';
+                arm_sci->agent_id = strtoul(tok, NULL, 0);
+                tok = ptr + 1;
+            }
+        default:
+            break;
+        }
+    }
+
+    if (arm_sci->type == LIBXL_ARM_SCI_TYPE_SCMI_SMC &&
+        arm_sci->agent_id == 0) {
+        fprintf(stderr, "A non-zero ARM_SCI agent_id must be specified\n");
+        goto parse_error;
+    }
+
+    if (tok != ptr || state != STATE_TERMINAL)
+        goto parse_error;
+
+    free(buf2);
+
+    return 0;
+
+parse_error:
+    free(buf2);
+    return ERROR_INVAL;
+
+#undef STATE_OPTION
+#undef STATE_TYPE
+#undef STATE_AGENT_ID
+#undef STATE_TERMINAL
+}
+
 void parse_config_data(const char *config_source,
                        const char *config_data,
                        int config_len,
@@ -3310,13 +3387,13 @@ skip_usbdev:
     else
         b_info->arch_arm.rproc = -1;
 
-    if (!xlu_cfg_get_string (config, "arm_sci", &buf, 1)) {
-        e = libxl_arm_sci_type_from_string(buf, &b_info->arm_sci);
-        if (e) {
-            fprintf(stderr,
-                    "Unknown arm_sci \"%s\" specified\n", buf);
-            exit(-ERROR_FAIL);
-        }
+    if (!xlu_cfg_get_string(config, "arm_sci", &buf, 1)) {
+        libxl_arm_sci arm_sci = { 0 };
+        if (!parse_arm_sci_config(config, &arm_sci, buf)) {
+            b_info->arm_sci.type = arm_sci.type;
+            b_info->arm_sci.agent_id = arm_sci.agent_id;
+        } else
+            exit(EXIT_FAILURE);
     }
 
     parse_vkb_list(config, d_config);
