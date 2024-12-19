@@ -889,9 +889,6 @@ static int __init construct_domU(struct domain *d,
 #ifdef CONFIG_TEE
     const char *tee;
 #endif
-#ifdef CONFIG_ARM_SCI
-    const char *arm_sci;
-#endif
     int rc;
     u64 mem;
     u32 p2m_mem_mb;
@@ -934,26 +931,6 @@ static int __init construct_domU(struct domain *d,
     }
     else if ( rc == 0 && !strcmp(dom0less_enhanced, "no-xenstore") )
         kinfo.dom0less_feature = DOM0LESS_ENHANCED_NO_XS;
-
-#ifdef CONFIG_ARM_SCI
-    rc = dt_property_read_string(node, "xen,arm_sci", &arm_sci);
-    if ( rc == -EILSEQ ||
-         rc == -ENODATA ||
-         (rc == 0 && !strcmp(arm_sci, "none")) )
-    {
-        if ( !hardware_domain )
-            kinfo.sci_type = XEN_DOMCTL_CONFIG_ARM_SCI_NONE;
-    }
-    else if ( rc == 0 && !strcmp(arm_sci, "scmi_smc") )
-        kinfo.sci_type = XEN_DOMCTL_CONFIG_ARM_SCI_SCMI_SMC;
-#endif
-
-    if (kinfo.sci_type != XEN_DOMCTL_CONFIG_ARM_SCI_NONE)
-    {
-        rc = sci_domain_init(d, kinfo.sci_type, NULL);
-        if ( rc < 0 )
-            return rc;
-    }
 
 #ifdef CONFIG_TEE
     rc = dt_property_read_string(node, "xen,tee", &tee);
@@ -1199,6 +1176,14 @@ void __init create_domUs(void)
             panic("'sve' property found, but CONFIG_ARM64_SVE not selected\n");
 #endif
         }
+
+        /*
+         * XXX We will need to retrieve the values from the device tree here
+         * and fill in these fields. Always disable ARM_SCI in case of Dom0less
+         * for now.
+         */
+        d_cfg.arch.arm_sci_type = XEN_DOMCTL_CONFIG_ARM_SCI_NONE;
+        d_cfg.arch.arm_sci_agent_id = 0;
 
         /*
          * The variable max_init_domid is initialized with zero, so here it's
