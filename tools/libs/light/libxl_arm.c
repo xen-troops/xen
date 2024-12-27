@@ -1112,10 +1112,7 @@ static int make_vpci_node(libxl__gc *gc, void *fdt,
     if (res) return res;
 
     res = fdt_property_vpci_ranges(gc, fdt, GUEST_ROOT_ADDRESS_CELLS,
-        GUEST_ROOT_SIZE_CELLS, 2,
-        GUEST_VPCI_ADDR_TYPE_MEM, GUEST_VPCI_MEM_ADDR, GUEST_VPCI_MEM_SIZE,
-        GUEST_VPCI_ADDR_TYPE_PREFETCH_MEM, GUEST_VPCI_PREFETCH_MEM_ADDR,
-        GUEST_VPCI_PREFETCH_MEM_SIZE);
+        GUEST_ROOT_SIZE_CELLS, 1, 0x82000000, 0x30000000, 0x8000000);
     if (res) return res;
 
     res = fdt_property_values(gc, fdt, "msi-map", 4, 0, GUEST_PHANDLE_ITS,
