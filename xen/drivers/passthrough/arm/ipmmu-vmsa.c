@@ -1149,7 +1149,8 @@ static void ipmmu_free_root_domain(struct ipmmu_vmsa_domain *domain)
     xfree(domain);
 }
 
-static int ipmmu_deassign_device(struct domain *d, struct device *dev);
+static int ipmmu_deassign_device(struct domain *d, uint8_t devfn,
+                                 struct device *dev);
 
 static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
                                uint32_t flag)
@@ -1168,35 +1169,42 @@ static int ipmmu_assign_device(struct domain *d, u8 devfn, struct device *dev,
     if ( dev_is_pci(dev) )
     {
         struct pci_dev *pdev = dev_to_pci(dev);
-        struct domain *old_d = pdev->domain;
 
         printk(XENLOG_INFO "Assigning device %04x:%02x:%02x.%u to dom%d\n",
                pdev->seg, pdev->bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
                d->domain_id);
 
-        /*
-         * XXX What would be the proper behavior? This could happen if
-         * pdev->phantom_stride > 0
-         */
         if ( devfn != pdev->devfn )
-            ASSERT_UNREACHABLE();
+            return 0;
 
-        list_move(&pdev->domain_list, &d->pdev_list);
+        ASSERT(pcidevs_locked());
+
+        write_lock(&pdev->domain->pci_lock);
+        list_del(&pdev->domain_list);
+        write_unlock(&pdev->domain->pci_lock);
+
         pdev->domain = d;
+
+        write_lock(&d->pci_lock);
+        list_add(&pdev->domain_list, &d->pdev_list);
+        write_unlock(&d->pci_lock);
+
+        domain = to_domain(dev);
+
+        /*
+         * Xen may not deassign the device from hwdom before
+         * assigning it elsewhere.
+         */
+        if ( domain && pci_is_hardware_domain(domain->d, pdev->seg, pdev->bus) )
+        {
+            ret = ipmmu_deassign_device(domain->d, devfn, dev);
+            if ( ret )
+                return ret;
+        }
 
         /* dom_io is used as a sentinel for quarantined devices */
         if ( d == dom_io )
-        {
-            int ret;
-
-            /*
-             * Try to de-assign: do not return error if it was already
-             * de-assigned.
-             */
-            ret = ipmmu_deassign_device(old_d, dev);
-
-            return ret == -ESRCH ? 0 : ret;
-        }
+            return 0;
     }
 #endif
     spin_lock(&xen_domain->lock);
@@ -1270,7 +1278,8 @@ out:
     return ret;
 }
 
-static int ipmmu_deassign_device(struct domain *d, struct device *dev)
+static int ipmmu_deassign_device(struct domain *d, uint8_t devfn,
+                                 struct device *dev)
 {
     struct ipmmu_vmsa_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
     struct ipmmu_vmsa_domain *domain = to_domain(dev);
@@ -1280,6 +1289,24 @@ static int ipmmu_deassign_device(struct domain *d, struct device *dev)
         dev_err(dev, "Not attached to %pd\n", d);
         return -ESRCH;
     }
+
+#ifdef CONFIG_HAS_PCI
+    if ( dev_is_pci(dev) )
+    {
+        struct pci_dev *pdev = dev_to_pci(dev);
+
+        printk(XENLOG_INFO "Deassigning device %04x:%02x:%02x.%u from dom%d\n",
+               pdev->seg, pdev->bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
+               d->domain_id);
+
+        if ( devfn != pdev->devfn )
+            return 0;
+
+        /* dom_io is used as a sentinel for quarantined devices */
+        if ( d == dom_io )
+            return 0;
+    }
+#endif
 
     spin_lock(&xen_domain->lock);
 
@@ -1322,7 +1349,7 @@ static int ipmmu_reassign_device(struct domain *s, struct domain *t,
     if ( t == s )
         return 0;
 
-    ret = ipmmu_deassign_device(s, dev);
+    ret = ipmmu_deassign_device(s, devfn, dev);
     if ( ret )
         return ret;
 
@@ -1552,10 +1579,14 @@ static int ipmmu_add_device(u8 devfn, struct device *dev)
 
         osid = fwspec->ids[0] - info->utlb_osid0;
         osid_bdf_set(info, reg_id, osid, pdev->sbdf.bdf);
-        bdf_msk_set(info, reg_id, 0);
+        bdf_msk_set(info, reg_id, 0x00FF);
 
         dev_info(dev, "Allocated OSID reg %u (OSID %u)\n", reg_id, osid);
 
+        /*
+         * During PHYSDEVOP_pci_device_add, Xen does not assign the
+         * device, so we must do it here.
+         */
         ret = ipmmu_assign_device(pdev->domain, devfn, dev, 0);
         if (ret) {
             osid_bdf_clear(info, reg_id);
