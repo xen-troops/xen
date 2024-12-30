@@ -172,19 +172,10 @@ static void cf_check mask_write(
     if ( !dmask )
         return;
 
-    if ( msi->enabled )
-    {
-        unsigned int i;
-
-        for ( i = ffs(dmask) - 1; dmask && i < msi->vectors;
-              i = ffs(dmask) - 1 )
-        {
-            vpci_msi_arch_mask(msi, pdev, i, (val >> i) & 1);
-            __clear_bit(i, &dmask);
-        }
-    }
-
     msi->mask = val;
+
+    if ( msi->enabled )
+        vpci_msi_arch_mask(msi, pdev, 0, true);
 }
 
 static int cf_check init_msi(struct pci_dev *pdev)
