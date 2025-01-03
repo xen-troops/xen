@@ -172,7 +172,7 @@ static void modify_decoding(const struct pci_dev *pdev, uint16_t cmd,
         pci_conf_write16(pdev->sbdf, PCI_COMMAND, cmd);
         /* Show DomU that we updated P2M */
         header->guest_cmd &= ~PCI_COMMAND_MEMORY;
-        header->guest_cmd = (cmd & PCI_COMMAND_MEMORY);
+        header->guest_cmd |= (cmd & PCI_COMMAND_MEMORY);
         header->bars_mapped = map;
     }
     else
