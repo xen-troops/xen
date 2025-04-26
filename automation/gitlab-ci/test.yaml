@@ -197,6 +197,30 @@
   tags:
     - qubes-hw11
 
+.fuzzer-arm:
+  stage: test
+  image: xentroops/xen-fuzzer:v1
+  variables:
+    HARNESS: hypercall
+    FUZZING_TIME: 600
+  rules:
+  - if: $SELECTED_JOBS_ONLY && $CI_JOB_NAME =~ $SELECTED_JOBS_ONLY
+  - if: $SELECTED_JOBS_ONLY
+    when: never
+  - when: on_success
+  script:
+    - cd /root/
+    - ./xen_fuzzer -t ${FUZZING_TIME} run ${CI_PROJECT_DIR}/binaries/xen test-mmu64le-arm-${HARNESS}-fuzzer 2>&1 | tee ${CI_PROJECT_DIR}/fuzzer-${HARNESS}.log
+  after_script:
+    - cd ${CI_PROJECT_DIR}
+    - mv /root/crashes .
+  artifacts:
+    paths:
+      - fuzzer-${HARNESS}.log
+      - crashes/
+  needs:
+    - alpine-3.18-gcc-fuzzing-arm64
+
 # Test jobs
 build-each-commit-gcc:
   extends: .test-jobs-common
@@ -704,3 +728,13 @@ qemu-smoke-ppc64le-powernv9-gcc:
     - ./automation/scripts/qemu-smoke-ppc64le.sh powernv9 2>&1 | tee ${LOGFILE}
   needs:
     - debian-12-ppc64le-gcc-debug
+
+arm-hypercall-fuzzer:
+  extends: .fuzzer-arm
+  variables:
+    HARNESS: hypercall
+
+arm-vgic-fuzzer:
+  extends: .fuzzer-arm
+  variables:
+    HARNESS: vgic

@@ -412,7 +412,18 @@ alpine-3.18-gcc-debug-arm64:
     CONTAINER: alpine:3.18-arm64v8
     EXTRA_XEN_CONFIG: |
       CONFIG_UBSAN=y
+      CONFIG_UBSAN_FATAL=
+
+alpine-3.18-gcc-fuzzing-arm64:
+  extends: .gcc-arm64-build-debug
+  variables:
+    CONTAINER: alpine:3.18-arm64v8
+    EXTRA_XEN_CONFIG: |
+      CONFIG_UBSAN=y
       CONFIG_UBSAN_FATAL=y
+      CONFIG_FUZZING=y
+      CONFIG_FUZZER_LIBAFL_QEMU=y
+      CONFIG_FUZZER_PASS_BLOCKING=y
 
 alpine-3.18-gcc-arm64-randconfig:
   extends: .gcc-arm64-build
