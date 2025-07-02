@@ -45,6 +45,14 @@ struct arch_irq_desc {
 #define SPI_MAX_INTID   1019
 #define LPI_OFFSET      8192
 
+#ifdef CONFIG_GICV3_ESPI
+#define ESPI_BASE_INTID 4096
+#define ESPI_MAX_INTID  5119
+
+#define ESPI_INTID2IDX(intid) ((intid) - ESPI_BASE_INTID)
+#define ESPI_IDX2INTID(idx)   ((idx) + ESPI_BASE_INTID)
+#endif
+
 /* LPIs are always numbered starting at 8192, so 0 is a good invalid case. */
 #define INVALID_LPI     0
 
@@ -52,8 +60,17 @@ struct arch_irq_desc {
 #define INVALID_IRQ     1023
 
 extern const unsigned int nr_irqs;
+#ifdef CONFIG_GICV3_ESPI
+/*
+ * This will also cover the eSPI range, as some critical devices
+ * for booting Xen (e.g., serial) may use this type of interrupts.
+ */
+#define nr_static_irqs (ESPI_BASE_INTID + NR_IRQS)
+#define arch_hwdom_irqs(domid) (ESPI_BASE_INTID + NR_IRQS)
+#else
 #define nr_static_irqs NR_IRQS
 #define arch_hwdom_irqs(domid) NR_IRQS
+#endif
 
 struct irq_desc;
 struct irqaction;
@@ -67,6 +84,15 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq);
 static inline bool is_lpi(unsigned int irq)
 {
     return irq >= LPI_OFFSET;
+}
+
+static inline bool is_espi(unsigned int irq)
+{
+#ifdef CONFIG_GICV3_ESPI
+    return (irq >= ESPI_BASE_INTID && irq <= ESPI_MAX_INTID);
+#else
+    return false;
+#endif
 }
 
 #define domain_pirq_to_irq(d, pirq) (pirq)
