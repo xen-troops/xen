@@ -206,7 +206,11 @@
 #define ICH_LR_VIRTUAL_SHIFT         0
 #define ICH_LR_CPUID_MASK            0x7
 #define ICH_LR_CPUID_SHIFT           10
+#ifndef CONFIG_GICV3_ESPI
 #define ICH_LR_PHYSICAL_MASK         0x3ff
+#else
+#define ICH_LR_PHYSICAL_MASK         0x13ff
+#endif
 #define ICH_LR_PHYSICAL_SHIFT        32
 #define ICH_LR_STATE_MASK            0x3
 #define ICH_LR_STATE_SHIFT           62
