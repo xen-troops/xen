@@ -487,6 +487,36 @@ static void __iomem *get_addr_by_offset(struct irq_desc *irqd, u32 offset)
         default:
             break;
         }
+#ifdef CONFIG_GICV3_ESPI
+    case ESPI_BASE_INTID ... ESPI_MAX_INTID:
+    {
+        u32 irq_index = ESPI_INTID2IDX(irqd->irq);
+
+        switch ( offset )
+        {
+        case GICD_ISENABLER:
+            return (GICD + GICD_ISENABLERnE + (irq_index / 32) * 4);
+        case GICD_ICENABLER:
+            return (GICD + GICD_ICENABLERnE + (irq_index / 32) * 4);
+        case GICD_ISPENDR:
+            return (GICD + GICD_ISPENDRnE + (irq_index / 32) * 4);
+        case GICD_ICPENDR:
+            return (GICD + GICD_ICPENDRnE + (irq_index / 32) * 4);
+        case GICD_ISACTIVER:
+            return (GICD + GICD_ISACTIVERnE + (irq_index / 32) * 4);
+        case GICD_ICACTIVER:
+            return (GICD + GICD_ICACTIVERnE + (irq_index / 32) * 4);
+        case GICD_ICFGR:
+            return (GICD + GICD_ICFGRnE + (irq_index / 16) * 4);
+        case GICD_IROUTER:
+            return (GICD + GICD_IROUTERnE + irq_index * 8);
+        case GICD_IPRIORITYR:
+            return (GICD + GICD_IPRIORITYRnE + irq_index);
+        default:
+            break;
+        }
+    }
+#endif
     default:
         break;
     }
@@ -647,6 +677,35 @@ static void gicv3_set_irq_priority(struct irq_desc *desc,
     spin_unlock(&gicv3.lock);
 }
 
+#ifdef CONFIG_GICV3_ESPI
+static void gicv3_dist_espi_common_init(uint32_t type)
+{
+    unsigned int espi_nr;
+    int i;
+
+    espi_nr = min(1024U, GICD_TYPER_ESPIS_NUM(type));
+    gicv3_info.nr_espi = espi_nr;
+    /* The GIC HW doesn't support eSPI, so we can leave from here */
+    if ( gicv3_info.nr_espi == 0 )
+        return;
+
+    for ( i = 0; i < espi_nr; i += 16 )
+        writel_relaxed(0, GICD + GICD_ICFGRnE + (i / 16) * 4);
+
+    for ( i = 0; i < espi_nr; i += 4 )
+        writel_relaxed(GIC_PRI_IRQ_ALL, GICD + GICD_IPRIORITYRnE + (i / 4) * 4);
+
+    for ( i = 0; i < espi_nr; i += 32 )
+    {
+        writel_relaxed(0xffffffffU, GICD + GICD_ICENABLERnE + (i / 32) * 4);
+        writel_relaxed(0xffffffffU, GICD + GICD_ICACTIVERnE + (i / 32) * 4);
+    }
+
+    for ( i = 0; i < espi_nr; i += 32 )
+        writel_relaxed(GENMASK(31, 0), GICD + GICD_IGROUPRnE + (i / 32) * 4);
+}
+#endif
+
 static void __init gicv3_dist_init(void)
 {
     uint32_t type;
@@ -692,6 +751,10 @@ static void __init gicv3_dist_init(void)
     for ( i = NR_GIC_LOCAL_IRQS; i < nr_lines; i += 32 )
         writel_relaxed(GENMASK(31, 0), GICD + GICD_IGROUPR + (i / 32) * 4);
 
+#ifdef CONFIG_GICV3_ESPI
+    gicv3_dist_espi_common_init(type);
+#endif
+
     gicv3_dist_wait_for_rwp();
 
     /* Turn on the distributor */
@@ -705,6 +768,11 @@ static void __init gicv3_dist_init(void)
 
     for ( i = NR_GIC_LOCAL_IRQS; i < nr_lines; i++ )
         writeq_relaxed_non_atomic(affinity, GICD + GICD_IROUTER + i * 8);
+
+#ifdef CONFIG_GICV3_ESPI
+    for ( i = 0; i < gicv3_info.nr_espi; i++ )
+        writeq_relaxed_non_atomic(affinity, GICD + GICD_IROUTERnE + i * 8);
+#endif
 }
 
 static int gicv3_enable_redist(void)
