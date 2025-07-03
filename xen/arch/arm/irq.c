@@ -621,7 +621,7 @@ bool irq_type_set_by_domain(const struct domain *d)
 
 /*
  * Route an IRQ to a specific guest.
- * For now only SPIs are assignable to the guest.
+ * For now only SPIs and eSPIs are assignable to the guest.
  */
 int route_irq_to_guest(struct domain *d, unsigned int virq,
                        unsigned int irq, const char * devname)
@@ -632,7 +632,7 @@ int route_irq_to_guest(struct domain *d, unsigned int virq,
     unsigned long flags;
     int retval = 0;
 
-    if ( virq >= vgic_num_irqs(d) )
+    if ( virq >= vgic_num_irqs(d) && !is_espi(virq))
     {
         printk(XENLOG_G_ERR
                "the vIRQ number %u is too high for domain %u (max = %u)\n",

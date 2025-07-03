@@ -111,7 +111,7 @@ static void gic_set_irq_priority(struct irq_desc *desc, unsigned int priority)
 void gic_route_irq_to_xen(struct irq_desc *desc, unsigned int priority)
 {
     ASSERT(priority <= 0xff);     /* Only 8 bits of priority */
-    ASSERT(desc->irq < gic_number_lines());/* Can't route interrupts that don't exist */
+    ASSERT(desc->irq < gic_number_lines() || is_espi(desc->irq));/* Can't route interrupts that don't exist */
     ASSERT(test_bit(_IRQ_DISABLED, &desc->status));
     ASSERT(spin_is_locked(&desc->lock));
 
@@ -132,7 +132,7 @@ int gic_route_irq_to_guest(struct domain *d, unsigned int virq,
     ASSERT(spin_is_locked(&desc->lock));
     /* Caller has already checked that the IRQ is an SPI */
     ASSERT(virq >= 32);
-    ASSERT(virq < vgic_num_irqs(d));
+    ASSERT(virq < vgic_num_irqs(d) || is_espi(virq));
     ASSERT(!is_lpi(virq));
 
     /*
