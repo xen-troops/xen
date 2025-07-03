@@ -604,8 +604,8 @@ err:
 
 bool is_assignable_irq(unsigned int irq)
 {
-    /* For now, we can only route SPIs to the guest */
-    return (irq >= NR_LOCAL_IRQS) && (irq < gic_number_lines());
+    /* For now, we can only route SPIs and eSPIs to the guest */
+    return (((irq >= NR_LOCAL_IRQS) && (irq < gic_number_lines())) || is_espi(irq));
 }
 
 /*
@@ -754,8 +754,8 @@ int release_guest_irq(struct domain *d, unsigned int virq)
     unsigned long flags;
     int ret;
 
-    /* Only SPIs are supported */
-    if ( virq < NR_LOCAL_IRQS || virq >= vgic_num_irqs(d) )
+    /* Only SPIs and eSPIs are supported */
+    if ( (virq < NR_LOCAL_IRQS || virq >= vgic_num_irqs(d)) && !is_espi(virq) )
         return -EINVAL;
 
     desc = vgic_get_hw_irq_desc(d, NULL, virq);
