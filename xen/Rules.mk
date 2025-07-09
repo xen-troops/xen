@@ -141,6 +141,10 @@ else
     cov-cflags-$(CONFIG_CONDITION_COVERAGE) += -fcondition-coverage
 endif
 
+ifeq ($(CONFIG_CC_HAS_ATOMIC_PROFILE),y)
+    cov-cflags-$(CONFIG_COVERAGE) += -fprofile-update=atomic
+endif
+
 # Reset cov-cflags-y in cases where an objects has another one as prerequisite
 $(nocov-y) $(filter %.init.o, $(obj-y) $(obj-bin-y) $(extra-y)): \
     cov-cflags-y :=
