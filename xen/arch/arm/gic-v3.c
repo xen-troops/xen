@@ -678,6 +678,11 @@ static void gicv3_set_irq_priority(struct irq_desc *desc,
 }
 
 #ifdef CONFIG_GICV3_ESPI
+unsigned int gic_number_espis(void)
+{
+    return gic_hw_ops->info->nr_espi;
+}
+
 static void gicv3_dist_espi_common_init(uint32_t type)
 {
     unsigned int espi_nr;
