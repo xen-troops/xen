@@ -2121,6 +2121,20 @@ void __init create_dom0(void)
 
     /* The vGIC for DOM0 is exactly emulating the hardware GIC */
     dom0_cfg.arch.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
+#ifdef CONFIG_GICV3_ESPI
+    /*
+     * Check if the hardware supports extended SPIs (even if the appropriate config is set)
+     * If not, the common SPI range will be used. Otherwise, set the maximum eSPI INTID
+     * subtracted by 32. For non-Dom0 domains, the toolstack applies the
+     * same adjustment, and we will add back this value during VGIC initialization. This
+     * ensures consistent handling for Dom0 and other domains. For the default SPI range
+     * in this case, the maximum value of 992 will be used.
+     */
+    if ( gic_number_espis() > 0 )
+        dom0_cfg.arch.nr_spis = ESPI_BASE_INTID + min(gic_number_espis(), 1024U) - 32;
+    else
+        dom0_cfg.arch.nr_spis = min(gic_number_lines(), 992U) - 32;
+#else
     /*
      * Xen vGIC supports a maximum of 992 interrupt lines.
      * 32 are substracted to cover local IRQs.
@@ -2128,6 +2142,7 @@ void __init create_dom0(void)
     dom0_cfg.arch.nr_spis = min(gic_number_lines(), (unsigned int) 992) - 32;
     if ( gic_number_lines() > 992 )
         printk(XENLOG_WARNING "Maximum number of vGIC IRQs exceeded.\n");
+#endif
     dom0_cfg.arch.tee_type = tee_get_type();
     dom0_cfg.max_vcpus = dom0_max_vcpus();
 
