@@ -119,6 +119,10 @@ struct arch_domain
     void *tee;
 #endif
 
+#ifdef CONFIG_VIRTUAL_IOMMU
+    struct list_head viommu_list;     /* List of virtual IOMMUs */
+#endif
+
 }  __cacheline_aligned;
 
 struct arch_vcpu

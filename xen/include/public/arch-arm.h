@@ -327,11 +327,16 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_guest_context_t);
 #define XEN_DOMCTL_CONFIG_TEE_OPTEE     1
 #define XEN_DOMCTL_CONFIG_TEE_FFA       2
 
+#define XEN_DOMCTL_CONFIG_VIOMMU_NONE       0
+#define XEN_DOMCTL_CONFIG_VIOMMU_SMMUV3     1
+
 struct xen_arch_domainconfig {
     /* IN/OUT */
     uint8_t gic_version;
     /* IN - Contains SVE vector length divided by 128 */
     uint8_t sve_vl;
+    /* IN */
+    uint8_t viommu_type;
     /* IN */
     uint16_t tee_type;
     /* IN */
@@ -446,6 +451,10 @@ typedef uint64_t xen_callback_t;
 #define GUEST_GICV3_GICR0_BASE     xen_mk_ullong(0x03020000) /* vCPU0..127 */
 #define GUEST_GICV3_GICR0_SIZE     xen_mk_ullong(0x01000000)
 
+/* vsmmuv3 ITS mappings */
+#define GUEST_VSMMUV3_BASE     xen_mk_ullong(0x04040000)
+#define GUEST_VSMMUV3_SIZE     xen_mk_ullong(0x00040000)
+
 /*
  * 256 MB is reserved for VPCI configuration space based on calculation
  * 256 buses x 32 devices x 8 functions x 4 KB = 256 MB
@@ -512,9 +521,10 @@ typedef uint64_t xen_callback_t;
 #define GUEST_EVTCHN_PPI        31
 
 #define GUEST_VPL011_SPI        32
+#define GUEST_VSMMU_SPI         33
 
-#define GUEST_VIRTIO_MMIO_SPI_FIRST   33
-#define GUEST_VIRTIO_MMIO_SPI_LAST    43
+#define GUEST_VIRTIO_MMIO_SPI_FIRST   34
+#define GUEST_VIRTIO_MMIO_SPI_LAST    44
 
 /*
  * SGI is the preferred delivery mechanism of FF-A pending notifications or

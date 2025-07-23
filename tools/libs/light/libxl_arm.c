@@ -86,8 +86,8 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
 {
     uint32_t nr_spis = 0;
     unsigned int i;
-    uint32_t vuart_irq, virtio_irq = 0;
-    bool vuart_enabled = false, virtio_enabled = false;
+    uint32_t vuart_irq, virtio_irq = 0, vsmmu_irq = 0;
+    bool vuart_enabled = false, virtio_enabled = false, vsmmu_enabled = false;
     uint64_t virtio_mmio_base = GUEST_VIRTIO_MMIO_BASE;
     uint32_t virtio_mmio_irq = GUEST_VIRTIO_MMIO_SPI_FIRST;
     int rc;
@@ -100,6 +100,12 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         nr_spis += (GUEST_VPL011_SPI - 32) + 1;
         vuart_irq = GUEST_VPL011_SPI;
         vuart_enabled = true;
+    }
+
+    if (d_config->num_pcidevs || d_config->b_info.device_tree) {
+        nr_spis += (GUEST_VSMMU_SPI - 32) + 1;
+        vsmmu_irq = GUEST_VSMMU_SPI;
+        vsmmu_enabled = true;
     }
 
     for (i = 0; i < d_config->num_disks; i++) {
@@ -170,6 +176,11 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
             return ERROR_FAIL;
         }
 
+        if (vsmmu_enabled && irq == vsmmu_irq) {
+            LOG(ERROR, "Physical IRQ %u conflicting with vSMMUv3 SPI\n", irq);
+            return ERROR_FAIL;
+        }
+
         if (irq < 32)
             continue;
 
@@ -220,6 +231,19 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
     if (d_config->b_info.arch_arm.sve_vl) {
         /* Vector length is divided by 128 in struct xen_domctl_createdomain */
         config->arch.sve_vl = d_config->b_info.arch_arm.sve_vl / 128U;
+    }
+
+    switch (d_config->b_info.arch_arm.viommu_type) {
+    case LIBXL_VIOMMU_TYPE_NONE:
+        config->arch.viommu_type = XEN_DOMCTL_CONFIG_VIOMMU_NONE;
+        break;
+    case LIBXL_VIOMMU_TYPE_SMMUV3:
+        config->arch.viommu_type = XEN_DOMCTL_CONFIG_VIOMMU_SMMUV3;
+        break;
+    default:
+        LOG(ERROR, "Unknown vIOMMU type %d",
+            d_config->b_info.arch_arm.viommu_type);
+        return ERROR_FAIL;
     }
 
     return 0;
@@ -861,6 +885,45 @@ static int make_vpl011_uart_node(libxl__gc *gc, void *fdt,
     return 0;
 }
 
+static int make_vsmmuv3_node(libxl__gc *gc, void *fdt,
+                             const struct arch_info *ainfo,
+                             struct xc_dom_image *dom)
+{
+    int res;
+    const char *name = GCSPRINTF("iommu@%llx", GUEST_VSMMUV3_BASE);
+    gic_interrupt intr;
+
+    res = fdt_begin_node(fdt, name);
+    if (res) return res;
+
+    res = fdt_property_compat(gc, fdt, 1, "arm,smmu-v3");
+    if (res) return res;
+
+    res = fdt_property_regs(gc, fdt, GUEST_ROOT_ADDRESS_CELLS,
+                            GUEST_ROOT_SIZE_CELLS, 1, GUEST_VSMMUV3_BASE,
+                            GUEST_VSMMUV3_SIZE);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_VSMMUV3);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#iommu-cells", 1);
+    if (res) return res;
+
+    res = fdt_property_string(fdt, "interrupt-names", "combined");
+    if (res) return res;
+
+    set_interrupt(intr, GUEST_VSMMU_SPI, 0xf, DT_IRQ_TYPE_LEVEL_HIGH);
+
+    res = fdt_property_interrupts(gc, fdt, &intr, 1);
+    if (res) return res;
+
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    return 0;
+}
+
 static int make_vpci_node(libxl__gc *gc, void *fdt,
                           const struct arch_info *ainfo,
                           struct xc_dom_image *dom)
@@ -900,6 +963,10 @@ static int make_vpci_node(libxl__gc *gc, void *fdt,
         GUEST_VPCI_ADDR_TYPE_MEM, GUEST_VPCI_MEM_ADDR, GUEST_VPCI_MEM_SIZE,
         GUEST_VPCI_ADDR_TYPE_PREFETCH_MEM, GUEST_VPCI_PREFETCH_MEM_ADDR,
         GUEST_VPCI_PREFETCH_MEM_SIZE);
+    if (res) return res;
+
+    res = fdt_property_values(gc, fdt, "iommu-map", 4, 0,
+                              GUEST_PHANDLE_VSMMUV3, 0, 0x10000);
     if (res) return res;
 
     res = fdt_end_node(fdt);
@@ -1228,6 +1295,41 @@ static int copy_partial_fdt(libxl__gc *gc, void *fdt, void *pfdt)
     return 0;
 }
 
+static int modify_partial_fdt(libxl__gc *gc, void *pfdt)
+{
+    int nodeoff, proplen, i, r;
+    const fdt32_t *prop;
+    fdt32_t *prop_c;
+
+    nodeoff = fdt_path_offset(pfdt, "/passthrough");
+    if (nodeoff < 0)
+        return nodeoff;
+
+    for (nodeoff = fdt_first_subnode(pfdt, nodeoff);
+         nodeoff >= 0;
+         nodeoff = fdt_next_subnode(pfdt, nodeoff)) {
+
+        prop = fdt_getprop(pfdt, nodeoff, "iommus", &proplen);
+        if (!prop)
+            continue;
+
+        prop_c = libxl__zalloc(gc, proplen);
+
+        for (i = 0; i < proplen / 8; ++i) {
+            prop_c[i * 2] = cpu_to_fdt32(GUEST_PHANDLE_VSMMUV3);
+            prop_c[i * 2 + 1] = prop[i * 2 + 1];
+        }
+
+        r = fdt_setprop(pfdt, nodeoff, "iommus", prop_c, proplen);
+        if (r) {
+            LOG(ERROR, "Can't set the iommus property in partial FDT");
+            return r;
+        }
+    }
+
+    return 0;
+}
+
 #else
 
 static int check_partial_fdt(libxl__gc *gc, void *fdt, size_t size)
@@ -1244,6 +1346,13 @@ static int copy_partial_fdt(libxl__gc *gc, void *fdt, void *pfdt)
      * supported.
      * */
     return -FDT_ERR_INTERNAL;
+}
+
+static int modify_partial_fdt(libxl__gc *gc, void *pfdt)
+{
+    LOG(ERROR, "partial device tree not supported");
+
+    return ERROR_FAIL;
 }
 
 #endif /* ENABLE_PARTIAL_DEVICE_TREE */
@@ -1367,6 +1476,12 @@ next_resize:
 
         if (d_config->num_pcidevs)
             FDT( make_vpci_node(gc, fdt, ainfo, dom) );
+
+        if (info->arch_arm.viommu_type == LIBXL_VIOMMU_TYPE_SMMUV3) {
+            FDT( make_vsmmuv3_node(gc, fdt, ainfo, dom) );
+            if (pfdt)
+                FDT( modify_partial_fdt(gc, pfdt) );
+        }
 
         for (i = 0; i < d_config->num_disks; i++) {
             libxl_device_disk *disk = &d_config->disks[i];

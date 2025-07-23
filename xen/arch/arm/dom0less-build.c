@@ -16,6 +16,8 @@
 #include <asm/domain_build.h>
 #include <asm/static-memory.h>
 #include <asm/static-shmem.h>
+#include <asm/viommu.h>
+#include <asm/setup.h>
 
 bool __init is_dom0less_mode(void)
 {
@@ -240,6 +242,65 @@ static int __init make_vpl011_uart_node(struct kernel_info *kinfo)
 }
 #endif
 
+#ifdef CONFIG_VIRTUAL_ARM_SMMU_V3
+static int __init make_vsmmuv3_node(const struct kernel_info *kinfo)
+{
+    int res;
+    char buf[24];
+    __be32 reg[GUEST_ROOT_ADDRESS_CELLS + GUEST_ROOT_SIZE_CELLS];
+    __be32 *cells;
+    gic_interrupt_t intr;
+    void *fdt = kinfo->fdt;
+
+    snprintf(buf, sizeof(buf), "iommu@%llx", GUEST_VSMMUV3_BASE);
+
+    res = fdt_begin_node(fdt, buf);
+    if ( res )
+        return res;
+
+    res = fdt_property_string(fdt, "compatible", "arm,smmu-v3");
+    if ( res )
+        return res;
+
+    /* Create reg property */
+    cells = &reg[0];
+    dt_child_set_range(&cells, GUEST_ROOT_ADDRESS_CELLS, GUEST_ROOT_SIZE_CELLS,
+                       GUEST_VSMMUV3_BASE, GUEST_VSMMUV3_SIZE);
+    res = fdt_property(fdt, "reg", reg,
+                       (GUEST_ROOT_ADDRESS_CELLS +
+                       GUEST_ROOT_SIZE_CELLS) * sizeof(*reg));
+    if ( res )
+        return res;
+
+    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_VSMMUV3);
+    if ( res )
+        return res;
+
+    res = fdt_property_cell(fdt, "#iommu-cells", 1);
+    if ( res )
+        return res;
+
+    res = fdt_property_string(fdt, "interrupt-names", "combined");
+    if ( res )
+        return res;
+
+    set_interrupt(intr, GUEST_VSMMU_SPI, 0xf, DT_IRQ_TYPE_LEVEL_HIGH);
+
+    res = fdt_property(kinfo->fdt, "interrupts",
+                       intr, sizeof(intr));
+    if ( res )
+        return res;
+
+    res = fdt_property_cell(kinfo->fdt, "interrupt-parent",
+                            kinfo->phandle_intc);
+    if ( res )
+        return res;
+
+    res = fdt_end_node(fdt);
+
+    return res;
+}
+#endif
 /*
  * Scan device tree properties for passthrough specific information.
  * Returns < 0 on error
@@ -415,7 +476,35 @@ static int __init handle_prop_pfdt(struct kernel_info *kinfo,
     return ( propoff != -FDT_ERR_NOTFOUND ) ? propoff : 0;
 }
 
-static int __init scan_pfdt_node(struct kernel_info *kinfo, const void *pfdt,
+static void modify_pfdt_node(void *pfdt, int nodeoff)
+{
+    int proplen, i, rc;
+    const fdt32_t *prop;
+    fdt32_t *prop_c;
+
+    prop = fdt_getprop(pfdt, nodeoff, "iommus", &proplen);
+    if ( !prop )
+        return;
+
+    prop_c = xzalloc_bytes(proplen);
+
+    for ( i = 0; i < proplen / 8; ++i )
+    {
+        prop_c[i * 2] = cpu_to_fdt32(GUEST_PHANDLE_VSMMUV3);
+        prop_c[i * 2 + 1] = prop[i * 2 + 1];
+    }
+
+    rc = fdt_setprop(pfdt, nodeoff, "iommus", prop_c, proplen);
+    if ( rc )
+    {
+        dprintk(XENLOG_ERR, "Can't set the iommus property in partial FDT");
+        return;
+    }
+
+    return;
+}
+
+static int __init scan_pfdt_node(struct kernel_info *kinfo, void *pfdt,
                                  int nodeoff,
                                  uint32_t address_cells, uint32_t size_cells,
                                  bool scan_passthrough_prop)
@@ -441,6 +530,7 @@ static int __init scan_pfdt_node(struct kernel_info *kinfo, const void *pfdt,
     node_next = fdt_first_subnode(pfdt, nodeoff);
     while ( node_next > 0 )
     {
+        modify_pfdt_node(pfdt, node_next);
         rc = scan_pfdt_node(kinfo, pfdt, node_next, address_cells, size_cells,
                             scan_passthrough_prop);
         if ( rc )
@@ -653,6 +743,16 @@ static int __init prepare_dtb_domU(struct domain *d, struct kernel_info *kinfo)
             goto err;
     }
 
+
+#ifdef CONFIG_VIRTUAL_ARM_SMMU_V3
+    if ( is_viommu_enabled() )
+    {
+        ret = make_vsmmuv3_node(kinfo);
+        if ( ret )
+            goto err;
+    }
+#endif
+
     ret = fdt_end_node(kinfo->fdt);
     if ( ret < 0 )
         goto err;
@@ -825,6 +925,7 @@ void __init create_domUs(void)
         struct domain *d;
         struct xen_domctl_createdomain d_cfg = {
             .arch.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE,
+            .arch.viommu_type = viommu_get_type(),
             .flags = XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap,
             /*
              * The default of 1023 should be sufficient for guests because
