@@ -35,6 +35,20 @@ config IPMMU_VMSA
 	  (H3 ES3.0, M3-W+, etc) or Gen4 SoCs which IPMMU hardware supports stage 2
 	  translation table format and is able to use CPU's P2M table as is.
 
+config VIRTUAL_IOMMU
+	bool "Virtual IOMMU Support (UNSUPPORTED)" if UNSUPPORTED
+	default n
+	help
+	 Support virtual IOMMU infrastructure to implement vIOMMU.
+
+config VIRTUAL_ARM_SMMU_V3
+	bool "ARM Ltd. Virtual SMMUv3 Support (UNSUPPORTED)" if UNSUPPORTED
+	depends on ARM_SMMU_V3 && VIRTUAL_IOMMU
+	help
+	 Support for implementations of the virtual ARM System MMU architecture
+	 version 3. Virtual SMMUv3 is unsupported feature and should not be used
+	 in production.
+
 endif
 
 config AMD_IOMMU

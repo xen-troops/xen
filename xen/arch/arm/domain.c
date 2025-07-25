@@ -28,6 +28,7 @@
 #include <asm/tee/tee.h>
 #include <asm/vfp.h>
 #include <asm/vgic.h>
+#include <asm/viommu.h>
 #include <asm/vtimer.h>
 
 #include "vpci.h"
@@ -694,6 +695,14 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
         return -EINVAL;
     }
 
+    if ( config->arch.viommu_type != XEN_DOMCTL_CONFIG_VIOMMU_NONE &&
+         config->arch.viommu_type != viommu_get_type() )
+    {
+        dprintk(XENLOG_INFO,
+                "vIOMMU type requested not supported by the platform or Xen\n");
+        return -EINVAL;
+    }
+
     return 0;
 }
 
@@ -785,6 +794,9 @@ int arch_domain_create(struct domain *d,
     /* Copy the encoded vector length sve_vl from the domain configuration */
     d->arch.sve_vl = config->arch.sve_vl;
 #endif
+
+    if ( (rc = domain_viommu_init(d, config->arch.viommu_type)) != 0 )
+        goto fail;
 
     return 0;
 
@@ -1033,6 +1045,7 @@ static int relinquish_memory(struct domain *d, struct page_list_head *list)
 enum {
     PROG_pci = 1,
     PROG_tee,
+    PROG_viommu,
     PROG_xen,
     PROG_page,
     PROG_mapping,
@@ -1081,6 +1094,11 @@ int domain_relinquish_resources(struct domain *d)
 
     PROGRESS(tee):
         ret = tee_relinquish_resources(d);
+        if (ret )
+            return ret;
+
+    PROGRESS(viommu):
+        ret = viommu_relinquish_resources(d);
         if (ret )
             return ret;
 
