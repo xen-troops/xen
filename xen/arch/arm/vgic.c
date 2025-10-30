@@ -142,7 +142,7 @@ static int init_vgic_espi(struct domain *d)
         vgic_init_pending_irq(&d->arch.vgic.pending_irqs[i + d->arch.vgic.nr_spis], ESPI_IDX2INTID(i));
 
     for ( i = 0; i < DOMAIN_NR_EXT_RANKS(d); i++ )
-        vgic_rank_init(&d->arch.vgic.ext_shared_irqs[i], i, 0);
+        vgic_rank_init(&d->arch.vgic.ext_shared_irqs[i], EXT_RANK_IDX2NUM(i), 0);
 
     return 0;
 }
