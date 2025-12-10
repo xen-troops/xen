@@ -119,8 +119,6 @@ struct arch_domain
     void *tee;
 #endif
 
-    /* OSID used by virtual GSX device */
-    uint8_t vgsx_osid;
 }  __cacheline_aligned;
 
 struct arch_vcpu
