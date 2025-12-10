@@ -343,14 +343,6 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         config->arch.sve_vl = d_config->b_info.arch_arm.sve_vl / 128U;
     }
 
-    if (d_config->num_vgsxs) {
-        libxl_device_vgsx *vgsx;
-
-        vgsx = &d_config->vgsxs[0];
-        config->arch.vgsx_osid = vgsx->osid;
-    } else
-        config->arch.vgsx_osid = 0;
-
     return 0;
 }
 
