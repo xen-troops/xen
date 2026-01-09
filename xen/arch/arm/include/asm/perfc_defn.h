@@ -69,9 +69,10 @@ PERFCOUNTER(ppis,                 "#PPIs")
 PERFCOUNTER(spis,                 "#SPIs")
 PERFCOUNTER(guest_irqs,           "#GUEST-IRQS")
 
-PERFCOUNTER(hyp_timer_irqs,   "Hypervisor timer interrupts")
-PERFCOUNTER(virt_timer_irqs,  "Virtual timer interrupts")
-PERFCOUNTER(maintenance_irqs, "Maintenance interrupts")
+PERFCOUNTER(hyp_timer_irqs,             "Hypervisor timer interrupts")
+PERFCOUNTER(virt_timer_irqs,            "Virtual timer interrupts")
+PERFCOUNTER(virt_timer_spurious_irqs,   "Virtual timer spurious interrupts")
+PERFCOUNTER(maintenance_irqs,           "Maintenance interrupts")
 
 PERFCOUNTER(atomics_guest,    "atomics: guest access")
 PERFCOUNTER(atomics_guest_paused,   "atomics: guest paused")
