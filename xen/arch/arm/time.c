@@ -257,6 +257,8 @@ static void htimer_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
 
 static void vtimer_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
 {
+    register_t ctl;
+
     /*
      * Edge-triggered interrupts can be used for the virtual timer. Even
      * if the timer output signal is masked in the context switch, the
@@ -270,9 +272,16 @@ static void vtimer_interrupt(int irq, void *dev_id, struct cpu_user_regs *regs)
     if ( unlikely(is_idle_vcpu(current)) )
         return;
 
+    ctl = READ_SYSREG(CNTV_CTL_EL0);
+    if ( unlikely(!(ctl & CNTx_CTL_PENDING)) )
+    {
+        perfc_incr(virt_timer_spurious_irqs);
+        return;
+    }
+
     perfc_incr(virt_timer_irqs);
 
-    current->arch.virt_timer.ctl = READ_SYSREG(CNTV_CTL_EL0);
+    current->arch.virt_timer.ctl = ctl;
     WRITE_SYSREG(current->arch.virt_timer.ctl | CNTx_CTL_MASK, CNTV_CTL_EL0);
     vgic_inject_irq(current->domain, current, current->arch.virt_timer.irq, true);
 }
