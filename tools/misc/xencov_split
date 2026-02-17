@@ -61,6 +61,8 @@ def xencov_split(opts):
                 raise
 
         full_path = dir + '/' + path.basename(fn)
+        if not fn:
+            break
         f = open(full_path, "wb")
         f.write(payload)
         f.close()
