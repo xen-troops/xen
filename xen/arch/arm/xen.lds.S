@@ -110,6 +110,10 @@ SECTIONS
 
        HYPFS_PARAM
 
+	_gcov_info_start = .	;
+	*(.data..LPBX0)
+	_gcov_info_end = .	;
+
        *(.data .data.*)
        CONSTRUCTORS
   } :text
@@ -186,6 +190,12 @@ SECTIONS
        __bss_start = .;
        *(.bss.stack_aligned)
        *(.bss.page_aligned)
+       . = ALIGN(PAGE_SIZE);
+       __bss_gcov_start = .;
+       *(.bss.__gcov0*)
+       *(.bss.__gcov8*)
+       . = ALIGN(PAGE_SIZE);
+       __bss_gcov_end = .;
        PERCPU_BSS
        *(.bss .bss.*)
        . = ALIGN(POINTER_ALIGN);

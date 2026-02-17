@@ -5,6 +5,8 @@ CONFIG_XEN_INSTALL_SUFFIX :=
 
 CFLAGS += #-marm -march= -mcpu= etc
 
+CFLAGS +=  -fdata-sections
+
 ifeq ($(clang),y)
 CFLAGS += -target aarch64 -march=armv8-a
 endif
