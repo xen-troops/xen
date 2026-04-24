@@ -3,8 +3,6 @@
 
 #include <xen/bug.h>
 
-extern void __bad_xchg(volatile void *ptr, int size);
-
 static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size)
 {
 	unsigned long ret, tmp;
@@ -47,7 +45,8 @@ static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size
 			: "memory");
 		break;
 	default:
-		__bad_xchg(ptr, size), ret = 0;
+		ASSERT_UNREACHABLE();
+		ret = 0;
 		break;
 	}
 
@@ -62,8 +61,6 @@ static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size
 		__xchg((unsigned long)(x), (ptr), sizeof(*(ptr))); \
 	__ret; \
 })
-
-extern unsigned long __bad_cmpxchg(volatile void *ptr, int size);
 
 #define __CMPXCHG_CASE(w, sz, name)					\
 static inline bool __cmpxchg_case_##name(volatile void *ptr,		\
@@ -115,11 +112,10 @@ static always_inline bool __int_cmpxchg(volatile void *ptr, unsigned long *old,
 		return __cmpxchg_case_4(ptr, old, new, timeout, max_try);
 	case 8:
 		return __cmpxchg_case_8(ptr, old, new, timeout, max_try);
-	default:
-		return __bad_cmpxchg(ptr, size);
 	}
 
 	ASSERT_UNREACHABLE();
+	return false;
 }
 
 static always_inline unsigned long __cmpxchg(volatile void *ptr,

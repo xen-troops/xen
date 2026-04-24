@@ -4,8 +4,6 @@
 #include <xen/bug.h>
 #include <xen/prefetch.h>
 
-extern void __bad_xchg(volatile void *ptr, int size);
-
 static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size)
 {
 	unsigned long ret;
@@ -36,7 +34,8 @@ static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size
 			: "memory", "cc");
 		break;
 	default:
-		__bad_xchg(ptr, size), ret = 0;
+		ASSERT_UNREACHABLE();
+		ret = 0;
 		break;
 	}
 	smp_mb();
@@ -52,8 +51,6 @@ static inline unsigned long __xchg(unsigned long x, volatile void *ptr, int size
  * store NEW in MEM.  Return the initial value in MEM.  Success is
  * indicated by comparing RETURN with OLD.
  */
-
-extern unsigned long __bad_cmpxchg(volatile void *ptr, int size);
 
 #define __CMPXCHG_CASE(sz, name)					\
 static inline bool __cmpxchg_case_##name(volatile void *ptr,		\
@@ -132,11 +129,10 @@ static always_inline bool __int_cmpxchg(volatile void *ptr, unsigned long *old,
 		return __cmpxchg_case_2(ptr, old, new, timeout, max_try);
 	case 4:
 		return __cmpxchg_case_4(ptr, old, new, timeout, max_try);
-	default:
-		return __bad_cmpxchg(ptr, size);
 	}
 
 	ASSERT_UNREACHABLE();
+	return false;
 }
 
 static always_inline unsigned long __cmpxchg(volatile void *ptr,
