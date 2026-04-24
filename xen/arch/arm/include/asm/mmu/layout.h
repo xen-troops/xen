@@ -68,7 +68,11 @@
  * Reserve enough space so both UBSAN and GCOV can be enabled together
  * plus some slack for future growth.
  */
+#ifdef CONFIG_NO_OPTIMIZE
+#define XEN_VIRT_SIZE           _AT(vaddr_t, MB(16))
+#else
 #define XEN_VIRT_SIZE           _AT(vaddr_t, MB(8))
+#endif
 #define XEN_NR_ENTRIES(lvl)     (XEN_VIRT_SIZE / XEN_PT_LEVEL_SIZE(lvl))
 
 #define FIXMAP_VIRT_START       (XEN_VIRT_START + XEN_VIRT_SIZE)
