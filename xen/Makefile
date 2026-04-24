@@ -382,7 +382,9 @@ include/config/%.conf include/config/%.conf.cmd: $(KCONFIG_CONFIG)
 	$(Q)rm -f include/config/auto.conf
 	$(Q)$(MAKE) $(build)=tools/kconfig syncconfig
 
-ifeq ($(CONFIG_DEBUG),y)
+ifeq ($(CONFIG_NO_OPTIMIZE),y)
+CFLAGS += -O0
+else ifeq ($(CONFIG_DEBUG),y)
 CFLAGS += -O1
 else
 CFLAGS += -O2
