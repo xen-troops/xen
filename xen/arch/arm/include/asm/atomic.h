@@ -71,9 +71,6 @@ build_add_sized(add_u32_sized, "", WORD, uint32_t)
 #undef build_atomic_write
 #undef build_add_sized
 
-void __bad_atomic_read(const volatile void *p, void *res);
-void __bad_atomic_size(void);
-
 static always_inline void read_atomic_size(const volatile void *p,
                                            void *res,
                                            unsigned int size)
@@ -94,7 +91,7 @@ static always_inline void read_atomic_size(const volatile void *p,
         *(uint64_t *)res = read_u64_atomic(p);
         break;
     default:
-        __bad_atomic_read(p, res);
+        ASSERT_UNREACHABLE();
         break;
     }
 }
@@ -119,7 +116,7 @@ static always_inline void write_atomic_size(volatile void *p,
         write_u64_atomic(p, *(uint64_t *)val);
         break;
     default:
-        __bad_atomic_size();
+        ASSERT_UNREACHABLE();
         break;
     }
 }
@@ -143,7 +140,7 @@ static always_inline void write_atomic_size(volatile void *p,
     case 1: add_u8_sized((uint8_t *)(p), __x); break;                   \
     case 2: add_u16_sized((uint16_t *)(p), __x); break;                 \
     case 4: add_u32_sized((uint32_t *)(p), __x); break;                 \
-    default: __bad_atomic_size(); break;                                \
+    default: ASSERT_UNREACHABLE(); break;                               \
     }                                                                   \
 })
 
