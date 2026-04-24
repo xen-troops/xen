@@ -192,6 +192,7 @@ static int __apply_alternatives_multi_stop(void *xenmap)
     return 0;
 }
 
+#ifdef CONFIG_LLC_COLORING
 static void __init *xen_remap_colored(mfn_t xen_mfn, paddr_t xen_size)
 {
     unsigned int i;
@@ -210,6 +211,12 @@ static void __init *xen_remap_colored(mfn_t xen_mfn, paddr_t xen_size)
 
     return xenmap;
 }
+#else
+static always_inline void *xen_remap_colored(mfn_t xen_mfn, paddr_t xen_size)
+{
+    return NULL;
+}
+#endif /* CONFIG_LLC_COLORING */
 
 /*
  * This function should only be called during boot and before CPU0 jump

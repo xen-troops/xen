@@ -339,6 +339,7 @@ paddr_t __init consider_modules(paddr_t s, paddr_t e,
     return e;
 }
 
+#ifdef CONFIG_LLC_COLORING
 static void __init create_llc_coloring_mappings(void)
 {
     lpae_t pte;
@@ -364,6 +365,9 @@ static void __init create_llc_coloring_mappings(void)
         write_pte(&boot_second[second_table_offset(va)], pte);
     }
 }
+#else
+static always_inline void create_llc_coloring_mappings(void) {}
+#endif /* CONFIG_LLC_COLORING */
 
 /*
  * Boot-time pagetable setup.

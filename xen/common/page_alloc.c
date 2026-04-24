@@ -1534,7 +1534,12 @@ static bool mark_page_free(struct page_info *pg, mfn_t mfn)
     return pg_offlined;
 }
 
+#ifdef CONFIG_LLC_COLORING
 static void free_color_heap_page(struct page_info *pg, bool need_scrub);
+#else
+static always_inline void free_color_heap_page(struct page_info *pg,
+                                               bool need_scrub) {}
+#endif /* CONFIG_LLC_COLORING */
 
 /* Free 2^@order set of pages. */
 static void free_heap_pages(
@@ -2022,12 +2027,12 @@ static void init_heap_pages(
  * After initialization there will be N lists where N is the number of
  * available colors on the platform.
  */
+#ifdef CONFIG_LLC_COLORING
 static struct page_list_head *__ro_after_init _color_heap;
 #define color_heap(color) (&_color_heap[color])
 
 static unsigned long *__ro_after_init free_colored_pages;
 
-#ifdef CONFIG_LLC_COLORING
 #define domain_num_llc_colors(d) ((d)->num_llc_colors)
 #define domain_llc_color(d, i)   ((d)->llc_colors[i])
 
@@ -2035,13 +2040,6 @@ static unsigned long *__ro_after_init free_colored_pages;
 static unsigned long __initdata buddy_alloc_size =
     MB(CONFIG_BUDDY_ALLOCATOR_SIZE);
 size_param("buddy-alloc-size", buddy_alloc_size);
-#else
-static inline unsigned int domain_num_llc_colors(const struct domain *d)
-{
-    return 0;
-}
-#define domain_llc_color(d, i)   0
-#endif
 
 static void free_color_heap_page(struct page_info *pg, bool need_scrub)
 {
@@ -2125,7 +2123,6 @@ static void __init init_color_heap_pages(struct page_info *pg,
     unsigned long i;
     bool need_scrub = opt_bootscrub == BOOTSCRUB_IDLE;
 
-#ifdef CONFIG_LLC_COLORING
     if ( buddy_alloc_size >= PAGE_SIZE )
     {
         unsigned long buddy_pages = min(PFN_DOWN(buddy_alloc_size), nr_pages);
@@ -2135,7 +2132,6 @@ static void __init init_color_heap_pages(struct page_info *pg,
         buddy_alloc_size -= buddy_pages << PAGE_SHIFT;
         pg += buddy_pages;
     }
-#endif
 
     if ( !_color_heap )
     {
@@ -2167,6 +2163,22 @@ static void dump_color_heap(void)
             printk("Color heap[%u]: %lu pages\n",
                    color, free_colored_pages[color]);
 }
+
+#else
+
+static always_inline
+struct page_info *alloc_color_heap_page(unsigned int memflags,
+                                        const struct domain *d)
+{
+    return NULL;
+}
+
+static always_inline void init_color_heap_pages(struct page_info *pg,
+                                                unsigned long nr_pages) {}
+
+static always_inline void dump_color_heap(void) {}
+
+#endif /* CONFIG_LLC_COLORING */
 
 void __init end_boot_allocator(void)
 {
