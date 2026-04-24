@@ -22,30 +22,6 @@
 #include <xsm/xsm.h>
 #include <public/hvm/params.h>
 
-/*
- * Cannot use BUILD_BUG_ON here because the expressions we check are not
- * considered constant at compile time. Instead, rely on constant propagation to
- * inline out the calls to this invalid function, which will cause linker errors
- * if references remain at link time.
- */
-#define LINKER_BUG_ON(x) do { if (x) __xsm_action_mismatch_detected(); } while (0)
-
-#if defined(CONFIG_COVERAGE) && defined(__clang__)
-/*
- * LLVM coverage support seems to disable some of the optimizations needed in
- * order for XSM to compile. Since coverage should not be used in production
- * provide an implementation of __xsm_action_mismatch_detected to satisfy the
- * linker.
- */
-static inline void __xsm_action_mismatch_detected(void)
-{
-    ASSERT_UNREACHABLE();
-}
-#else
-/* DO NOT implement this function; it is supposed to trigger link errors */
-void __xsm_action_mismatch_detected(void);
-#endif
-
 #ifdef CONFIG_XSM
 
 /*
@@ -65,13 +41,13 @@ void __xsm_action_mismatch_detected(void);
 /*
  * In !CONFIG_XSM builds, this header file is included from xsm/xsm.h, and
  * contains inline functions for each XSM hook. These functions also perform
- * compile-time checks on the xsm_default_t argument to ensure that the behavior
+ * run-time checks on the xsm_default_t argument to ensure that the behavior
  * of the dummy XSM module is the same as the behavior with XSM disabled.
  */
 #define XSM_INLINE always_inline
 #define XSM_DEFAULT_ARG xsm_default_t action,
 #define XSM_DEFAULT_VOID xsm_default_t action
-#define XSM_ASSERT_ACTION(def) LINKER_BUG_ON((def) != action)
+#define XSM_ASSERT_ACTION(def) BUG_ON((def) != action)
 
 #endif /* CONFIG_XSM */
 
@@ -99,7 +75,7 @@ static always_inline int xsm_default_action(
             return 0;
         return -EPERM;
     default:
-        LINKER_BUG_ON(1);
+        ASSERT_UNREACHABLE();
         return -EPERM;
     }
 }
