@@ -170,7 +170,7 @@ static inline struct evtchn *evtchn_from_port(const struct domain *d,
  * "usable" as in "by a guest", i.e. Xen consumed channels are assumed to be
  * taken care of separately where used for Xen's internal purposes.
  */
-static bool evtchn_usable(const struct evtchn *evtchn)
+static inline bool evtchn_usable(const struct evtchn *evtchn)
 {
     if ( evtchn->xen_consumer )
         return false;
