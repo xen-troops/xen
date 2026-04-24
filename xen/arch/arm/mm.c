@@ -363,9 +363,11 @@ void put_page_nr(struct page_info *page, unsigned long nr)
 
     if ( unlikely((nx & PGC_count_mask) == 0) )
     {
+#ifdef CONFIG_STATIC_MEMORY
         if ( unlikely(nx & PGC_static) )
             free_domstatic_page(page);
         else
+#endif
             free_domheap_page(page);
     }
 }

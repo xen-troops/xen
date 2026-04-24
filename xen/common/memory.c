@@ -317,6 +317,7 @@ static void populate_physmap(struct memop_args *a)
 
                 mfn = _mfn(gpfn);
             }
+#ifdef CONFIG_STATIC_MEMORY
             else if ( is_domain_using_staticmem(d) )
             {
                 /*
@@ -340,6 +341,7 @@ static void populate_physmap(struct memop_args *a)
                     goto out;
                 }
             }
+#endif
             else
             {
                 unsigned int scrub_start = 0;
