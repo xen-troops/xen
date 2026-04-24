@@ -51,9 +51,11 @@ void vfp_save_state(struct vcpu *v)
     if ( !cpu_has_fp )
         return;
 
+#ifdef CONFIG_ARM64_SVE
     if ( is_sve_domain(v->domain) )
         sve_save_state(v);
     else
+#endif
         save_state(v->arch.vfp.fpregs);
 
     v->arch.vfp.fpsr = READ_SYSREG(FPSR);
@@ -67,9 +69,11 @@ void vfp_restore_state(struct vcpu *v)
     if ( !cpu_has_fp )
         return;
 
+#ifdef CONFIG_ARM64_SVE
     if ( is_sve_domain(v->domain) )
         sve_restore_state(v);
     else
+#endif
         restore_state(v->arch.vfp.fpregs);
 
     WRITE_SYSREG(v->arch.vfp.fpsr, FPSR);

@@ -491,12 +491,14 @@ int arch_vcpu_create(struct vcpu *v)
     v->arch.vmpidr = MPIDR_SMP | vcpuid_to_vaffinity(v->vcpu_id);
 
     v->arch.cptr_el2 = get_default_cptr_flags();
+#ifdef CONFIG_ARM64_SVE
     if ( is_sve_domain(v->domain) )
     {
         if ( (rc = sve_context_init(v)) != 0 )
             goto fail;
         v->arch.cptr_el2 &= ~HCPTR_CP(8);
     }
+#endif
 
     v->arch.hcr_el2 = get_default_hcr_flags();
 
@@ -526,8 +528,10 @@ fail:
 
 void arch_vcpu_destroy(struct vcpu *v)
 {
+#ifdef CONFIG_ARM64_SVE
     if ( is_sve_domain(v->domain) )
         sve_context_free(v);
+#endif
     vcpu_timer_destroy(v);
     vcpu_vgic_free(v);
     free_xenheap_pages(v->arch.stack, STACK_ORDER);
