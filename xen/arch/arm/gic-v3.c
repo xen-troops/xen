@@ -846,6 +846,7 @@ static int gicv3_enable_redist(void)
 }
 
 /* Enable LPIs on this redistributor (only useful when the host has an ITS). */
+#ifdef CONFIG_HAS_ITS
 static bool gicv3_enable_lpis(void)
 {
     uint32_t val;
@@ -862,6 +863,7 @@ static bool gicv3_enable_lpis(void)
 
     return true;
 }
+#endif
 
 static int __init gicv3_populate_rdist(void)
 {
@@ -967,7 +969,7 @@ static int __init gicv3_populate_rdist(void)
 
 static int gicv3_cpu_init(void)
 {
-    int i, ret;
+    int i;
 
     /* Register ourselves with the rest of the world */
     if ( gicv3_populate_rdist() )
@@ -976,15 +978,18 @@ static int gicv3_cpu_init(void)
     if ( gicv3_enable_redist() )
         return -ENODEV;
 
+#ifdef CONFIG_HAS_ITS
     /* If the host has any ITSes, enable LPIs now. */
     if ( gicv3_its_host_has_its() )
     {
+        int ret;
         if ( !gicv3_enable_lpis() )
             return -EBUSY;
         ret = gicv3_its_setup_collection(smp_processor_id());
         if ( ret )
             return ret;
     }
+#endif
 
     /* Set priority on PPI and SGI interrupts */
     for (i = 0; i < NR_GIC_SGI; i += 4)
