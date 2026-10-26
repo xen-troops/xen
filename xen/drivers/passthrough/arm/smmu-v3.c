@@ -1153,8 +1153,14 @@ static void arm_smmu_domain_free(struct iommu_domain *domain)
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	struct arm_smmu_s2_cfg *cfg = &smmu_domain->s2_cfg;
 
-	if (cfg->vmid)
+	if (cfg->vmid) {
+		/*
+		 * Invalidate all entries tagged with this VMID
+		 * before it can be handed to another domain.
+		 */
+		arm_smmu_tlb_inv_context(smmu_domain);
 		arm_smmu_bitmap_free(smmu->vmid_map, cfg->vmid);
+	}
 
 	xfree(smmu_domain);
 }
