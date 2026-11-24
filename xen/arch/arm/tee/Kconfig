@@ -16,6 +16,19 @@ config OPTEE
 	  about virtualization for OP-TEE at
 	  https://optee.readthedocs.io/architecture/virtualization.html
 
+config OPTEE_MAX_SHM_BUFFER_KB
+	int "Maximum size of a buffer shared with OP-TEE (KB)" if UNSUPPORTED
+	depends on OPTEE
+	range 512 8192
+	default 512
+	help
+	  Largest buffer, in KB, that a guest can share with OP-TEE in one
+	  call. The Global Platform specification requires at least 512KB.
+	  OP-TEE loads a whole TA binary from the normal world through one
+	  shared buffer, so this is also the largest TA a guest can load.
+
+	  If unsure, keep the default.
+
 config FFA
 	bool "Enable FF-A mediator support (UNSUPPORTED)" if UNSUPPORTED
 	default n
