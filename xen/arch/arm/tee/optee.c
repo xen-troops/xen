@@ -80,10 +80,12 @@
  *
  * Global Platform specification for TEE requires that any TEE
  * implementation should allow to share buffers with size of at least
- * 512KB, which equals to 128 4kB pages. Due to align issue mentioned
- * above, we need to increase this value to 129.
+ * 512KB, which equals to 128 4kB pages, the default value of
+ * CONFIG_OPTEE_MAX_SHM_BUFFER_KB. Due to align issue mentioned above,
+ * we need to add one page to the configured size.
  */
-#define MAX_SHM_BUFFER_PG       129
+#define MAX_SHM_BUFFER_PG \
+    (CONFIG_OPTEE_MAX_SHM_BUFFER_KB * 1024 / OPTEE_MSG_NONCONTIG_PAGE_SIZE + 1)
 
 /*
  * Limits the number of shared buffers that guest can have at once.
@@ -751,7 +753,8 @@ static int translate_noncontig(struct optee_domain *ctx,
 
     /*
      * In the worst case we will want to allocate 1 page, which is
-     * MAX_SHM_BUFFER_PG/511 rounded up. This buffer will be freed
+     * MAX_SHM_BUFFER_PG/511 rounded up, with the default
+     * CONFIG_OPTEE_MAX_SHM_BUFFER_KB. This buffer will be freed
      * right after the end of the call and there can be no more than
      * max_optee_threads calls simultaneously. So in the worst case
      * guest can trick us to allocate 1 * max_optee_threads pages in
@@ -763,7 +766,7 @@ static int translate_noncontig(struct optee_domain *ctx,
      * shared buffer size, so there were cases, when we needed more
      * that one page there. Right now this is not true, but this code
      * remains for two reasons:
-     * - Users can change MAX_SHM_BUFFER_PG to a higher value, in which
+     * - Users can raise CONFIG_OPTEE_MAX_SHM_BUFFER_KB, in which
      *   case they will need this code.
      * - There is a plan to implement preemption in the code below, which
      *   will allow use to increase default MAX_SHM_BUFFER_PG value.
